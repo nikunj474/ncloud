@@ -1,0 +1,7 @@
+build/
+*.o
+*.d
+*.out
+*.log
+.DS_Store
+.env
