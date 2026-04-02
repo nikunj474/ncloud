@@ -26,7 +26,7 @@ mkdir -p "$DATA_DIR"
 KV_PID=$!
 sleep 1
 
-./frontend/feserver --port $FE_PORT --kv-host 127.0.0.1 --kv-port $KV_PORT --id fe1 > frontend.log 2>&1 &
+./frontend/feserver --port $FE_PORT --kv-host 127.0.0.1 --kv-port $KV_PORT --coord-host 127.0.0.1 --coord-port $COORD_PORT --id fe1 > frontend.log 2>&1 &
 FE_PID=$!
 sleep 1
 
@@ -36,7 +36,8 @@ sleep 1
 
 echo
 echo "== Live demo is up =="
-echo "Open: http://127.0.0.1:$FE_PORT"
+echo "App:   http://127.0.0.1:$FE_PORT"
+echo "Admin: http://127.0.0.1:$FE_PORT/admin"
 echo "KV PID: $KV_PID"
 echo "Frontend PID: $FE_PID"
 echo "Coordinator PID: $COORD_PID"

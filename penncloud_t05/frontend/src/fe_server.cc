@@ -18,38 +18,37 @@
 #include <chrono>
 #include <random>
 #include <iomanip>
-using namespace std;
 
 // ---------------------------------------------------------------------------
 // Embedded ThreadPool (same design as kvserver)
 // ---------------------------------------------------------------------------
 struct FEServer::ThreadPool {
-    vector<thread>          workers;
-    queue<function<void()>> tasks;
-    mutex                        mu;
-    condition_variable           cv;
+    std::vector<std::thread>          workers;
+    std::queue<std::function<void()>> tasks;
+    std::mutex                        mu;
+    std::condition_variable           cv;
     bool                              stop = false;
 
     explicit ThreadPool(int n) {
         for (int i = 0; i < n; ++i)
             workers.emplace_back([this] {
                 while (true) {
-                    function<void()> task;
-                    { unique_lock<mutex> lk(mu);
+                    std::function<void()> task;
+                    { std::unique_lock<std::mutex> lk(mu);
                       cv.wait(lk, [this]{ return stop || !tasks.empty(); });
                       if (stop && tasks.empty()) return;
-                      task = move(tasks.front()); tasks.pop(); }
+                      task = std::move(tasks.front()); tasks.pop(); }
                     task();
                 }
             });
     }
     ~ThreadPool() {
-        { lock_guard<mutex> lk(mu); stop = true; }
+        { std::lock_guard<std::mutex> lk(mu); stop = true; }
         cv.notify_all();
         for (auto& w : workers) w.join();
     }
-    void enqueue(function<void()> f) {
-        { lock_guard<mutex> lk(mu); tasks.push(move(f)); }
+    void enqueue(std::function<void()> f) {
+        { std::lock_guard<std::mutex> lk(mu); tasks.push(std::move(f)); }
         cv.notify_one();
     }
 };
@@ -58,18 +57,18 @@ struct FEServer::ThreadPool {
 // Constructor / Destructor
 // ---------------------------------------------------------------------------
 FEServer::FEServer(const Config& cfg) : cfg_(cfg) {
-    kv_ = make_unique<KVClient>(cfg_.kv_host, cfg_.kv_port);
-    pool_ = make_unique<ThreadPool>(cfg_.threads);
+    kv_ = std::make_unique<KVClient>(cfg_.kv_host, cfg_.kv_port);
+    pool_ = std::make_unique<ThreadPool>(cfg_.threads);
 
     // Wire up session manager to KV client
-    sessions_ = make_unique<SessionManager>(
-        [this](const string& r, const string& c, string& v) {
+    sessions_ = std::make_unique<SessionManager>(
+        [this](const std::string& r, const std::string& c, std::string& v) {
             return kv_->get(r, c, v);
         },
-        [this](const string& r, const string& c, const string& v) {
+        [this](const std::string& r, const std::string& c, const std::string& v) {
             return kv_->put(r, c, v);
         },
-        [this](const string& r, const string& c) {
+        [this](const std::string& r, const std::string& c) {
             return kv_->del(r, c);
         }
     );
@@ -87,7 +86,7 @@ void FEServer::run() {
     listen_fd_ = create_listen_socket();
     running_ = true;
 
-    cout << "[feserver:" << cfg_.server_id << "] listening on port "
+    std::cout << "[feserver:" << cfg_.server_id << "] listening on port "
               << cfg_.port << "\n";
 
     while (running_) {
@@ -107,7 +106,7 @@ void FEServer::stop() {
 
 int FEServer::create_listen_socket() {
     int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) throw runtime_error("socket(): " + string(strerror(errno)));
+    if (fd < 0) throw std::runtime_error("socket(): " + std::string(strerror(errno)));
     int opt = 1;
     ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     sockaddr_in addr{};
@@ -115,7 +114,7 @@ int FEServer::create_listen_socket() {
     addr.sin_addr.s_addr = INADDR_ANY;
     addr.sin_port = htons(static_cast<uint16_t>(cfg_.port));
     if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0)
-        throw runtime_error("bind(): " + string(strerror(errno)));
+        throw std::runtime_error("bind(): " + std::string(strerror(errno)));
     ::listen(fd, 256);
     return fd;
 }
@@ -136,7 +135,7 @@ bool FEServer::handle_one_request(int fd) {
 
     // SSE -- does not return through normal response path
     if (req.path == "/events" && req.method == "GET") {
-        string user = get_user(req);
+        std::string user = get_user(req);
         if (!user.empty()) handle_sse(fd, req, user);
         return false;  // SSE connection is long-lived, close after
     }
@@ -150,13 +149,13 @@ bool FEServer::handle_one_request(int fd) {
 // ---------------------------------------------------------------------------
 // Route dispatch
 // ---------------------------------------------------------------------------
-string FEServer::get_user(const HttpRequest& req) {
+std::string FEServer::get_user(const HttpRequest& req) {
     return sessions_->authenticate(req);
 }
 
 HttpResponse FEServer::dispatch(const HttpRequest& req) {
-    const string& path   = req.path;
-    const string& method = req.method;
+    const std::string& path   = req.path;
+    const std::string& method = req.method;
 
     // ---- Static / SPA shell -------------------------------------------------
     if (path == "/" || path == "/index.html")
@@ -170,7 +169,7 @@ HttpResponse FEServer::dispatch(const HttpRequest& req) {
     if (path == "/api/signup" && method == "POST") return handle_signup(req);
 
     // ---- Protected endpoints (session required) ------------------------------
-    string user = get_user(req);
+    std::string user = get_user(req);
 
     if (path == "/api/logout"          && method == "POST") return handle_logout(req);
     if (path == "/api/change-password" && method == "POST") {
@@ -253,7 +252,7 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
     // The entire SPA shell is embedded here so the frontend has zero
     // external file dependencies during development.
     // In production you would serve this from cfg_.static_dir.
-    static const string html = R"HTML(
+    static const std::string html = R"HTML(
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -475,6 +474,9 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
       </button>
       <button class="nav-item" id="nav-settings" onclick="navigate('settings')">
         <span class="nav-icon">&#9881;</span> Settings
+      </button>
+      <button class="nav-item" id="nav-admin" onclick="window.open('/admin','_blank')">
+        <span class="nav-icon">&#9879;</span> Admin
       </button>
     </div>
     <div class="content" id="content">
@@ -878,26 +880,26 @@ document.addEventListener('keydown', e => {
 // ---------------------------------------------------------------------------
 HttpResponse FEServer::handle_login(const HttpRequest& req) {
     auto params = parse_urlencoded(req.body);
-    string username = params["username"];
-    string password = params["password"];
+    std::string username = params["username"];
+    std::string password = params["password"];
 
     if (username.empty() || password.empty())
         return HttpResponse::json(R"({"ok":false,"error":"Missing credentials"})");
 
     // Fetch stored password from KV
-    string stored_pwd = kv_->get_str(username, "pwd");
+    std::string stored_pwd = kv_->get_str(username, "pwd");
     if (stored_pwd.empty() || stored_pwd != password)
         return HttpResponse::json(R"({"ok":false,"error":"Invalid username or password"})");
 
     // Create session
-    string sid = sessions_->create(username);
+    std::string sid = sessions_->create(username);
     HttpResponse resp = HttpResponse::json(R"({"ok":true})");
     resp.set_cookie("sid", sid);
     return resp;
 }
 
 HttpResponse FEServer::handle_logout(const HttpRequest& req) {
-    string sid = req.cookie("sid");
+    std::string sid = req.cookie("sid");
     if (!sid.empty()) sessions_->destroy(sid);
     HttpResponse resp = HttpResponse::json(R"({"ok":true})");
     // Clear cookie
@@ -907,33 +909,33 @@ HttpResponse FEServer::handle_logout(const HttpRequest& req) {
 
 HttpResponse FEServer::handle_signup(const HttpRequest& req) {
     auto params = parse_urlencoded(req.body);
-    string username = params["username"];
-    string password = params["password"];
+    std::string username = params["username"];
+    std::string password = params["password"];
 
     if (username.empty() || password.empty())
         return HttpResponse::json(R"({"ok":false,"error":"Missing fields"})");
 
     // Check if user already exists
-    string existing = kv_->get_str(username, "pwd");
+    std::string existing = kv_->get_str(username, "pwd");
     if (!existing.empty())
         return HttpResponse::json(R"({"ok":false,"error":"Username already taken"})");
 
     kv_->put(username, "pwd", password);
-    string sid = sessions_->create(username);
+    std::string sid = sessions_->create(username);
     HttpResponse resp = HttpResponse::json(R"({"ok":true})");
     resp.set_cookie("sid", sid);
     return resp;
 }
 
 HttpResponse FEServer::handle_change_password(const HttpRequest& req) {
-    string user = sessions_->authenticate(req);
+    std::string user = sessions_->authenticate(req);
     if (user.empty()) return HttpResponse::error(401, "Unauthorized");
 
     auto params = parse_urlencoded(req.body);
-    string old_pw = params["old_password"];
-    string new_pw = params["new_password"];
+    std::string old_pw = params["old_password"];
+    std::string new_pw = params["new_password"];
 
-    string stored = kv_->get_str(user, "pwd");
+    std::string stored = kv_->get_str(user, "pwd");
     if (stored != old_pw)
         return HttpResponse::json(R"({"ok":false,"error":"Wrong current password"})");
 
@@ -942,22 +944,329 @@ HttpResponse FEServer::handle_change_password(const HttpRequest& req) {
 }
 
 // ---------------------------------------------------------------------------
-// Admin console (stub -- Yke fills this in with metrics)
+// Admin console (Yke — F5 admin metrics)
 // ---------------------------------------------------------------------------
-HttpResponse FEServer::handle_admin_page(const HttpRequest&) {
-    return HttpResponse::ok("<html><body><h1>PennCloud Admin</h1>"
-                            "<p>Metrics: <a href='/admin/metrics'>/admin/metrics</a></p>"
-                            "</body></html>");
+
+// Helper: open a short-lived TCP connection, send a command, read one response line + optional body
+static std::string admin_query_node(const std::string& host, int port,
+                                     const std::string& cmd, int timeout_ms = 500) {
+    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return "";
+
+    struct timeval tv{};
+    tv.tv_sec  = timeout_ms / 1000;
+    tv.tv_usec = (timeout_ms % 1000) * 1000;
+    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port   = htons(static_cast<uint16_t>(port));
+    ::inet_pton(AF_INET, host.c_str(), &addr.sin_addr);
+
+    if (::connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+        ::close(fd);
+        return "";
+    }
+
+    std::string full_cmd = cmd + "\r\n";
+    ::send(fd, full_cmd.data(), full_cmd.size(), MSG_NOSIGNAL);
+
+    // Read response line
+    std::string line;
+    char c;
+    while (true) {
+        ssize_t r = ::recv(fd, &c, 1, 0);
+        if (r <= 0) break;
+        if (c == '\n') {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            break;
+        }
+        line += c;
+        if (line.size() > 4096) break;
+    }
+
+    // If response is "+OK <len>", read the body
+    std::string result = line;
+    if (line.rfind("+OK ", 0) == 0 && line.size() > 4) {
+        size_t body_len = 0;
+        try { body_len = std::stoul(line.substr(4)); } catch (...) {}
+        if (body_len > 0 && body_len < 65536) {
+            std::string body(body_len, '\0');
+            size_t got = 0;
+            while (got < body_len) {
+                ssize_t r = ::recv(fd, &body[got], body_len - got, 0);
+                if (r <= 0) break;
+                got += static_cast<size_t>(r);
+            }
+            result = body;
+        }
+    }
+
+    ::close(fd);
+    return result;
 }
 
 HttpResponse FEServer::handle_admin_metrics(const HttpRequest&) {
-    // Stub -- returns basic server info
-    // Yke will extend this with real per-node metrics (F5)
-    string body = R"({"server_id":")" + cfg_.server_id
-                     + R"(","kv_host":")" + cfg_.kv_host
-                     + R"(","kv_port":)" + to_string(cfg_.kv_port)
-                     + "}";
+    // 1. Query coordinator for node list + alive/dead status
+    std::string coord_resp = admin_query_node(cfg_.coord_host, cfg_.coord_port, "STATUS");
+
+    // 2. Query the KV node(s) directly for STATS
+    std::string kv_stats = admin_query_node(cfg_.kv_host, cfg_.kv_port, "STATS");
+
+    // 3. Check KV node liveness via PING
+    std::string kv_ping = admin_query_node(cfg_.kv_host, cfg_.kv_port, "PING");
+    bool kv_alive = (kv_ping.rfind("+OK", 0) == 0);
+
+    // Build JSON response
+    std::string body = "{";
+    body += "\"server_id\":" + json_str(cfg_.server_id) + ",";
+    body += "\"kv_host\":" + json_str(cfg_.kv_host) + ",";
+    body += "\"kv_port\":" + std::to_string(cfg_.kv_port) + ",";
+    body += "\"kv_alive\":" + std::string(kv_alive ? "true" : "false") + ",";
+    body += "\"kv_stats\":" + json_str(kv_stats) + ",";
+    body += "\"coord_host\":" + json_str(cfg_.coord_host) + ",";
+    body += "\"coord_port\":" + std::to_string(cfg_.coord_port) + ",";
+
+    // coord_resp is the JSON array from coordinator's STATUS handler
+    if (!coord_resp.empty() && coord_resp[0] == '[') {
+        body += "\"nodes\":" + coord_resp;
+    } else {
+        body += "\"nodes\":[]";
+    }
+    body += "}";
+
     return HttpResponse::json(body);
+}
+
+HttpResponse FEServer::handle_admin_page(const HttpRequest&) {
+    static const std::string html = R"HTML(
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PennCloud Admin Console</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --penn-blue: #011F5B;
+      --accent:    #0066CC;
+      --bg:        #F5F7FA;
+      --surface:   #FFFFFF;
+      --border:    #E2E8F0;
+      --text:      #1A202C;
+      --muted:     #718096;
+      --success:   #38A169;
+      --danger:    #E53E3E;
+      --warning:   #D69E2E;
+    }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+           background: var(--bg); color: var(--text); }
+
+    .topbar {
+      background: var(--penn-blue); color: white;
+      padding: 0 24px; height: 52px;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .topbar .brand { font-size: 18px; font-weight: 700; }
+    .topbar .brand a { color: white; text-decoration: none; }
+    .topbar .badge { font-size: 12px; background: rgba(255,255,255,0.2);
+                     padding: 2px 8px; border-radius: 4px; margin-left: 10px; }
+    .topbar .refresh-info { font-size: 12px; opacity: 0.7; }
+
+    .container { max-width: 1000px; margin: 24px auto; padding: 0 24px; }
+
+    .section-title { font-size: 16px; font-weight: 700; color: var(--penn-blue);
+                     margin: 24px 0 12px; display: flex; align-items: center; gap: 8px; }
+
+    .card { background: var(--surface); border: 1px solid var(--border);
+            border-radius: 10px; overflow: hidden; margin-bottom: 20px; }
+
+    .summary-row { display: flex; gap: 16px; margin-bottom: 20px; }
+    .summary-card {
+      flex: 1; background: var(--surface); border: 1px solid var(--border);
+      border-radius: 10px; padding: 20px;
+    }
+    .summary-card .label { font-size: 12px; color: var(--muted); text-transform: uppercase;
+                           letter-spacing: 0.5px; margin-bottom: 4px; }
+    .summary-card .value { font-size: 24px; font-weight: 700; }
+    .summary-card .value.up { color: var(--success); }
+    .summary-card .value.down { color: var(--danger); }
+
+    table { width: 100%; border-collapse: collapse; }
+    th { background: var(--bg); font-size: 12px; text-transform: uppercase;
+         letter-spacing: 0.5px; color: var(--muted); padding: 10px 16px;
+         text-align: left; font-weight: 600; }
+    td { padding: 12px 16px; border-top: 1px solid var(--border); font-size: 14px; }
+
+    .status-dot { display: inline-block; width: 8px; height: 8px;
+                  border-radius: 50%; margin-right: 6px; }
+    .status-dot.alive { background: var(--success); }
+    .status-dot.dead  { background: var(--danger); }
+
+    .tag { display: inline-block; padding: 2px 8px; border-radius: 4px;
+           font-size: 11px; font-weight: 600; }
+    .tag-primary { background: #EBF4FF; color: var(--accent); }
+    .tag-secondary { background: #F0FFF4; color: var(--success); }
+    .tag-unknown { background: #FFFBEB; color: var(--warning); }
+
+    .kv-stat { display: inline-block; margin-right: 16px; }
+    .kv-stat .stat-label { font-size: 11px; color: var(--muted); }
+    .kv-stat .stat-value { font-size: 14px; font-weight: 600; }
+
+    #error-banner { display: none; background: #FED7D7; color: #9B2C2C;
+                    padding: 10px 16px; border-radius: 8px; margin-bottom: 16px;
+                    font-size: 13px; }
+
+    .last-update { font-size: 11px; color: var(--muted); text-align: right;
+                   margin-top: 8px; }
+  </style>
+</head>
+<body>
+
+<div class="topbar">
+  <div>
+    <span class="brand"><a href="/">PennCloud</a></span>
+    <span class="badge">Admin Console</span>
+  </div>
+  <div class="refresh-info">Auto-refresh: 5s</div>
+</div>
+
+<div class="container">
+  <div id="error-banner"></div>
+
+  <div class="summary-row" id="summary-row">
+    <div class="summary-card">
+      <div class="label">Frontend Server</div>
+      <div class="value" id="fe-id">--</div>
+    </div>
+    <div class="summary-card">
+      <div class="label">Nodes Online</div>
+      <div class="value" id="nodes-up">--</div>
+    </div>
+    <div class="summary-card">
+      <div class="label">Nodes Down</div>
+      <div class="value" id="nodes-down">--</div>
+    </div>
+    <div class="summary-card">
+      <div class="label">KV Direct</div>
+      <div class="value" id="kv-direct">--</div>
+    </div>
+  </div>
+
+  <div class="section-title">Backend Storage Nodes</div>
+  <div class="card">
+    <table>
+      <thead>
+        <tr>
+          <th>Node ID</th>
+          <th>Address</th>
+          <th>Status</th>
+          <th>LSN</th>
+          <th>Missed Heartbeats</th>
+        </tr>
+      </thead>
+      <tbody id="nodes-tbody">
+        <tr><td colspan="5" style="text-align:center;color:var(--muted)">Loading...</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="section-title">KV Store Stats (Direct Connection)</div>
+  <div class="card" style="padding: 16px 20px;">
+    <div id="kv-stats-detail">Loading...</div>
+  </div>
+
+  <div class="last-update">Last updated: <span id="last-update">--</span></div>
+</div>
+
+<script>
+async function refresh() {
+  try {
+    const r = await fetch('/admin/metrics');
+    const data = await r.json();
+
+    document.getElementById('error-banner').style.display = 'none';
+
+    document.getElementById('fe-id').textContent = data.server_id || '--';
+
+    const nodes = data.nodes || [];
+    const up = nodes.filter(n => n.alive).length;
+    const down = nodes.length - up;
+
+    const upEl = document.getElementById('nodes-up');
+    upEl.textContent = up + ' / ' + nodes.length;
+    upEl.className = 'value' + (up === nodes.length ? ' up' : '');
+
+    const downEl = document.getElementById('nodes-down');
+    downEl.textContent = down;
+    downEl.className = 'value' + (down > 0 ? ' down' : ' up');
+
+    const kvEl = document.getElementById('kv-direct');
+    kvEl.textContent = data.kv_alive ? 'Online' : 'Offline';
+    kvEl.className = 'value' + (data.kv_alive ? ' up' : ' down');
+
+    const tbody = document.getElementById('nodes-tbody');
+    if (nodes.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--muted)">No nodes reported by coordinator (coordinator may be offline)</td></tr>';
+    } else {
+      tbody.innerHTML = nodes.map(n => `
+        <tr>
+          <td><strong>${esc(n.id)}</strong></td>
+          <td>${esc(n.host)}:${n.port}</td>
+          <td>
+            <span class="status-dot ${n.alive ? 'alive' : 'dead'}"></span>
+            ${n.alive ? 'Online' : 'Down'}
+          </td>
+          <td>${n.lsn}</td>
+          <td>${n.missed}</td>
+        </tr>`).join('');
+    }
+
+    const statsEl = document.getElementById('kv-stats-detail');
+    if (data.kv_stats && data.kv_stats.length > 0) {
+      const parts = data.kv_stats.split(/\s+/);
+      let html = '';
+      for (const p of parts) {
+        const kv = p.split('=');
+        if (kv.length === 2) {
+          const labels = {rows: 'Total Rows', ops: 'Total Ops', lsn: 'LSN'};
+          html += '<div class="kv-stat"><div class="stat-label">' +
+                  (labels[kv[0]] || kv[0]) +
+                  '</div><div class="stat-value">' + esc(kv[1]) + '</div></div>';
+        }
+      }
+      if (html) {
+        statsEl.innerHTML = html;
+      } else {
+        statsEl.innerHTML = '<span style="color:var(--muted)">Raw: ' + esc(data.kv_stats) + '</span>';
+      }
+    } else {
+      statsEl.innerHTML = '<span style="color:var(--muted)">KV node not reachable</span>';
+    }
+
+    document.getElementById('last-update').textContent = new Date().toLocaleTimeString();
+
+  } catch (err) {
+    document.getElementById('error-banner').textContent = 'Failed to fetch metrics: ' + err.message;
+    document.getElementById('error-banner').style.display = 'block';
+  }
+}
+
+function esc(s) {
+  if (!s) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+                  .replace(/"/g,'&quot;');
+}
+
+refresh();
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>
+)HTML";
+    return HttpResponse::ok(html, "text/html; charset=utf-8");
 }
 
 // ---------------------------------------------------------------------------
@@ -965,18 +1274,18 @@ HttpResponse FEServer::handle_admin_metrics(const HttpRequest&) {
 // ---------------------------------------------------------------------------
 HttpResponse FEServer::handle_static(const HttpRequest& req) {
     // Security: prevent directory traversal
-    string path = req.path.substr(8);  // strip "/static/"
-    if (path.find("..") != string::npos) return HttpResponse::forbidden();
+    std::string path = req.path.substr(8);  // strip "/static/"
+    if (path.find("..") != std::string::npos) return HttpResponse::forbidden();
 
-    string full = cfg_.static_dir + "/" + path;
-    ifstream f(full, ios::binary);
+    std::string full = cfg_.static_dir + "/" + path;
+    std::ifstream f(full, std::ios::binary);
     if (!f) return HttpResponse::not_found();
 
-    string content((istreambuf_iterator<char>(f)),
-                         istreambuf_iterator<char>());
+    std::string content((std::istreambuf_iterator<char>(f)),
+                         std::istreambuf_iterator<char>());
 
     // Simple MIME detection
-    string mime = "application/octet-stream";
+    std::string mime = "application/octet-stream";
     if (path.size()>=4 && path.substr(path.size()-4)==".css")  mime = "text/css";
     else if (path.size()>=3 && path.substr(path.size()-3)==".js")   mime = "application/javascript";
     else if (path.size()>=4 && path.substr(path.size()-4)==".png")  mime = "image/png";
@@ -991,9 +1300,9 @@ HttpResponse FEServer::handle_static(const HttpRequest& req) {
 // The SMTP server writes to "notify:{user}" col "latest" when new mail arrives.
 // We poll that key every 500ms and push SSE events on change.
 // ---------------------------------------------------------------------------
-void FEServer::handle_sse(int fd, const HttpRequest&, const string& user) {
+void FEServer::handle_sse(int fd, const HttpRequest&, const std::string& user) {
     // Send SSE response headers
-    string headers =
+    std::string headers =
         "HTTP/1.1 200 OK\r\n"
         "Content-Type: text/event-stream\r\n"
         "Cache-Control: no-cache\r\n"
@@ -1003,35 +1312,35 @@ void FEServer::handle_sse(int fd, const HttpRequest&, const string& user) {
         "\r\n";
     ::send(fd, headers.data(), headers.size(), MSG_NOSIGNAL);
 
-    string last_notify;
+    std::string last_notify;
     int keepalive_ticks = 0;
 
     while (true) {
-        this_thread::sleep_for(chrono::milliseconds(500));
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
         // Check for new email notification
-        string notify = kv_->get_str("notify:" + user, "latest");
+        std::string notify = kv_->get_str("notify:" + user, "latest");
         if (!notify.empty() && notify != last_notify) {
             last_notify = notify;
 
             // Fetch the most recent email metadata from the notification value
             // Format: "uid:<uid>" stored by SMTP server
-            string uid;
+            std::string uid;
             if (notify.rfind("uid:", 0) == 0) uid = notify.substr(4);
 
             if (!uid.empty()) {
                 // Build minimal JSON for the browser to display the new row
-                string from    = kv_->get_str(user + ":mail", "msg:" + uid);
+                std::string from    = kv_->get_str(user + ":mail", "msg:" + uid);
                 // from is JSON {from,subject,time} -- send as-is
-                string payload;
+                std::string payload;
                 if (from.empty()) {
-                    payload = string("{\"uid\":\"") + uid
+                    payload = std::string("{\"uid\":\"") + uid
                             + "\",\"from\":\"(new email)\",\"subject\":\"\"}";
                 } else {
                     payload = from;
                     // Inject uid field if not already present
-                    if (payload.find("\"uid\"") == string::npos && !payload.empty()) {
-                        payload = string("{\"uid\":\"") + uid + "\"," + payload.substr(1);
+                    if (payload.find("\"uid\"") == std::string::npos && !payload.empty()) {
+                        payload = std::string("{\"uid\":\"") + uid + "\"," + payload.substr(1);
                     }
                 }
                 send_sse_event(fd, "new_email", payload);
@@ -1042,8 +1351,8 @@ void FEServer::handle_sse(int fd, const HttpRequest&, const string& user) {
         ++keepalive_ticks;
         if (keepalive_ticks >= 30) {
             keepalive_ticks = 0;
-            string ping = ": keep-alive\n\n";
-            string chunk = to_string(ping.size()) + "\r\n" + ping + "\r\n";
+            std::string ping = ": keep-alive\n\n";
+            std::string chunk = std::to_string(ping.size()) + "\r\n" + ping + "\r\n";
             if (::send(fd, chunk.data(), chunk.size(), MSG_NOSIGNAL) <= 0) break;
         }
     }
@@ -1066,8 +1375,8 @@ void FEServer::handle_sse(int fd, const HttpRequest&, const string& user) {
 
 
 namespace {
-string drive_json_escape(const string& s) {
-    string out;
+std::string drive_json_escape(const std::string& s) {
+    std::string out;
     for (char c : s) {
         switch (c) {
             case '\\': out += "\\\\"; break;
@@ -1081,26 +1390,26 @@ string drive_json_escape(const string& s) {
     return out;
 }
 
-string drive_new_uid() {
-    auto ns = chrono::duration_cast<chrono::nanoseconds>(
-        chrono::system_clock::now().time_since_epoch()).count();
-    mt19937 rng(static_cast<unsigned>(ns));
-    uniform_int_distribution<int> dist(0, 0xFFFF);
-    ostringstream oss;
-    oss << ns << "_" << hex << setw(4) << setfill('0') << dist(rng);
+std::string drive_new_uid() {
+    auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::system_clock::now().time_since_epoch()).count();
+    std::mt19937 rng(static_cast<unsigned>(ns));
+    std::uniform_int_distribution<int> dist(0, 0xFFFF);
+    std::ostringstream oss;
+    oss << ns << "_" << std::hex << std::setw(4) << std::setfill('0') << dist(rng);
     return oss.str();
 }
 
-vector<string> split_nl(const string& s) {
-    vector<string> out;
-    istringstream ss(s);
-    string line;
-    while (getline(ss, line)) if (!line.empty()) out.push_back(line);
+std::vector<std::string> split_nl(const std::string& s) {
+    std::vector<std::string> out;
+    std::istringstream ss(s);
+    std::string line;
+    while (std::getline(ss, line)) if (!line.empty()) out.push_back(line);
     return out;
 }
 
-string join_nl(const vector<string>& v) {
-    string out;
+std::string join_nl(const std::vector<std::string>& v) {
+    std::string out;
     for (size_t i = 0; i < v.size(); ++i) {
         if (i) out += "\n";
         out += v[i];
@@ -1108,38 +1417,38 @@ string join_nl(const vector<string>& v) {
     return out;
 }
 
-string meta_json(const string& uid, const string& name,
-                      size_t bytes, const string& mime,
-                      const string& path) {
-    return string("{")
+std::string meta_json(const std::string& uid, const std::string& name,
+                      size_t bytes, const std::string& mime,
+                      const std::string& path) {
+    return std::string("{")
          + "\"uid\":\"" + drive_json_escape(uid) + "\"," 
          + "\"name\":\"" + drive_json_escape(name) + "\"," 
-         + "\"size\":\"" + to_string(bytes) + " B\"," 
+         + "\"size\":\"" + std::to_string(bytes) + " B\"," 
          + "\"type\":\"" + drive_json_escape(mime) + "\"," 
          + "\"path\":\"" + drive_json_escape(path) + "\"}";
 }
 
-string meta_uid(const string& meta) {
-    const string key = "\"uid\":\"";
+std::string meta_uid(const std::string& meta) {
+    const std::string key = "\"uid\":\"";
     auto pos = meta.find(key);
-    if (pos == string::npos) return "";
+    if (pos == std::string::npos) return "";
     pos += key.size();
     auto end = meta.find('"', pos);
-    if (end == string::npos) return "";
+    if (end == std::string::npos) return "";
     return meta.substr(pos, end - pos);
 }
 }
 
-HttpResponse FEServer::handle_drive_list(const HttpRequest& req, const string& user) {
-    string path = req.param("path");
+HttpResponse FEServer::handle_drive_list(const HttpRequest& req, const std::string& user) {
+    std::string path = req.param("path");
     if (path.empty()) path = "/";
-    string row = user + ":drive";
+    std::string row = user + ":drive";
     auto items = split_nl(kv_->get_str(row, "index"));
-    string body = "{\"ok\":true,\"items\":[";
+    std::string body = "{\"ok\":true,\"items\":[";
     bool first = true;
     for (const auto& item_path : items) {
         if (path != "/" && item_path.rfind(path, 0) != 0) continue;
-        string meta = kv_->get_str(row, "meta:" + item_path);
+        std::string meta = kv_->get_str(row, "meta:" + item_path);
         if (meta.empty()) continue;
         if (!first) body += ",";
         first = false;
@@ -1149,14 +1458,14 @@ HttpResponse FEServer::handle_drive_list(const HttpRequest& req, const string& u
     return HttpResponse::json(body);
 }
 
-HttpResponse FEServer::handle_upload(const HttpRequest& req, const string& user) {
+HttpResponse FEServer::handle_upload(const HttpRequest& req, const std::string& user) {
     if (!req.is_multipart())
         return HttpResponse::json(R"({"ok":false,"error":"expected multipart upload"})");
     auto parts = parse_multipart(req.body, req.header("content-type"));
-    string folder = "/";
-    string filename;
-    string mime = "application/octet-stream";
-    string bytes;
+    std::string folder = "/";
+    std::string filename;
+    std::string mime = "application/octet-stream";
+    std::string bytes;
     for (const auto& p : parts) {
         if (p.name == "path") folder = p.data;
         if (p.name == "file") {
@@ -1169,109 +1478,109 @@ HttpResponse FEServer::handle_upload(const HttpRequest& req, const string& user)
         return HttpResponse::json(R"({"ok":false,"error":"missing file"})");
     if (folder.empty()) folder = "/";
     if (folder.back() != '/') folder += '/';
-    string path = folder + filename;
+    std::string path = folder + filename;
     if (path.rfind("//", 0) == 0) path.erase(0,1);
-    string uid = drive_new_uid();
-    string drive_row = user + ":drive";
-    string file_row = user + ":file:" + uid;
+    std::string uid = drive_new_uid();
+    std::string drive_row = user + ":drive";
+    std::string file_row = user + ":file:" + uid;
     kv_->put(file_row, "data", bytes);
     kv_->put(file_row, "name", filename);
     kv_->put(file_row, "mime", mime);
     kv_->put(drive_row, "meta:" + path, meta_json(uid, filename, bytes.size(), mime, path));
     for (int i = 0; i < 5; ++i) {
-        string old_index = kv_->get_str(drive_row, "index");
+        std::string old_index = kv_->get_str(drive_row, "index");
         auto items = split_nl(old_index);
         bool exists = false;
         for (const auto& x : items) if (x == path) exists = true;
         if (!exists) items.push_back(path);
-        string new_index = join_nl(items);
+        std::string new_index = join_nl(items);
         if (old_index.empty()) {
             if (kv_->put(drive_row, "index", new_index)) break;
         } else if (kv_->cput(drive_row, "index", old_index, new_index)) {
             break;
         }
-        this_thread::sleep_for(chrono::milliseconds(5));
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
-    return HttpResponse::json(string("{\"ok\":true,\"uid\":\"") + uid + "\",\"path\":\"" + drive_json_escape(path) + "\"}");
+    return HttpResponse::json(std::string("{\"ok\":true,\"uid\":\"") + uid + "\",\"path\":\"" + drive_json_escape(path) + "\"}");
 }
 
-HttpResponse FEServer::handle_download(const HttpRequest&, const string& user,
-                                        const string& uid) {
-    string row = user + ":file:" + uid;
-    string data = kv_->get_str(row, "data");
+HttpResponse FEServer::handle_download(const HttpRequest&, const std::string& user,
+                                        const std::string& uid) {
+    std::string row = user + ":file:" + uid;
+    std::string data = kv_->get_str(row, "data");
     if (data.empty()) return HttpResponse::not_found();
-    string name = kv_->get_str(row, "name");
+    std::string name = kv_->get_str(row, "name");
     if (name.empty()) name = uid;
-    string mime = kv_->get_str(row, "mime");
+    std::string mime = kv_->get_str(row, "mime");
     if (mime.empty()) mime = "application/octet-stream";
     HttpResponse resp = HttpResponse::ok(data, mime);
     resp.headers["Content-Disposition"] = "attachment; filename=\"" + name + "\"";
     return resp;
 }
 
-HttpResponse FEServer::handle_rename(const HttpRequest& req, const string& user) {
+HttpResponse FEServer::handle_rename(const HttpRequest& req, const std::string& user) {
     auto params = parse_urlencoded(req.body);
-    string old_path = params["path"];
-    string new_name = params["name"];
+    std::string old_path = params["path"];
+    std::string new_name = params["name"];
     if (old_path.empty() || new_name.empty())
         return HttpResponse::json(R"({"ok":false,"error":"missing path or name"})");
-    string row = user + ":drive";
-    string meta = kv_->get_str(row, "meta:" + old_path);
+    std::string row = user + ":drive";
+    std::string meta = kv_->get_str(row, "meta:" + old_path);
     if (meta.empty()) return HttpResponse::json(R"({"ok":false,"error":"not found"})");
-    string uid = meta_uid(meta);
+    std::string uid = meta_uid(meta);
     if (uid.empty()) return HttpResponse::json(R"({"ok":false,"error":"corrupt metadata"})");
     auto slash = old_path.find_last_of('/');
-    string parent = (slash == string::npos || slash == 0) ? "/" : old_path.substr(0, slash);
-    string new_path = (parent == "/") ? "/" + new_name : parent + "/" + new_name;
-    string file_row = user + ":file:" + uid;
-    string mime = kv_->get_str(file_row, "mime");
+    std::string parent = (slash == std::string::npos || slash == 0) ? "/" : old_path.substr(0, slash);
+    std::string new_path = (parent == "/") ? "/" + new_name : parent + "/" + new_name;
+    std::string file_row = user + ":file:" + uid;
+    std::string mime = kv_->get_str(file_row, "mime");
     if (mime.empty()) mime = "application/octet-stream";
-    string data = kv_->get_str(file_row, "data");
+    std::string data = kv_->get_str(file_row, "data");
     kv_->put(file_row, "name", new_name);
     kv_->put(row, "meta:" + new_path, meta_json(uid, new_name, data.size(), mime, new_path));
     kv_->del(row, "meta:" + old_path);
     for (int i = 0; i < 5; ++i) {
-        string old_index = kv_->get_str(row, "index");
+        std::string old_index = kv_->get_str(row, "index");
         auto items = split_nl(old_index);
         for (auto& x : items) if (x == old_path) x = new_path;
-        string new_index = join_nl(items);
+        std::string new_index = join_nl(items);
         if (!old_index.empty() && kv_->cput(row, "index", old_index, new_index)) break;
-        this_thread::sleep_for(chrono::milliseconds(5));
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
-    return HttpResponse::json(string("{\"ok\":true,\"path\":\"") + drive_json_escape(new_path) + "\"}");
+    return HttpResponse::json(std::string("{\"ok\":true,\"path\":\"") + drive_json_escape(new_path) + "\"}");
 }
 
-HttpResponse FEServer::handle_move(const HttpRequest&, const string&) {
+HttpResponse FEServer::handle_move(const HttpRequest&, const std::string&) {
     return HttpResponse::json(R"({"ok":false,"error":"move deferred until Demo II"})");
 }
 
-HttpResponse FEServer::handle_mkdir(const HttpRequest&, const string&) {
+HttpResponse FEServer::handle_mkdir(const HttpRequest&, const std::string&) {
     return HttpResponse::json(R"({"ok":false,"error":"folders deferred until Demo II"})");
 }
 
-HttpResponse FEServer::handle_delete_path(const HttpRequest& req, const string& user) {
+HttpResponse FEServer::handle_delete_path(const HttpRequest& req, const std::string& user) {
     auto params = parse_urlencoded(req.body);
-    string path = params["path"];
+    std::string path = params["path"];
     if (path.empty()) return HttpResponse::json(R"({"ok":false,"error":"missing path"})");
-    string row = user + ":drive";
-    string meta = kv_->get_str(row, "meta:" + path);
+    std::string row = user + ":drive";
+    std::string meta = kv_->get_str(row, "meta:" + path);
     if (meta.empty()) return HttpResponse::json(R"({"ok":false,"error":"not found"})");
-    string uid = meta_uid(meta);
+    std::string uid = meta_uid(meta);
     kv_->del(row, "meta:" + path);
     if (!uid.empty()) {
-        string file_row = user + ":file:" + uid;
+        std::string file_row = user + ":file:" + uid;
         kv_->del(file_row, "data");
         kv_->del(file_row, "name");
         kv_->del(file_row, "mime");
     }
     for (int i = 0; i < 5; ++i) {
-        string old_index = kv_->get_str(row, "index");
+        std::string old_index = kv_->get_str(row, "index");
         auto items = split_nl(old_index);
-        vector<string> kept;
+        std::vector<std::string> kept;
         for (const auto& x : items) if (x != path) kept.push_back(x);
-        string new_index = join_nl(kept);
+        std::string new_index = join_nl(kept);
         if (!old_index.empty() && kv_->cput(row, "index", old_index, new_index)) break;
-        this_thread::sleep_for(chrono::milliseconds(5));
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     return HttpResponse::json(R"({"ok":true})");
 }

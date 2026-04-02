@@ -32,7 +32,7 @@
 //
 // HANDLER PATTERN:
 //   Every handler is:
-//     HttpResponse handle_X(const HttpRequest& req, const string& username)
+//     HttpResponse handle_X(const HttpRequest& req, const std::string& username)
 //   username is pre-validated by the middleware layer.
 // =============================================================================
 
@@ -52,25 +52,24 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <signal.h>
-using namespace std;
 
 // ---------------------------------------------------------------------------
 // Route matcher: matches /api/email/abc123 and extracts "abc123"
 // ---------------------------------------------------------------------------
 struct RouteMatch {
     bool matched = false;
-    unordered_map<string, string> params;
+    std::unordered_map<std::string, std::string> params;
 };
 
-inline RouteMatch match_route(const string& pattern,
-                               const string& path) {
+inline RouteMatch match_route(const std::string& pattern,
+                               const std::string& path) {
     RouteMatch m;
-    vector<string> pp, cp;
+    std::vector<std::string> pp, cp;
 
-    auto split = [](const string& s, vector<string>& parts) {
-        istringstream ss(s);
-        string tok;
-        while (getline(ss, tok, '/'))
+    auto split = [](const std::string& s, std::vector<std::string>& parts) {
+        std::istringstream ss(s);
+        std::string tok;
+        while (std::getline(ss, tok, '/'))
             if (!tok.empty()) parts.push_back(tok);
     };
     split(pattern, pp);
@@ -88,9 +87,9 @@ inline RouteMatch match_route(const string& pattern,
 // ---------------------------------------------------------------------------
 // Simple JSON builder (avoids pulling in a library)
 // ---------------------------------------------------------------------------
-inline string json_str(const string& s) {
+inline std::string json_str(const std::string& s) {
     // Escape special chars
-    string out = "\"";
+    std::string out = "\"";
     for (char c : s) {
         if (c == '"')  out += "\\\"";
         else if (c == '\\') out += "\\\\";
@@ -111,10 +110,12 @@ public:
     struct Config {
         int         port          = 8080;
         int         threads       = 32;
-        string kv_host       = "127.0.0.1";
+        std::string kv_host       = "127.0.0.1";
         int         kv_port       = 5000;
-        string static_dir    = "./static";
-        string server_id     = "fe1";   // for load balancer identification
+        std::string coord_host    = "127.0.0.1";
+        int         coord_port    = 6000;
+        std::string static_dir    = "./static";
+        std::string server_id     = "fe1";   // for load balancer identification
     };
 
     explicit FEServer(const Config& cfg);
@@ -127,14 +128,14 @@ public:
 
 private:
     Config                      cfg_;
-    unique_ptr<KVClient>   kv_;
-    unique_ptr<SessionManager> sessions_;
+    std::unique_ptr<KVClient>   kv_;
+    std::unique_ptr<SessionManager> sessions_;
     int                         listen_fd_ = -1;
-    atomic<bool>           running_{false};
+    std::atomic<bool>           running_{false};
 
     // Thread pool (reuse pattern from kvserver)
     struct ThreadPool;
-    unique_ptr<ThreadPool> pool_;
+    std::unique_ptr<ThreadPool> pool_;
 
     // ---- Connection handling ------------------------------------------------
     void handle_connection(int fd);
@@ -146,7 +147,7 @@ private:
     // ---- Auth middleware -------------------------------------------------------
     // Returns username if authenticated, "" if not.
     // Automatically redirects or returns 401 if called via require_auth().
-    string get_user(const HttpRequest& req);
+    std::string get_user(const HttpRequest& req);
 
     // ---- Handler declarations --------------------------------------------------
     // (implementations in fe_handlers.cc)
@@ -160,30 +161,30 @@ private:
     HttpResponse handle_change_password(const HttpRequest& req);
 
     // Mail
-    HttpResponse handle_inbox(const HttpRequest& req, const string& user);
-    HttpResponse handle_get_email(const HttpRequest& req, const string& user,
-                                   const string& uid);
-    HttpResponse handle_send_email(const HttpRequest& req, const string& user);
-    HttpResponse handle_delete_email(const HttpRequest& req, const string& user);
+    HttpResponse handle_inbox(const HttpRequest& req, const std::string& user);
+    HttpResponse handle_get_email(const HttpRequest& req, const std::string& user,
+                                   const std::string& uid);
+    HttpResponse handle_send_email(const HttpRequest& req, const std::string& user);
+    HttpResponse handle_delete_email(const HttpRequest& req, const std::string& user);
 
     // Drive
-    HttpResponse handle_drive_list(const HttpRequest& req, const string& user);
-    HttpResponse handle_upload(const HttpRequest& req, const string& user);
-    HttpResponse handle_download(const HttpRequest& req, const string& user,
-                                  const string& uid);
-    HttpResponse handle_rename(const HttpRequest& req, const string& user);
-    HttpResponse handle_move(const HttpRequest& req, const string& user);
-    HttpResponse handle_mkdir(const HttpRequest& req, const string& user);
-    HttpResponse handle_delete_path(const HttpRequest& req, const string& user);
+    HttpResponse handle_drive_list(const HttpRequest& req, const std::string& user);
+    HttpResponse handle_upload(const HttpRequest& req, const std::string& user);
+    HttpResponse handle_download(const HttpRequest& req, const std::string& user,
+                                  const std::string& uid);
+    HttpResponse handle_rename(const HttpRequest& req, const std::string& user);
+    HttpResponse handle_move(const HttpRequest& req, const std::string& user);
+    HttpResponse handle_mkdir(const HttpRequest& req, const std::string& user);
+    HttpResponse handle_delete_path(const HttpRequest& req, const std::string& user);
 
     // SSE (F1)
-    void handle_sse(int fd, const HttpRequest& req, const string& user);
+    void handle_sse(int fd, const HttpRequest& req, const std::string& user);
 
     // Admin
     HttpResponse handle_admin_page(const HttpRequest& req);
     HttpResponse handle_admin_metrics(const HttpRequest& req);
 
     // ---- Helpers ---------------------------------------------------------------
-    string serve_file(const string& path);
+    std::string serve_file(const std::string& path);
     int create_listen_socket();
 };

@@ -3,6 +3,7 @@
 // =============================================================================
 // Usage:
 //   ./feserver [--port 8080] [--kv-host 127.0.0.1] [--kv-port 5000]
+//              [--coord-host 127.0.0.1] [--coord-port 6000]
 //              [--threads 32] [--id fe1]
 // =============================================================================
 
@@ -30,6 +31,8 @@ static FEServer::Config parse_args(int argc, char* argv[]) {
         else if (a == "--kv-port"  && i+1 < argc) cfg.kv_port  = stoi(argv[++i]);
         else if (a == "--threads"  && i+1 < argc) cfg.threads  = stoi(argv[++i]);
         else if (a == "--id"       && i+1 < argc) cfg.server_id= argv[++i];
+        else if (a == "--coord-host" && i+1 < argc) cfg.coord_host = argv[++i];
+        else if (a == "--coord-port" && i+1 < argc) cfg.coord_port = std::stoi(argv[++i]);
         else if (a == "--static"   && i+1 < argc) cfg.static_dir = argv[++i];
     }
     return cfg;
@@ -41,6 +44,7 @@ int main(int argc, char* argv[]) {
     cout << "=== PennCloud Frontend Server ===\n"
               << "  port:    " << cfg.port     << "\n"
               << "  kv:      " << cfg.kv_host << ":" << cfg.kv_port << "\n"
+              << "  coord:   " << cfg.coord_host << ":" << cfg.coord_port << "\n"
               << "  threads: " << cfg.threads   << "\n"
               << "  id:      " << cfg.server_id << "\n\n";
 
