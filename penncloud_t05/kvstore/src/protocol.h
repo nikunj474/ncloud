@@ -25,6 +25,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <errno.h>
+using namespace std;
 
 // Low-level I/O helpers
 
@@ -42,8 +43,8 @@ inline bool read_exact(int fd, void* buf, size_t n) {
     return true;
 }
 
-// Read exactly n bytes into a std::string.
-inline bool read_exact(int fd, std::string& out, size_t n) {
+// Read exactly n bytes into a string.
+inline bool read_exact(int fd, string& out, size_t n) {
     out.resize(n);
     return read_exact(fd, &out[0], n);
 }
@@ -61,14 +62,14 @@ inline bool write_all(int fd, const void* buf, size_t n) {
     return true;
 }
 
-inline bool write_all(int fd, const std::string& s) {
+inline bool write_all(int fd, const string& s) {
     return write_all(fd, s.data(), s.size());
 }
 
 
 // Read one \r\n-terminated header line from fd (max 256 bytes)
 
-inline bool read_line(int fd, std::string& line) {
+inline bool read_line(int fd, string& line) {
     line.clear();
     char c;
     while (true) {
@@ -88,15 +89,15 @@ inline bool read_line(int fd, std::string& line) {
 
 // Response builders (server side)
 
-inline std::string ok_response() {
+inline string ok_response() {
     return "+OK\r\n";
 }
 
-inline std::string ok_value_response(const std::string& val) {
-    return "+OK " + std::to_string(val.size()) + "\r\n" + val;
+inline string ok_value_response(const string& val) {
+    return "+OK " + to_string(val.size()) + "\r\n" + val;
 }
 
-inline std::string err_response(const std::string& msg) {
+inline string err_response(const string& msg) {
     return "-ERR " + msg + "\r\n";
 }
 
@@ -104,33 +105,33 @@ inline std::string err_response(const std::string& msg) {
 // Request sender helpers (client / FE side)
 
 inline bool send_put(int fd,
-                     const std::string& row,
-                     const std::string& col,
-                     const std::string& val) {
-    std::string hdr = "PUT " + std::to_string(row.size()) + " "
-                             + std::to_string(col.size()) + " "
-                             + std::to_string(val.size()) + "\r\n";
+                     const string& row,
+                     const string& col,
+                     const string& val) {
+    string hdr = "PUT " + to_string(row.size()) + " "
+                             + to_string(col.size()) + " "
+                             + to_string(val.size()) + "\r\n";
     return write_all(fd, hdr) &&
            write_all(fd, row) &&
            write_all(fd, col) &&
            write_all(fd, val);
 }
 
-inline bool send_get(int fd, const std::string& row, const std::string& col) {
-    std::string hdr = "GET " + std::to_string(row.size()) + " "
-                             + std::to_string(col.size()) + "\r\n";
+inline bool send_get(int fd, const string& row, const string& col) {
+    string hdr = "GET " + to_string(row.size()) + " "
+                             + to_string(col.size()) + "\r\n";
     return write_all(fd, hdr) && write_all(fd, row) && write_all(fd, col);
 }
 
 inline bool send_cput(int fd,
-                      const std::string& row,
-                      const std::string& col,
-                      const std::string& v1,
-                      const std::string& v2) {
-    std::string hdr = "CPUT " + std::to_string(row.size()) + " "
-                              + std::to_string(col.size()) + " "
-                              + std::to_string(v1.size())  + " "
-                              + std::to_string(v2.size())  + "\r\n";
+                      const string& row,
+                      const string& col,
+                      const string& v1,
+                      const string& v2) {
+    string hdr = "CPUT " + to_string(row.size()) + " "
+                              + to_string(col.size()) + " "
+                              + to_string(v1.size())  + " "
+                              + to_string(v2.size())  + "\r\n";
     return write_all(fd, hdr) &&
            write_all(fd, row) &&
            write_all(fd, col) &&
@@ -138,9 +139,9 @@ inline bool send_cput(int fd,
            write_all(fd, v2);
 }
 
-inline bool send_delete(int fd, const std::string& row, const std::string& col) {
-    std::string hdr = "DELETE " + std::to_string(row.size()) + " "
-                                + std::to_string(col.size()) + "\r\n";
+inline bool send_delete(int fd, const string& row, const string& col) {
+    string hdr = "DELETE " + to_string(row.size()) + " "
+                                + to_string(col.size()) + "\r\n";
     return write_all(fd, hdr) && write_all(fd, row) && write_all(fd, col);
 }
 
@@ -149,13 +150,13 @@ inline bool send_delete(int fd, const std::string& row, const std::string& col) 
 
 struct KVResponse {
     bool ok;            // true = +OK, false = -ERR
-    std::string value;  // populated for GET responses
-    std::string error;  // populated for -ERR responses
+    string value;  // populated for GET responses
+    string error;  // populated for -ERR responses
 };
 
 inline KVResponse read_response(int fd) {
     KVResponse resp{false, "", ""};
-    std::string line;
+    string line;
     if (!read_line(fd, line)) {
         resp.error = "connection closed";
         return resp;
@@ -164,7 +165,7 @@ inline KVResponse read_response(int fd) {
         resp.ok = true;
         // check for "+OK <vallen>" (GET response)
         if (line.size() > 4) {
-            size_t vallen = std::stoul(line.substr(4));
+            size_t vallen = stoul(line.substr(4));
             if (!read_exact(fd, resp.value, vallen)) {
                 resp.ok    = false;
                 resp.error = "truncated value";

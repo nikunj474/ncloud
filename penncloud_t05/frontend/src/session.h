@@ -29,32 +29,33 @@
 #include <ctime>
 #include <functional>
 #include "http.h"
+using namespace std;
 
 // KV client interface -- implemented in kv_client.h
 // We use a callback so session.h doesn't depend on a specific KV implementation.
-using KVGetFn  = std::function<bool(const std::string& row,
-                                    const std::string& col,
-                                    std::string& val_out)>;
-using KVPutFn  = std::function<bool(const std::string& row,
-                                    const std::string& col,
-                                    const std::string& val)>;
-using KVDelFn  = std::function<bool(const std::string& row,
-                                    const std::string& col)>;
+using KVGetFn = function<bool(const string& row,
+                                    const string& col,
+                                    string& val_out)>;
+using KVPutFn = function<bool(const string& row,
+                                    const string& col,
+                                    const string& val)>;
+using KVDelFn = function<bool(const string& row,
+                                    const string& col)>;
 
 static constexpr int SESSION_TTL_SECONDS = 86400;  // 24 hours
 
 // ---------------------------------------------------------------------------
 // Generate a 128-bit random session ID (32 hex chars)
 // ---------------------------------------------------------------------------
-inline std::string generate_sid() {
+inline string generate_sid() {
     // Read 16 bytes from /dev/urandom -- cryptographically secure
-    std::ifstream urandom("/dev/urandom", std::ios::binary);
+    ifstream urandom("/dev/urandom", ios::binary);
     uint8_t buf[16];
     urandom.read(reinterpret_cast<char*>(buf), 16);
 
-    std::ostringstream oss;
+    ostringstream oss;
     for (uint8_t b : buf)
-        oss << std::hex << std::setw(2) << std::setfill('0') << static_cast<int>(b);
+        oss << hex << setw(2) << setfill('0') << static_cast<int>(b);
     return oss.str();
 }
 
@@ -67,30 +68,30 @@ public:
         : kv_get_(get_fn), kv_put_(put_fn), kv_del_(del_fn) {}
 
     // Create a new session for username.  Returns the SID.
-    std::string create(const std::string& username) {
-        std::string sid = generate_sid();
-        std::string row = session_row(sid);
+    string create(const string& username) {
+        string sid = generate_sid();
+        string row = session_row(sid);
 
         kv_put_(row, "user",   username);
-        kv_put_(row, "expiry", std::to_string(std::time(nullptr) + SESSION_TTL_SECONDS));
+        kv_put_(row, "expiry", to_string(time(nullptr) + SESSION_TTL_SECONDS));
         return sid;
     }
 
     // Validate SID from request.
     // Returns username if valid, empty string if invalid/expired.
-    std::string validate(const std::string& sid) {
+    string validate(const string& sid) {
         if (sid.empty() || sid.size() != 32) return "";
 
-        std::string row = session_row(sid);
-        std::string username, expiry;
+        string row = session_row(sid);
+        string username, expiry;
 
         if (!kv_get_(row, "user",   username)) return "";
         if (!kv_get_(row, "expiry", expiry))   return "";
 
         // Check expiry
         long exp = 0;
-        try { exp = std::stol(expiry); } catch (...) { destroy(sid); return ""; }
-        if (std::time(nullptr) > exp) {
+        try { exp = stol(expiry); } catch (...) { destroy(sid); return ""; }
+        if (time(nullptr) > exp) {
             destroy(sid);  // clean up expired session
             return "";
         }
@@ -98,19 +99,19 @@ public:
     }
 
     // Destroy a session (logout)
-    void destroy(const std::string& sid) {
-        std::string row = session_row(sid);
+    void destroy(const string& sid) {
+        string row = session_row(sid);
         kv_del_(row, "user");
         kv_del_(row, "expiry");
     }
 
     // Get SID from request cookies, validate, return username or ""
-    std::string authenticate(const HttpRequest& req) {
+    string authenticate(const HttpRequest& req) {
         return validate(req.cookie("sid"));
     }
 
     // Add session cookie to response
-    void attach_cookie(HttpResponse& resp, const std::string& sid) {
+    void attach_cookie(HttpResponse& resp, const string& sid) {
         resp.set_cookie("sid", sid, "/", true, SESSION_TTL_SECONDS);
     }
 
@@ -119,7 +120,7 @@ private:
     KVPutFn kv_put_;
     KVDelFn kv_del_;
 
-    static std::string session_row(const std::string& sid) {
+    static string session_row(const string& sid) {
         return "session:" + sid;
     }
 };

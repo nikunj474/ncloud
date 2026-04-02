@@ -43,7 +43,7 @@
 #include <atomic>
 #include <cstdint>
 #include "bloom.h"
-
+using namespace std;
 
 // WAL record format (binary, written before each mutation)
 
@@ -62,21 +62,19 @@ static constexpr uint32_t WAL_MAGIC  = 0xABCD1234;
 static constexpr uint8_t  WAL_PUT    = 1;
 static constexpr uint8_t  WAL_DELETE = 2;
 
-
 // RowData: one row's column map + its own shared_mutex
 
-// std::shared_mutex is not copyable or movable, so RowData cannot be stored
+// shared_mutex is not copyable or movable, so RowData cannot be stored
 // directly in unordered_map.  We store unique_ptr<RowData> instead.
 
 struct RowData {
-    std::unordered_map<std::string, std::string> cols;
-    mutable std::shared_mutex mu;  // B5: per-row RW lock
+    unordered_map<string, string> cols;
+    mutable shared_mutex mu;  // B5: per-row RW lock
 
     RowData()                            = default;
     RowData(const RowData&)              = delete;
     RowData& operator=(const RowData&)   = delete;
 };
-
 
 // Tablet
 
@@ -84,26 +82,26 @@ class Tablet {
 public:
     // name      : tablet identifier, e.g. "tablet_aa_af"
     // data_dir  : directory for WAL and checkpoint files
-    explicit Tablet(const std::string& name, const std::string& data_dir);
+    explicit Tablet(const string& name, const string& data_dir);
     ~Tablet();
 
     // Core KV operations (thread-safe)
-    bool        put(const std::string& row,
-                    const std::string& col,
-                    const std::string& val);
+    bool        put(const string& row,
+                    const string& col,
+                    const string& val);
 
-    bool        get(const std::string& row,
-                    const std::string& col,
-                    std::string&       val_out);
+    bool        get(const string& row,
+                    const string& col,
+                    string&       val_out);
 
     // CPUT: store v2 only if current value equals v1.
     // Returns true on success, false if value did not match.
-    bool        cput(const std::string& row,
-                     const std::string& col,
-                     const std::string& v1,
-                     const std::string& v2);
+    bool        cput(const string& row,
+                     const string& col,
+                     const string& v1,
+                     const string& v2);
 
-    bool        del(const std::string& row, const std::string& col);
+    bool        del(const string& row, const string& col);
 
     // Checkpoint + recovery
     bool        checkpoint();          // write full snapshot, truncate WAL
@@ -115,8 +113,8 @@ public:
 
     // Serialize Bloom filter into checkpoint (called by checkpoint())
     // Returns the WAL path for external use (e.g. replication layer)
-    std::string wal_path()        const { return wal_path_; }
-    std::string checkpoint_path() const { return ckpt_path_; }
+    string wal_path()        const { return wal_path_; }
+    string checkpoint_path() const { return ckpt_path_; }
 
     // LSN: log sequence number -- incremented on every WAL write.
     // Used by replication layer to track lag between primary and secondary.
@@ -124,44 +122,44 @@ public:
 
 private:
     // ---- data members -------------------------------------------------------
-    std::string name_;
-    std::string data_dir_;
-    std::string wal_path_;
-    std::string ckpt_path_;
+    string name_;
+    string data_dir_;
+    string wal_path_;
+    string ckpt_path_;
 
     // Two-level locking (B5):
     //   rows_mu_  protects the rows_ map structure (insertions/deletions)
     //   RowData::mu protects each row's column data
-    std::unordered_map<std::string, std::unique_ptr<RowData>> rows_;
-    mutable std::shared_mutex rows_mu_;
+    unordered_map<string, unique_ptr<RowData>> rows_;
+    mutable shared_mutex rows_mu_;
 
     // Bloom filter for fast negative-lookup (B4)
     BloomFilter bloom_;
     // bloom_ is protected by rows_mu_ (same lifecycle as rows_ structure)
 
     // WAL file handle (append-only, opened at construction, closed at destruction)
-    std::ofstream wal_;
-    std::mutex    wal_mu_;   // serializes WAL writes (separate from data locks)
+    ofstream wal_;
+    mutex    wal_mu_;   // serializes WAL writes (separate from data locks)
 
     // Monotonically increasing log sequence number
-    std::atomic<uint64_t> lsn_{0};
+    atomic<uint64_t> lsn_{0};
 
     // Operation counter for metrics
-    std::atomic<uint64_t> op_count_{0};
+    atomic<uint64_t> op_count_{0};
 
     // ---- private helpers ----------------------------------------------------
-    bool write_wal_put(const std::string& row,
-                       const std::string& col,
-                       const std::string& val);
+    bool write_wal_put(const string& row,
+                       const string& col,
+                       const string& val);
 
-    bool write_wal_delete(const std::string& row,
-                          const std::string& col);
+    bool write_wal_delete(const string& row,
+                          const string& col);
 
     // Get or create RowData for a row key.
     // Caller must hold shared_lock(rows_mu_) for existing rows,
     // or unique_lock(rows_mu_) for potentially new rows.
-    RowData* get_or_create_row(const std::string& row);
-    RowData* find_row(const std::string& row);  // returns nullptr if absent
+    RowData* get_or_create_row(const string& row);
+    RowData* find_row(const string& row);  // returns nullptr if absent
 
     bool load_checkpoint();
     bool replay_wal();

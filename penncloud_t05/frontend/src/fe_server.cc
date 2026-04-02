@@ -18,37 +18,38 @@
 #include <chrono>
 #include <random>
 #include <iomanip>
+using namespace std;
 
 // ---------------------------------------------------------------------------
 // Embedded ThreadPool (same design as kvserver)
 // ---------------------------------------------------------------------------
 struct FEServer::ThreadPool {
-    std::vector<std::thread>          workers;
-    std::queue<std::function<void()>> tasks;
-    std::mutex                        mu;
-    std::condition_variable           cv;
+    vector<thread>          workers;
+    queue<function<void()>> tasks;
+    mutex                        mu;
+    condition_variable           cv;
     bool                              stop = false;
 
     explicit ThreadPool(int n) {
         for (int i = 0; i < n; ++i)
             workers.emplace_back([this] {
                 while (true) {
-                    std::function<void()> task;
-                    { std::unique_lock<std::mutex> lk(mu);
+                    function<void()> task;
+                    { unique_lock<mutex> lk(mu);
                       cv.wait(lk, [this]{ return stop || !tasks.empty(); });
                       if (stop && tasks.empty()) return;
-                      task = std::move(tasks.front()); tasks.pop(); }
+                      task = move(tasks.front()); tasks.pop(); }
                     task();
                 }
             });
     }
     ~ThreadPool() {
-        { std::lock_guard<std::mutex> lk(mu); stop = true; }
+        { lock_guard<mutex> lk(mu); stop = true; }
         cv.notify_all();
         for (auto& w : workers) w.join();
     }
-    void enqueue(std::function<void()> f) {
-        { std::lock_guard<std::mutex> lk(mu); tasks.push(std::move(f)); }
+    void enqueue(function<void()> f) {
+        { lock_guard<mutex> lk(mu); tasks.push(move(f)); }
         cv.notify_one();
     }
 };
@@ -57,18 +58,18 @@ struct FEServer::ThreadPool {
 // Constructor / Destructor
 // ---------------------------------------------------------------------------
 FEServer::FEServer(const Config& cfg) : cfg_(cfg) {
-    kv_ = std::make_unique<KVClient>(cfg_.kv_host, cfg_.kv_port);
-    pool_ = std::make_unique<ThreadPool>(cfg_.threads);
+    kv_ = make_unique<KVClient>(cfg_.kv_host, cfg_.kv_port);
+    pool_ = make_unique<ThreadPool>(cfg_.threads);
 
     // Wire up session manager to KV client
-    sessions_ = std::make_unique<SessionManager>(
-        [this](const std::string& r, const std::string& c, std::string& v) {
+    sessions_ = make_unique<SessionManager>(
+        [this](const string& r, const string& c, string& v) {
             return kv_->get(r, c, v);
         },
-        [this](const std::string& r, const std::string& c, const std::string& v) {
+        [this](const string& r, const string& c, const string& v) {
             return kv_->put(r, c, v);
         },
-        [this](const std::string& r, const std::string& c) {
+        [this](const string& r, const string& c) {
             return kv_->del(r, c);
         }
     );
@@ -86,7 +87,7 @@ void FEServer::run() {
     listen_fd_ = create_listen_socket();
     running_ = true;
 
-    std::cout << "[feserver:" << cfg_.server_id << "] listening on port "
+    cout << "[feserver:" << cfg_.server_id << "] listening on port "
               << cfg_.port << "\n";
 
     while (running_) {
@@ -106,7 +107,7 @@ void FEServer::stop() {
 
 int FEServer::create_listen_socket() {
     int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) throw std::runtime_error("socket(): " + std::string(strerror(errno)));
+    if (fd < 0) throw runtime_error("socket(): " + string(strerror(errno)));
     int opt = 1;
     ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
     sockaddr_in addr{};
@@ -114,7 +115,7 @@ int FEServer::create_listen_socket() {
     addr.sin_addr.s_addr = INADDR_ANY;
     addr.sin_port = htons(static_cast<uint16_t>(cfg_.port));
     if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0)
-        throw std::runtime_error("bind(): " + std::string(strerror(errno)));
+        throw runtime_error("bind(): " + string(strerror(errno)));
     ::listen(fd, 256);
     return fd;
 }
@@ -135,7 +136,7 @@ bool FEServer::handle_one_request(int fd) {
 
     // SSE -- does not return through normal response path
     if (req.path == "/events" && req.method == "GET") {
-        std::string user = get_user(req);
+        string user = get_user(req);
         if (!user.empty()) handle_sse(fd, req, user);
         return false;  // SSE connection is long-lived, close after
     }
@@ -149,13 +150,13 @@ bool FEServer::handle_one_request(int fd) {
 // ---------------------------------------------------------------------------
 // Route dispatch
 // ---------------------------------------------------------------------------
-std::string FEServer::get_user(const HttpRequest& req) {
+string FEServer::get_user(const HttpRequest& req) {
     return sessions_->authenticate(req);
 }
 
 HttpResponse FEServer::dispatch(const HttpRequest& req) {
-    const std::string& path   = req.path;
-    const std::string& method = req.method;
+    const string& path   = req.path;
+    const string& method = req.method;
 
     // ---- Static / SPA shell -------------------------------------------------
     if (path == "/" || path == "/index.html")
@@ -169,7 +170,7 @@ HttpResponse FEServer::dispatch(const HttpRequest& req) {
     if (path == "/api/signup" && method == "POST") return handle_signup(req);
 
     // ---- Protected endpoints (session required) ------------------------------
-    std::string user = get_user(req);
+    string user = get_user(req);
 
     if (path == "/api/logout"          && method == "POST") return handle_logout(req);
     if (path == "/api/change-password" && method == "POST") {
@@ -252,7 +253,7 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
     // The entire SPA shell is embedded here so the frontend has zero
     // external file dependencies during development.
     // In production you would serve this from cfg_.static_dir.
-    static const std::string html = R"HTML(
+    static const string html = R"HTML(
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -877,26 +878,26 @@ document.addEventListener('keydown', e => {
 // ---------------------------------------------------------------------------
 HttpResponse FEServer::handle_login(const HttpRequest& req) {
     auto params = parse_urlencoded(req.body);
-    std::string username = params["username"];
-    std::string password = params["password"];
+    string username = params["username"];
+    string password = params["password"];
 
     if (username.empty() || password.empty())
         return HttpResponse::json(R"({"ok":false,"error":"Missing credentials"})");
 
     // Fetch stored password from KV
-    std::string stored_pwd = kv_->get_str(username, "pwd");
+    string stored_pwd = kv_->get_str(username, "pwd");
     if (stored_pwd.empty() || stored_pwd != password)
         return HttpResponse::json(R"({"ok":false,"error":"Invalid username or password"})");
 
     // Create session
-    std::string sid = sessions_->create(username);
+    string sid = sessions_->create(username);
     HttpResponse resp = HttpResponse::json(R"({"ok":true})");
     resp.set_cookie("sid", sid);
     return resp;
 }
 
 HttpResponse FEServer::handle_logout(const HttpRequest& req) {
-    std::string sid = req.cookie("sid");
+    string sid = req.cookie("sid");
     if (!sid.empty()) sessions_->destroy(sid);
     HttpResponse resp = HttpResponse::json(R"({"ok":true})");
     // Clear cookie
@@ -906,33 +907,33 @@ HttpResponse FEServer::handle_logout(const HttpRequest& req) {
 
 HttpResponse FEServer::handle_signup(const HttpRequest& req) {
     auto params = parse_urlencoded(req.body);
-    std::string username = params["username"];
-    std::string password = params["password"];
+    string username = params["username"];
+    string password = params["password"];
 
     if (username.empty() || password.empty())
         return HttpResponse::json(R"({"ok":false,"error":"Missing fields"})");
 
     // Check if user already exists
-    std::string existing = kv_->get_str(username, "pwd");
+    string existing = kv_->get_str(username, "pwd");
     if (!existing.empty())
         return HttpResponse::json(R"({"ok":false,"error":"Username already taken"})");
 
     kv_->put(username, "pwd", password);
-    std::string sid = sessions_->create(username);
+    string sid = sessions_->create(username);
     HttpResponse resp = HttpResponse::json(R"({"ok":true})");
     resp.set_cookie("sid", sid);
     return resp;
 }
 
 HttpResponse FEServer::handle_change_password(const HttpRequest& req) {
-    std::string user = sessions_->authenticate(req);
+    string user = sessions_->authenticate(req);
     if (user.empty()) return HttpResponse::error(401, "Unauthorized");
 
     auto params = parse_urlencoded(req.body);
-    std::string old_pw = params["old_password"];
-    std::string new_pw = params["new_password"];
+    string old_pw = params["old_password"];
+    string new_pw = params["new_password"];
 
-    std::string stored = kv_->get_str(user, "pwd");
+    string stored = kv_->get_str(user, "pwd");
     if (stored != old_pw)
         return HttpResponse::json(R"({"ok":false,"error":"Wrong current password"})");
 
@@ -952,9 +953,9 @@ HttpResponse FEServer::handle_admin_page(const HttpRequest&) {
 HttpResponse FEServer::handle_admin_metrics(const HttpRequest&) {
     // Stub -- returns basic server info
     // Yke will extend this with real per-node metrics (F5)
-    std::string body = R"({"server_id":")" + cfg_.server_id
+    string body = R"({"server_id":")" + cfg_.server_id
                      + R"(","kv_host":")" + cfg_.kv_host
-                     + R"(","kv_port":)" + std::to_string(cfg_.kv_port)
+                     + R"(","kv_port":)" + to_string(cfg_.kv_port)
                      + "}";
     return HttpResponse::json(body);
 }
@@ -964,18 +965,18 @@ HttpResponse FEServer::handle_admin_metrics(const HttpRequest&) {
 // ---------------------------------------------------------------------------
 HttpResponse FEServer::handle_static(const HttpRequest& req) {
     // Security: prevent directory traversal
-    std::string path = req.path.substr(8);  // strip "/static/"
-    if (path.find("..") != std::string::npos) return HttpResponse::forbidden();
+    string path = req.path.substr(8);  // strip "/static/"
+    if (path.find("..") != string::npos) return HttpResponse::forbidden();
 
-    std::string full = cfg_.static_dir + "/" + path;
-    std::ifstream f(full, std::ios::binary);
+    string full = cfg_.static_dir + "/" + path;
+    ifstream f(full, ios::binary);
     if (!f) return HttpResponse::not_found();
 
-    std::string content((std::istreambuf_iterator<char>(f)),
-                         std::istreambuf_iterator<char>());
+    string content((istreambuf_iterator<char>(f)),
+                         istreambuf_iterator<char>());
 
     // Simple MIME detection
-    std::string mime = "application/octet-stream";
+    string mime = "application/octet-stream";
     if (path.size()>=4 && path.substr(path.size()-4)==".css")  mime = "text/css";
     else if (path.size()>=3 && path.substr(path.size()-3)==".js")   mime = "application/javascript";
     else if (path.size()>=4 && path.substr(path.size()-4)==".png")  mime = "image/png";
@@ -990,9 +991,9 @@ HttpResponse FEServer::handle_static(const HttpRequest& req) {
 // The SMTP server writes to "notify:{user}" col "latest" when new mail arrives.
 // We poll that key every 500ms and push SSE events on change.
 // ---------------------------------------------------------------------------
-void FEServer::handle_sse(int fd, const HttpRequest&, const std::string& user) {
+void FEServer::handle_sse(int fd, const HttpRequest&, const string& user) {
     // Send SSE response headers
-    std::string headers =
+    string headers =
         "HTTP/1.1 200 OK\r\n"
         "Content-Type: text/event-stream\r\n"
         "Cache-Control: no-cache\r\n"
@@ -1002,35 +1003,35 @@ void FEServer::handle_sse(int fd, const HttpRequest&, const std::string& user) {
         "\r\n";
     ::send(fd, headers.data(), headers.size(), MSG_NOSIGNAL);
 
-    std::string last_notify;
+    string last_notify;
     int keepalive_ticks = 0;
 
     while (true) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        this_thread::sleep_for(chrono::milliseconds(500));
 
         // Check for new email notification
-        std::string notify = kv_->get_str("notify:" + user, "latest");
+        string notify = kv_->get_str("notify:" + user, "latest");
         if (!notify.empty() && notify != last_notify) {
             last_notify = notify;
 
             // Fetch the most recent email metadata from the notification value
             // Format: "uid:<uid>" stored by SMTP server
-            std::string uid;
+            string uid;
             if (notify.rfind("uid:", 0) == 0) uid = notify.substr(4);
 
             if (!uid.empty()) {
                 // Build minimal JSON for the browser to display the new row
-                std::string from    = kv_->get_str(user + ":mail", "msg:" + uid);
+                string from    = kv_->get_str(user + ":mail", "msg:" + uid);
                 // from is JSON {from,subject,time} -- send as-is
-                std::string payload;
+                string payload;
                 if (from.empty()) {
-                    payload = std::string("{\"uid\":\"") + uid
+                    payload = string("{\"uid\":\"") + uid
                             + "\",\"from\":\"(new email)\",\"subject\":\"\"}";
                 } else {
                     payload = from;
                     // Inject uid field if not already present
-                    if (payload.find("\"uid\"") == std::string::npos && !payload.empty()) {
-                        payload = std::string("{\"uid\":\"") + uid + "\"," + payload.substr(1);
+                    if (payload.find("\"uid\"") == string::npos && !payload.empty()) {
+                        payload = string("{\"uid\":\"") + uid + "\"," + payload.substr(1);
                     }
                 }
                 send_sse_event(fd, "new_email", payload);
@@ -1041,8 +1042,8 @@ void FEServer::handle_sse(int fd, const HttpRequest&, const std::string& user) {
         ++keepalive_ticks;
         if (keepalive_ticks >= 30) {
             keepalive_ticks = 0;
-            std::string ping = ": keep-alive\n\n";
-            std::string chunk = std::to_string(ping.size()) + "\r\n" + ping + "\r\n";
+            string ping = ": keep-alive\n\n";
+            string chunk = to_string(ping.size()) + "\r\n" + ping + "\r\n";
             if (::send(fd, chunk.data(), chunk.size(), MSG_NOSIGNAL) <= 0) break;
         }
     }
@@ -1065,8 +1066,8 @@ void FEServer::handle_sse(int fd, const HttpRequest&, const std::string& user) {
 
 
 namespace {
-std::string drive_json_escape(const std::string& s) {
-    std::string out;
+string drive_json_escape(const string& s) {
+    string out;
     for (char c : s) {
         switch (c) {
             case '\\': out += "\\\\"; break;
@@ -1080,26 +1081,26 @@ std::string drive_json_escape(const std::string& s) {
     return out;
 }
 
-std::string drive_new_uid() {
-    auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-        std::chrono::system_clock::now().time_since_epoch()).count();
-    std::mt19937 rng(static_cast<unsigned>(ns));
-    std::uniform_int_distribution<int> dist(0, 0xFFFF);
-    std::ostringstream oss;
-    oss << ns << "_" << std::hex << std::setw(4) << std::setfill('0') << dist(rng);
+string drive_new_uid() {
+    auto ns = chrono::duration_cast<chrono::nanoseconds>(
+        chrono::system_clock::now().time_since_epoch()).count();
+    mt19937 rng(static_cast<unsigned>(ns));
+    uniform_int_distribution<int> dist(0, 0xFFFF);
+    ostringstream oss;
+    oss << ns << "_" << hex << setw(4) << setfill('0') << dist(rng);
     return oss.str();
 }
 
-std::vector<std::string> split_nl(const std::string& s) {
-    std::vector<std::string> out;
-    std::istringstream ss(s);
-    std::string line;
-    while (std::getline(ss, line)) if (!line.empty()) out.push_back(line);
+vector<string> split_nl(const string& s) {
+    vector<string> out;
+    istringstream ss(s);
+    string line;
+    while (getline(ss, line)) if (!line.empty()) out.push_back(line);
     return out;
 }
 
-std::string join_nl(const std::vector<std::string>& v) {
-    std::string out;
+string join_nl(const vector<string>& v) {
+    string out;
     for (size_t i = 0; i < v.size(); ++i) {
         if (i) out += "\n";
         out += v[i];
@@ -1107,38 +1108,38 @@ std::string join_nl(const std::vector<std::string>& v) {
     return out;
 }
 
-std::string meta_json(const std::string& uid, const std::string& name,
-                      size_t bytes, const std::string& mime,
-                      const std::string& path) {
-    return std::string("{")
+string meta_json(const string& uid, const string& name,
+                      size_t bytes, const string& mime,
+                      const string& path) {
+    return string("{")
          + "\"uid\":\"" + drive_json_escape(uid) + "\"," 
          + "\"name\":\"" + drive_json_escape(name) + "\"," 
-         + "\"size\":\"" + std::to_string(bytes) + " B\"," 
+         + "\"size\":\"" + to_string(bytes) + " B\"," 
          + "\"type\":\"" + drive_json_escape(mime) + "\"," 
          + "\"path\":\"" + drive_json_escape(path) + "\"}";
 }
 
-std::string meta_uid(const std::string& meta) {
-    const std::string key = "\"uid\":\"";
+string meta_uid(const string& meta) {
+    const string key = "\"uid\":\"";
     auto pos = meta.find(key);
-    if (pos == std::string::npos) return "";
+    if (pos == string::npos) return "";
     pos += key.size();
     auto end = meta.find('"', pos);
-    if (end == std::string::npos) return "";
+    if (end == string::npos) return "";
     return meta.substr(pos, end - pos);
 }
 }
 
-HttpResponse FEServer::handle_drive_list(const HttpRequest& req, const std::string& user) {
-    std::string path = req.param("path");
+HttpResponse FEServer::handle_drive_list(const HttpRequest& req, const string& user) {
+    string path = req.param("path");
     if (path.empty()) path = "/";
-    std::string row = user + ":drive";
+    string row = user + ":drive";
     auto items = split_nl(kv_->get_str(row, "index"));
-    std::string body = "{\"ok\":true,\"items\":[";
+    string body = "{\"ok\":true,\"items\":[";
     bool first = true;
     for (const auto& item_path : items) {
         if (path != "/" && item_path.rfind(path, 0) != 0) continue;
-        std::string meta = kv_->get_str(row, "meta:" + item_path);
+        string meta = kv_->get_str(row, "meta:" + item_path);
         if (meta.empty()) continue;
         if (!first) body += ",";
         first = false;
@@ -1148,14 +1149,14 @@ HttpResponse FEServer::handle_drive_list(const HttpRequest& req, const std::stri
     return HttpResponse::json(body);
 }
 
-HttpResponse FEServer::handle_upload(const HttpRequest& req, const std::string& user) {
+HttpResponse FEServer::handle_upload(const HttpRequest& req, const string& user) {
     if (!req.is_multipart())
         return HttpResponse::json(R"({"ok":false,"error":"expected multipart upload"})");
     auto parts = parse_multipart(req.body, req.header("content-type"));
-    std::string folder = "/";
-    std::string filename;
-    std::string mime = "application/octet-stream";
-    std::string bytes;
+    string folder = "/";
+    string filename;
+    string mime = "application/octet-stream";
+    string bytes;
     for (const auto& p : parts) {
         if (p.name == "path") folder = p.data;
         if (p.name == "file") {
@@ -1168,109 +1169,109 @@ HttpResponse FEServer::handle_upload(const HttpRequest& req, const std::string& 
         return HttpResponse::json(R"({"ok":false,"error":"missing file"})");
     if (folder.empty()) folder = "/";
     if (folder.back() != '/') folder += '/';
-    std::string path = folder + filename;
+    string path = folder + filename;
     if (path.rfind("//", 0) == 0) path.erase(0,1);
-    std::string uid = drive_new_uid();
-    std::string drive_row = user + ":drive";
-    std::string file_row = user + ":file:" + uid;
+    string uid = drive_new_uid();
+    string drive_row = user + ":drive";
+    string file_row = user + ":file:" + uid;
     kv_->put(file_row, "data", bytes);
     kv_->put(file_row, "name", filename);
     kv_->put(file_row, "mime", mime);
     kv_->put(drive_row, "meta:" + path, meta_json(uid, filename, bytes.size(), mime, path));
     for (int i = 0; i < 5; ++i) {
-        std::string old_index = kv_->get_str(drive_row, "index");
+        string old_index = kv_->get_str(drive_row, "index");
         auto items = split_nl(old_index);
         bool exists = false;
         for (const auto& x : items) if (x == path) exists = true;
         if (!exists) items.push_back(path);
-        std::string new_index = join_nl(items);
+        string new_index = join_nl(items);
         if (old_index.empty()) {
             if (kv_->put(drive_row, "index", new_index)) break;
         } else if (kv_->cput(drive_row, "index", old_index, new_index)) {
             break;
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        this_thread::sleep_for(chrono::milliseconds(5));
     }
-    return HttpResponse::json(std::string("{\"ok\":true,\"uid\":\"") + uid + "\",\"path\":\"" + drive_json_escape(path) + "\"}");
+    return HttpResponse::json(string("{\"ok\":true,\"uid\":\"") + uid + "\",\"path\":\"" + drive_json_escape(path) + "\"}");
 }
 
-HttpResponse FEServer::handle_download(const HttpRequest&, const std::string& user,
-                                        const std::string& uid) {
-    std::string row = user + ":file:" + uid;
-    std::string data = kv_->get_str(row, "data");
+HttpResponse FEServer::handle_download(const HttpRequest&, const string& user,
+                                        const string& uid) {
+    string row = user + ":file:" + uid;
+    string data = kv_->get_str(row, "data");
     if (data.empty()) return HttpResponse::not_found();
-    std::string name = kv_->get_str(row, "name");
+    string name = kv_->get_str(row, "name");
     if (name.empty()) name = uid;
-    std::string mime = kv_->get_str(row, "mime");
+    string mime = kv_->get_str(row, "mime");
     if (mime.empty()) mime = "application/octet-stream";
     HttpResponse resp = HttpResponse::ok(data, mime);
     resp.headers["Content-Disposition"] = "attachment; filename=\"" + name + "\"";
     return resp;
 }
 
-HttpResponse FEServer::handle_rename(const HttpRequest& req, const std::string& user) {
+HttpResponse FEServer::handle_rename(const HttpRequest& req, const string& user) {
     auto params = parse_urlencoded(req.body);
-    std::string old_path = params["path"];
-    std::string new_name = params["name"];
+    string old_path = params["path"];
+    string new_name = params["name"];
     if (old_path.empty() || new_name.empty())
         return HttpResponse::json(R"({"ok":false,"error":"missing path or name"})");
-    std::string row = user + ":drive";
-    std::string meta = kv_->get_str(row, "meta:" + old_path);
+    string row = user + ":drive";
+    string meta = kv_->get_str(row, "meta:" + old_path);
     if (meta.empty()) return HttpResponse::json(R"({"ok":false,"error":"not found"})");
-    std::string uid = meta_uid(meta);
+    string uid = meta_uid(meta);
     if (uid.empty()) return HttpResponse::json(R"({"ok":false,"error":"corrupt metadata"})");
     auto slash = old_path.find_last_of('/');
-    std::string parent = (slash == std::string::npos || slash == 0) ? "/" : old_path.substr(0, slash);
-    std::string new_path = (parent == "/") ? "/" + new_name : parent + "/" + new_name;
-    std::string file_row = user + ":file:" + uid;
-    std::string mime = kv_->get_str(file_row, "mime");
+    string parent = (slash == string::npos || slash == 0) ? "/" : old_path.substr(0, slash);
+    string new_path = (parent == "/") ? "/" + new_name : parent + "/" + new_name;
+    string file_row = user + ":file:" + uid;
+    string mime = kv_->get_str(file_row, "mime");
     if (mime.empty()) mime = "application/octet-stream";
-    std::string data = kv_->get_str(file_row, "data");
+    string data = kv_->get_str(file_row, "data");
     kv_->put(file_row, "name", new_name);
     kv_->put(row, "meta:" + new_path, meta_json(uid, new_name, data.size(), mime, new_path));
     kv_->del(row, "meta:" + old_path);
     for (int i = 0; i < 5; ++i) {
-        std::string old_index = kv_->get_str(row, "index");
+        string old_index = kv_->get_str(row, "index");
         auto items = split_nl(old_index);
         for (auto& x : items) if (x == old_path) x = new_path;
-        std::string new_index = join_nl(items);
+        string new_index = join_nl(items);
         if (!old_index.empty() && kv_->cput(row, "index", old_index, new_index)) break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        this_thread::sleep_for(chrono::milliseconds(5));
     }
-    return HttpResponse::json(std::string("{\"ok\":true,\"path\":\"") + drive_json_escape(new_path) + "\"}");
+    return HttpResponse::json(string("{\"ok\":true,\"path\":\"") + drive_json_escape(new_path) + "\"}");
 }
 
-HttpResponse FEServer::handle_move(const HttpRequest&, const std::string&) {
+HttpResponse FEServer::handle_move(const HttpRequest&, const string&) {
     return HttpResponse::json(R"({"ok":false,"error":"move deferred until Demo II"})");
 }
 
-HttpResponse FEServer::handle_mkdir(const HttpRequest&, const std::string&) {
+HttpResponse FEServer::handle_mkdir(const HttpRequest&, const string&) {
     return HttpResponse::json(R"({"ok":false,"error":"folders deferred until Demo II"})");
 }
 
-HttpResponse FEServer::handle_delete_path(const HttpRequest& req, const std::string& user) {
+HttpResponse FEServer::handle_delete_path(const HttpRequest& req, const string& user) {
     auto params = parse_urlencoded(req.body);
-    std::string path = params["path"];
+    string path = params["path"];
     if (path.empty()) return HttpResponse::json(R"({"ok":false,"error":"missing path"})");
-    std::string row = user + ":drive";
-    std::string meta = kv_->get_str(row, "meta:" + path);
+    string row = user + ":drive";
+    string meta = kv_->get_str(row, "meta:" + path);
     if (meta.empty()) return HttpResponse::json(R"({"ok":false,"error":"not found"})");
-    std::string uid = meta_uid(meta);
+    string uid = meta_uid(meta);
     kv_->del(row, "meta:" + path);
     if (!uid.empty()) {
-        std::string file_row = user + ":file:" + uid;
+        string file_row = user + ":file:" + uid;
         kv_->del(file_row, "data");
         kv_->del(file_row, "name");
         kv_->del(file_row, "mime");
     }
     for (int i = 0; i < 5; ++i) {
-        std::string old_index = kv_->get_str(row, "index");
+        string old_index = kv_->get_str(row, "index");
         auto items = split_nl(old_index);
-        std::vector<std::string> kept;
+        vector<string> kept;
         for (const auto& x : items) if (x != path) kept.push_back(x);
-        std::string new_index = join_nl(kept);
+        string new_index = join_nl(kept);
         if (!old_index.empty() && kv_->cput(row, "index", old_index, new_index)) break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        this_thread::sleep_for(chrono::milliseconds(5));
     }
     return HttpResponse::json(R"({"ok":true})");
 }

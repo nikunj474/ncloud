@@ -31,6 +31,7 @@
 #include <cstring>
 #include <thread>
 #include <chrono>
+using namespace std;
 
 // Copy protocol.h from kvstore (same binary-safe protocol)
 #include "../../kvstore/src/protocol.h"
@@ -39,7 +40,7 @@
 // NodeInfo: one backend storage node
 // ---------------------------------------------------------------------------
 struct NodeInfo {
-    std::string host;
+    string host;
     int         port;
     bool        alive = true;
 };
@@ -58,7 +59,7 @@ public:
     }
 
     ~ConnectionPool() {
-        std::lock_guard<std::mutex> lk(mu_);
+        lock_guard<mutex> lk(mu_);
         while (!conns_.empty()) {
             ::close(conns_.front());
             conns_.pop();
@@ -67,7 +68,7 @@ public:
 
     // Borrow a connection.  Returns -1 if none available.
     int borrow() {
-        std::lock_guard<std::mutex> lk(mu_);
+        lock_guard<mutex> lk(mu_);
         if (conns_.empty()) {
             // Create a new one on demand
             return connect_to_node();
@@ -80,7 +81,7 @@ public:
     // Return a connection to the pool.  Pass fd=-1 to discard (broken conn).
     void release(int fd) {
         if (fd < 0) return;
-        std::lock_guard<std::mutex> lk(mu_);
+        lock_guard<mutex> lk(mu_);
         conns_.push(fd);
     }
 
@@ -88,14 +89,14 @@ public:
 
 private:
     NodeInfo         node_;
-    std::queue<int>  conns_;
-    std::mutex       mu_;
+    queue<int>  conns_;
+    mutex       mu_;
 
     int connect_to_node() {
         struct addrinfo hints{}, *res;
         hints.ai_family   = AF_INET;
         hints.ai_socktype = SOCK_STREAM;
-        std::string port_str = std::to_string(node_.port);
+        string port_str = to_string(node_.port);
 
         if (::getaddrinfo(node_.host.c_str(), port_str.c_str(), &hints, &res) != 0)
             return -1;
@@ -119,20 +120,20 @@ private:
 class KVClient {
 public:
     // Simple single-node constructor (Phase 1)
-    KVClient(const std::string& host, int port)
-        : pool_(std::make_unique<ConnectionPool>(NodeInfo{host, port})) {}
+    KVClient(const string& host, int port)
+        : pool_(make_unique<ConnectionPool>(NodeInfo{host, port})) {}
 
     // ---- Core operations (same semantics as tablet.h) ----------------------
 
-    bool put(const std::string& row,
-             const std::string& col,
-             const std::string& val) {
+    bool put(const string& row,
+             const string& col,
+             const string& val) {
         return exec([&](int fd) { if (!send_put(fd, row, col, val)) return false; auto resp = read_response(fd); return resp.ok; });
     }
 
-    bool get(const std::string& row,
-             const std::string& col,
-             std::string& val_out) {
+    bool get(const string& row,
+             const string& col,
+             string& val_out) {
         return exec([&](int fd) {
             if (!send_get(fd, row, col)) return false;
             auto resp = read_response(fd);
@@ -141,20 +142,20 @@ public:
         });
     }
 
-    bool cput(const std::string& row,
-              const std::string& col,
-              const std::string& v1,
-              const std::string& v2) {
+    bool cput(const string& row,
+              const string& col,
+              const string& v1,
+              const string& v2) {
         return exec([&](int fd) { if (!send_cput(fd, row, col, v1, v2)) return false; auto resp = read_response(fd); return resp.ok; });
     }
 
-    bool del(const std::string& row, const std::string& col) {
+    bool del(const string& row, const string& col) {
         return exec([&](int fd) { if (!send_delete(fd, row, col)) return false; auto resp = read_response(fd); return resp.ok; });
     }
 
     // Convenience: get and parse as string (returns empty on missing)
-    std::string get_str(const std::string& row, const std::string& col) {
-        std::string val;
+    string get_str(const string& row, const string& col) {
+        string val;
         get(row, col, val);
         return val;
     }
@@ -167,7 +168,7 @@ public:
             if (resp.ok) {
                 // "+OK LSN=42" -- parse LSN
                 auto p = resp.value.find("LSN=");
-                if (p == std::string::npos) {
+                if (p == string::npos) {
                     // value is the line after "+OK " -- parse from error field
                 }
                 // For PING, value is empty; LSN is in the line itself
@@ -180,14 +181,14 @@ public:
     }
 
 private:
-    std::unique_ptr<ConnectionPool> pool_;
+    unique_ptr<ConnectionPool> pool_;
 
     // Execute an operation with automatic connection retry on failure
-    bool exec(std::function<bool(int)> op) {
+    bool exec(function<bool(int)> op) {
         for (int attempt = 0; attempt < 3; ++attempt) {
             int fd = pool_->borrow();
             if (fd < 0) {
-                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                this_thread::sleep_for(chrono::milliseconds(50));
                 continue;
             }
             bool ok = op(fd);

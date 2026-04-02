@@ -12,21 +12,23 @@
 #include <cstdlib>
 #include <stdexcept>
 
+using namespace std;
+
 static FEServer* g_server = nullptr;
 
 static void signal_handler(int sig) {
-    std::cout << "\n[feserver] caught signal " << sig << ", stopping...\n";
+    cout << "\n[feserver] caught signal " << sig << ", stopping...\n";
     if (g_server) g_server->stop();
 }
 
 static FEServer::Config parse_args(int argc, char* argv[]) {
     FEServer::Config cfg;
     for (int i = 1; i < argc; ++i) {
-        std::string a = argv[i];
-        if      (a == "--port"     && i+1 < argc) cfg.port     = std::stoi(argv[++i]);
+        string a = argv[i];
+        if      (a == "--port"     && i+1 < argc) cfg.port     = stoi(argv[++i]);
         else if (a == "--kv-host"  && i+1 < argc) cfg.kv_host  = argv[++i];
-        else if (a == "--kv-port"  && i+1 < argc) cfg.kv_port  = std::stoi(argv[++i]);
-        else if (a == "--threads"  && i+1 < argc) cfg.threads  = std::stoi(argv[++i]);
+        else if (a == "--kv-port"  && i+1 < argc) cfg.kv_port  = stoi(argv[++i]);
+        else if (a == "--threads"  && i+1 < argc) cfg.threads  = stoi(argv[++i]);
         else if (a == "--id"       && i+1 < argc) cfg.server_id= argv[++i];
         else if (a == "--static"   && i+1 < argc) cfg.static_dir = argv[++i];
     }
@@ -36,7 +38,7 @@ static FEServer::Config parse_args(int argc, char* argv[]) {
 int main(int argc, char* argv[]) {
     FEServer::Config cfg = parse_args(argc, argv);
 
-    std::cout << "=== PennCloud Frontend Server ===\n"
+    cout << "=== PennCloud Frontend Server ===\n"
               << "  port:    " << cfg.port     << "\n"
               << "  kv:      " << cfg.kv_host << ":" << cfg.kv_port << "\n"
               << "  threads: " << cfg.threads   << "\n"
@@ -45,11 +47,11 @@ int main(int argc, char* argv[]) {
     try {
         FEServer server(cfg);
         g_server = &server;
-        std::signal(SIGINT,  signal_handler);
-        std::signal(SIGTERM, signal_handler);
+        signal(SIGINT,  signal_handler);
+        signal(SIGTERM, signal_handler);
         server.run();
-    } catch (const std::exception& e) {
-        std::cerr << "[feserver] fatal: " << e.what() << "\n";
+    } catch (const exception& e) {
+        cerr << "[feserver] fatal: " << e.what() << "\n";
         return 1;
     }
     return 0;

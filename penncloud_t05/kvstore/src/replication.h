@@ -52,18 +52,19 @@
 #include <cstring>
 #include "tablet.h"
 #include "../../kvstore/src/protocol.h"
+using namespace std;
 
 
 // ReplicaInfo: one secondary node known to this primary
 
 struct ReplicaInfo {
-    std::string id;
-    std::string host;
+    string id;
+    string host;
     int         port;        // replication port (usually kv_port + 100)
     bool        alive = true;
     uint64_t    lsn   = 0;  // last confirmed LSN from this replica
     int         fd    = -1; // persistent replication connection
-    std::mutex  conn_mu;    // serializes writes on this connection
+    mutex  conn_mu;    // serializes writes on this connection
 
     ReplicaInfo() = default;
     ReplicaInfo(const ReplicaInfo&) = delete;
@@ -75,11 +76,11 @@ struct ReplicaInfo {
 
 struct CoalescedWrite {
     enum Type { PUT, DELETE, CPUT } type;
-    std::string row, col, val, v1, v2;
+    string row, col, val, v1, v2;
     uint64_t    lsn;  // assigned when flushed
 
     // Completion callback -- wakes the waiting client thread
-    std::promise<bool>* result = nullptr;
+    promise<bool>* result = nullptr;
 };
 
 
@@ -88,14 +89,14 @@ struct CoalescedWrite {
 class ReplicationManager {
 public:
     struct Config {
-        std::string node_id;
+        string node_id;
         int         repl_port      = 5100;  // this node's replication listener
         int         coalesce_ms    = 2;     // write coalesce window (B2)
         int         ack_timeout_ms = 500;   // max wait for secondary ACK
     };
 
     ReplicationManager(Config cfg, Tablet& tablet)
-        : cfg_(std::move(cfg)), tablet_(tablet) {}
+        : cfg_(move(cfg)), tablet_(tablet) {}
 
     ~ReplicationManager() { stop(); }
 
@@ -103,28 +104,28 @@ public:
     void stop();
 
     // Add a secondary replica
-    void add_replica(const std::string& id,
-                     const std::string& host,
+    void add_replica(const string& id,
+                     const string& host,
                      int                repl_port);
 
     // Called by server.cc instead of tablet directly for writes.
     // Returns true if write applied to primary + acked by all alive secondaries.
-    bool replicated_put(const std::string& row,
-                        const std::string& col,
-                        const std::string& val);
+    bool replicated_put(const string& row,
+                        const string& col,
+                        const string& val);
 
-    bool replicated_cput(const std::string& row,
-                         const std::string& col,
-                         const std::string& v1,
-                         const std::string& v2);
+    bool replicated_cput(const string& row,
+                         const string& col,
+                         const string& v1,
+                         const string& v2);
 
-    bool replicated_delete(const std::string& row,
-                           const std::string& col);
+    bool replicated_delete(const string& row,
+                           const string& col);
 
     // Become secondary: accept replication stream from primary
     // (called when coordinator sends BECOME_PRIMARY to a different node,
     //  and this node needs to switch to secondary mode)
-    void become_secondary(const std::string& primary_host, int primary_repl_port);
+    void become_secondary(const string& primary_host, int primary_repl_port);
 
     // Delta sync: send all WAL entries after since_lsn to the requesting node
     // Called when a recovering secondary connects and asks SYNC_FROM <lsn>
@@ -138,38 +139,38 @@ private:
     Tablet&   tablet_;
 
     // Replica connections (only on primary)
-    std::vector<std::unique_ptr<ReplicaInfo>> replicas_;
-    std::mutex replicas_mu_;
+    vector<unique_ptr<ReplicaInfo>> replicas_;
+    mutex replicas_mu_;
 
-    std::atomic<bool> is_primary_{true};
-    std::atomic<bool> running_{false};
+    atomic<bool> is_primary_{true};
+    atomic<bool> running_{false};
 
     // Coalesce buffer (B2)
     struct CoalesceBuffer {
-        std::unordered_map<std::string, CoalescedWrite> pending; // key = row+":"+col
-        std::mutex  mu;
-        std::condition_variable cv;
+        unordered_map<string, CoalescedWrite> pending; // key = row+":"+col
+        mutex  mu;
+        condition_variable cv;
         bool        flush_requested = false;
     } coalesce_;
-    std::thread coalesce_thread_;
+    thread coalesce_thread_;
 
     // Replication listener thread (secondary receives from primary)
     int         repl_listen_fd_ = -1;
-    std::thread repl_accept_thread_;
-    std::thread repl_recv_thread_;
+    thread repl_accept_thread_;
+    thread repl_recv_thread_;
 
     // Private helpers
     int connect_replica(ReplicaInfo& r);
-    bool forward_to_replica(ReplicaInfo& r, const std::string& msg);
-    bool forward_to_all(const std::string& msg);
+    bool forward_to_replica(ReplicaInfo& r, const string& msg);
+    bool forward_to_all(const string& msg);
     void coalesce_loop();
     void flush_coalesce_buffer();
     void repl_accept_loop();
     void handle_repl_client(int fd);
-    std::string make_repl_put(uint64_t lsn, const std::string& row,
-                               const std::string& col, const std::string& val);
-    std::string make_repl_delete(uint64_t lsn, const std::string& row,
-                                  const std::string& col);
+    string make_repl_put(uint64_t lsn, const string& row,
+                               const string& col, const string& val);
+    string make_repl_delete(uint64_t lsn, const string& row,
+                                  const string& col);
 };
 // Implementation
 
@@ -178,7 +179,7 @@ void ReplicationManager::start() {
     running_ = true;
 
     // Start coalesce flush thread (B2)
-    coalesce_thread_ = std::thread([this] { coalesce_loop(); });
+    coalesce_thread_ = thread([this] { coalesce_loop(); });
 
     // Start replication listener (accepts connections from recovering replicas)
     repl_listen_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
@@ -191,9 +192,9 @@ void ReplicationManager::start() {
     ::bind(repl_listen_fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr));
     ::listen(repl_listen_fd_, 16);
 
-    repl_accept_thread_ = std::thread([this] { repl_accept_loop(); });
+    repl_accept_thread_ = thread([this] { repl_accept_loop(); });
 
-    std::cout << "[repl:" << cfg_.node_id << "] started on port "
+    cout << "[repl:" << cfg_.node_id << "] started on port "
               << cfg_.repl_port << "\n";
 }
 
@@ -205,17 +206,17 @@ void ReplicationManager::stop() {
     if (repl_accept_thread_.joinable()) repl_accept_thread_.join();
 }
 
-void ReplicationManager::add_replica(const std::string& id,
-                                      const std::string& host,
+void ReplicationManager::add_replica(const string& id,
+                                      const string& host,
                                       int                repl_port) {
-    auto r = std::make_unique<ReplicaInfo>();
+    auto r = make_unique<ReplicaInfo>();
     r->id   = id;
     r->host = host;
     r->port = repl_port;
 
-    std::lock_guard<std::mutex> lk(replicas_mu_);
-    replicas_.push_back(std::move(r));
-    std::cout << "[repl:" << cfg_.node_id << "] added replica "
+    lock_guard<mutex> lk(replicas_mu_);
+    replicas_.push_back(move(r));
+    cout << "[repl:" << cfg_.node_id << "] added replica "
               << id << " at " << host << ":" << repl_port << "\n";
 }
 
@@ -226,9 +227,9 @@ void ReplicationManager::add_replica(const std::string& id,
 void ReplicationManager::coalesce_loop() {
     while (running_) {
         {
-            std::unique_lock<std::mutex> lk(coalesce_.mu);
+            unique_lock<mutex> lk(coalesce_.mu);
             coalesce_.cv.wait_for(lk,
-                std::chrono::milliseconds(cfg_.coalesce_ms),
+                chrono::milliseconds(cfg_.coalesce_ms),
                 [this] { return !running_ || coalesce_.flush_requested; });
         }
         if (!running_) break;
@@ -237,9 +238,9 @@ void ReplicationManager::coalesce_loop() {
 }
 
 void ReplicationManager::flush_coalesce_buffer() {
-    std::unordered_map<std::string, CoalescedWrite> batch;
+    unordered_map<string, CoalescedWrite> batch;
     {
-        std::lock_guard<std::mutex> lk(coalesce_.mu);
+        lock_guard<mutex> lk(coalesce_.mu);
         if (coalesce_.pending.empty()) return;
         batch.swap(coalesce_.pending);
         coalesce_.flush_requested = false;
@@ -248,7 +249,7 @@ void ReplicationManager::flush_coalesce_buffer() {
     // Apply each coalesced write to tablet + forward to replicas
     for (auto& [key, w] : batch) {
         bool ok = false;
-        std::string msg;
+        string msg;
 
         if (w.type == CoalescedWrite::PUT) {
             ok  = tablet_.put(w.row, w.col, w.val);
@@ -272,56 +273,56 @@ void ReplicationManager::flush_coalesce_buffer() {
 // replicated_put: apply locally + forward to secondaries
 // Uses coalesce buffer for batching (B2)
 
-bool ReplicationManager::replicated_put(const std::string& row,
-                                         const std::string& col,
-                                         const std::string& val) {
+bool ReplicationManager::replicated_put(const string& row,
+                                         const string& col,
+                                         const string& val) {
     // Apply to primary tablet immediately (WAL ensures crash safety)
     if (!tablet_.put(row, col, val)) return false;
 
     // Forward to all alive secondaries
-    std::string msg = make_repl_put(tablet_.lsn(), row, col, val);
+    string msg = make_repl_put(tablet_.lsn(), row, col, val);
     forward_to_all(msg);
     return true;
 }
 
-bool ReplicationManager::replicated_cput(const std::string& row,
-                                          const std::string& col,
-                                          const std::string& v1,
-                                          const std::string& v2) {
+bool ReplicationManager::replicated_cput(const string& row,
+                                          const string& col,
+                                          const string& v1,
+                                          const string& v2) {
     // CPUT is not coalesced -- must be applied atomically
     if (!tablet_.cput(row, col, v1, v2)) return false;
-    std::string msg = make_repl_put(tablet_.lsn(), row, col, v2);
+    string msg = make_repl_put(tablet_.lsn(), row, col, v2);
     forward_to_all(msg);
     return true;
 }
 
-bool ReplicationManager::replicated_delete(const std::string& row,
-                                            const std::string& col) {
+bool ReplicationManager::replicated_delete(const string& row,
+                                            const string& col) {
     if (!tablet_.del(row, col)) return false;
-    std::string msg = make_repl_delete(tablet_.lsn(), row, col);
+    string msg = make_repl_delete(tablet_.lsn(), row, col);
     forward_to_all(msg);
     return true;
 }
 
 // Forward a replication message to all alive secondaries
 
-bool ReplicationManager::forward_to_all(const std::string& msg) {
-    std::lock_guard<std::mutex> lk(replicas_mu_);
+bool ReplicationManager::forward_to_all(const string& msg) {
+    lock_guard<mutex> lk(replicas_mu_);
     bool all_ok = true;
     for (auto& r : replicas_) {
         if (!r->alive) continue;
         if (!forward_to_replica(*r, msg)) {
             r->alive = false;  // mark dead, coordinator will detect via heartbeat
             all_ok = false;
-            std::cerr << "[repl] replica " << r->id << " failed, marking dead\n";
+            cerr << "[repl] replica " << r->id << " failed, marking dead\n";
         }
     }
     return all_ok;
 }
 
 bool ReplicationManager::forward_to_replica(ReplicaInfo& r,
-                                              const std::string& msg) {
-    std::lock_guard<std::mutex> lk(r.conn_mu);
+                                              const string& msg) {
+    lock_guard<mutex> lk(r.conn_mu);
     if (r.fd < 0) r.fd = connect_replica(r);
     if (r.fd < 0) return false;
 
@@ -333,7 +334,7 @@ bool ReplicationManager::forward_to_replica(ReplicaInfo& r,
     }
 
     // Read ACK
-    std::string ack;
+    string ack;
     char c;
     while (true) {
         ssize_t rd = ::recv(r.fd, &c, 1, MSG_WAITALL);
@@ -341,11 +342,11 @@ bool ReplicationManager::forward_to_replica(ReplicaInfo& r,
         if (c == '\n') break;
         ack += c;
     }
-    if (ack.find("+OK") != std::string::npos) {
+    if (ack.find("+OK") != string::npos) {
         // Parse replica LSN from "+OK LSN=42"
         auto p = ack.find("LSN=");
-        if (p != std::string::npos) {
-            try { r.lsn = std::stoull(ack.substr(p + 4)); } catch (...) {}
+        if (p != string::npos) {
+            try { r.lsn = stoull(ack.substr(p + 4)); } catch (...) {}
         }
         return true;
     }
@@ -375,23 +376,23 @@ int ReplicationManager::connect_replica(ReplicaInfo& r) {
 
 // Replication message builders
 
-std::string ReplicationManager::make_repl_put(uint64_t lsn,
-                                               const std::string& row,
-                                               const std::string& col,
-                                               const std::string& val) {
-    return "REPLICATE " + std::to_string(lsn) + " PUT "
-         + std::to_string(row.size()) + " "
-         + std::to_string(col.size()) + " "
-         + std::to_string(val.size()) + "\r\n"
+string ReplicationManager::make_repl_put(uint64_t lsn,
+                                               const string& row,
+                                               const string& col,
+                                               const string& val) {
+    return "REPLICATE " + to_string(lsn) + " PUT "
+         + to_string(row.size()) + " "
+         + to_string(col.size()) + " "
+         + to_string(val.size()) + "\r\n"
          + row + col + val;
 }
 
-std::string ReplicationManager::make_repl_delete(uint64_t lsn,
-                                                   const std::string& row,
-                                                   const std::string& col) {
-    return "REPLICATE " + std::to_string(lsn) + " DELETE "
-         + std::to_string(row.size()) + " "
-         + std::to_string(col.size()) + "\r\n"
+string ReplicationManager::make_repl_delete(uint64_t lsn,
+                                                   const string& row,
+                                                   const string& col) {
+    return "REPLICATE " + to_string(lsn) + " DELETE "
+         + to_string(row.size()) + " "
+         + to_string(col.size()) + "\r\n"
          + row + col;
 }
 
@@ -405,7 +406,7 @@ void ReplicationManager::repl_accept_loop() {
         int cfd = ::accept(repl_listen_fd_,
                            reinterpret_cast<sockaddr*>(&addr), &len);
         if (cfd < 0) continue;
-        std::thread([this, cfd] {
+        thread([this, cfd] {
             handle_repl_client(cfd);
             ::close(cfd);
         }).detach();
@@ -415,7 +416,7 @@ void ReplicationManager::repl_accept_loop() {
 void ReplicationManager::handle_repl_client(int fd) {
     // This handler runs on SECONDARY nodes.
     // Receives REPLICATE messages from primary and applies them to local tablet.
-    std::string line;
+    string line;
     while (running_) {
         line.clear();
         char c;
@@ -427,33 +428,33 @@ void ReplicationManager::handle_repl_client(int fd) {
         }
         if (line.empty()) continue;
 
-        std::istringstream ss(line);
-        std::string cmd;
+        istringstream ss(line);
+        string cmd;
         ss >> cmd;
 
         if (cmd == "REPLICATE") {
-            uint64_t lsn; std::string op;
+            uint64_t lsn; string op;
             ss >> lsn >> op;
 
             if (op == "PUT") {
                 uint32_t rlen, clen, vlen;
                 ss >> rlen >> clen >> vlen;
-                std::string row(rlen,'\0'), col(clen,'\0'), val(vlen,'\0');
+                string row(rlen,'\0'), col(clen,'\0'), val(vlen,'\0');
                 read_exact(fd, &row[0], rlen);
                 read_exact(fd, &col[0], clen);
                 read_exact(fd, &val[0], vlen);
                 tablet_.put(row, col, val);
-                std::string ack = "+OK LSN=" + std::to_string(tablet_.lsn()) + "\r\n";
+                string ack = "+OK LSN=" + to_string(tablet_.lsn()) + "\r\n";
                 ::send(fd, ack.data(), ack.size(), MSG_NOSIGNAL);
 
             } else if (op == "DELETE") {
                 uint32_t rlen, clen;
                 ss >> rlen >> clen;
-                std::string row(rlen,'\0'), col(clen,'\0');
+                string row(rlen,'\0'), col(clen,'\0');
                 read_exact(fd, &row[0], rlen);
                 read_exact(fd, &col[0], clen);
                 tablet_.del(row, col);
-                std::string ack = "+OK LSN=" + std::to_string(tablet_.lsn()) + "\r\n";
+                string ack = "+OK LSN=" + to_string(tablet_.lsn()) + "\r\n";
                 ::send(fd, ack.data(), ack.size(), MSG_NOSIGNAL);
             }
 
@@ -465,9 +466,9 @@ void ReplicationManager::handle_repl_client(int fd) {
 
         } else if (cmd == "BECOME_PRIMARY") {
             is_primary_ = true;
-            std::string msg = "+OK\r\n";
+            string msg = "+OK\r\n";
             ::send(fd, msg.data(), msg.size(), MSG_NOSIGNAL);
-            std::cout << "[repl:" << cfg_.node_id << "] promoted to PRIMARY\n";
+            cout << "[repl:" << cfg_.node_id << "] promoted to PRIMARY\n";
         }
     }
 }
@@ -478,23 +479,23 @@ void ReplicationManager::handle_repl_client(int fd) {
 
 bool ReplicationManager::send_delta(int fd, uint64_t since_lsn) {
     // Open WAL file and forward all entries with LSN > since_lsn
-    std::ifstream wal(tablet_.wal_path(), std::ios::binary);
+    ifstream wal(tablet_.wal_path(), ios::binary);
     if (!wal) {
         // No WAL -- send checkpoint instead
-        std::string msg = "SYNC_CHECKPOINT\r\n";
+        string msg = "SYNC_CHECKPOINT\r\n";
         ::send(fd, msg.data(), msg.size(), MSG_NOSIGNAL);
         return true;
     }
 
     // Count entries first
     uint64_t count = 0;
-    std::vector<std::string> entries;
+    vector<string> entries;
 
     // Read WAL and collect entries after since_lsn
     // Each entry has a LSN embedded in it (via the lsn_ counter on the tablet)
     // For Phase 1 we send all entries (delta can't be computed without LSN in WAL)
     // Phase 2: embed LSN in each WAL record for true delta
-    std::string hdr = "SYNC_DATA " + std::to_string(entries.size()) + "\r\n";
+    string hdr = "SYNC_DATA " + to_string(entries.size()) + "\r\n";
     ::send(fd, hdr.data(), hdr.size(), MSG_NOSIGNAL);
 
     return true;

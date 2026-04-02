@@ -19,9 +19,12 @@
 #include <string>
 #include <sstream>
 #include <iostream>
+using namespace std;
+
+// ============================================================================
 
 // Read one \r\n-terminated line from fd (max 8KB)
-inline bool http_read_line(int fd, std::string& line) {
+inline bool http_read_line(int fd, string& line) {
     line.clear();
     char c;
     while (true) {
@@ -37,7 +40,7 @@ inline bool http_read_line(int fd, std::string& line) {
 }
 
 // Read exactly n bytes from socket into string
-inline bool http_read_exact(int fd, std::string& out, size_t n) {
+inline bool http_read_exact(int fd, string& out, size_t n) {
     out.resize(n);
     size_t got = 0;
     while (got < n) {
@@ -49,29 +52,29 @@ inline bool http_read_exact(int fd, std::string& out, size_t n) {
 }
 
 // Read a chunked body from socket
-inline bool read_chunked_body(int fd, std::string& body) {
+inline bool read_chunked_body(int fd, string& body) {
     body.clear();
     while (true) {
-        std::string size_line;
+        string size_line;
         if (!http_read_line(fd, size_line)) return false;
         // size_line is hex chunk size, possibly with extensions after ;
         size_t semi = size_line.find(';');
-        if (semi != std::string::npos) size_line = size_line.substr(0, semi);
+        if (semi != string::npos) size_line = size_line.substr(0, semi);
 
-        size_t chunk_size = std::stoul(size_line, nullptr, 16);
+        size_t chunk_size = stoul(size_line, nullptr, 16);
         if (chunk_size == 0) {
             // Trailing CRLF after final chunk
-            std::string empty;
+            string empty;
             http_read_line(fd, empty);
             return true;
         }
 
-        std::string chunk;
+        string chunk;
         if (!http_read_exact(fd, chunk, chunk_size)) return false;
         body += chunk;
 
         // Consume trailing CRLF after chunk data
-        std::string crlf;
+        string crlf;
         if (!http_read_line(fd, crlf)) return false;
     }
 }
@@ -84,16 +87,16 @@ inline bool read_http_request(int fd, HttpRequest& req) {
     req = HttpRequest{};
 
     // ---- Request line -------------------------------------------------------
-    std::string line;
+    string line;
     if (!http_read_line(fd, line) || line.empty()) return false;
 
-    std::istringstream rl(line);
+    istringstream rl(line);
     rl >> req.method >> req.path >> req.version;
     if (req.method.empty() || req.path.empty()) return false;
 
     // Split path and query string
     auto qpos = req.path.find('?');
-    if (qpos != std::string::npos) {
+    if (qpos != string::npos) {
         req.query = req.path.substr(qpos + 1);
         req.path  = req.path.substr(0, qpos);
         req.query_params = parse_query(req.query);
@@ -105,16 +108,16 @@ inline bool read_http_request(int fd, HttpRequest& req) {
         if (line.empty()) break;   // blank line = end of headers
 
         auto colon = line.find(':');
-        if (colon == std::string::npos) continue;
+        if (colon == string::npos) continue;
 
-        std::string key   = line.substr(0, colon);
-        std::string value = line.substr(colon + 1);
+        string key   = line.substr(0, colon);
+        string value = line.substr(colon + 1);
 
         // Lowercase key for case-insensitive lookup
-        for (char& c : key)   c = static_cast<char>(std::tolower(c));
+        for (char& c : key)   c = static_cast<char>(tolower(c));
         // Trim leading space from value
         size_t vs = value.find_first_not_of(' ');
-        if (vs != std::string::npos) value = value.substr(vs);
+        if (vs != string::npos) value = value.substr(vs);
 
         req.headers[key] = value;
     }
@@ -124,15 +127,15 @@ inline bool read_http_request(int fd, HttpRequest& req) {
     if (!cookie_hdr.empty()) req.cookies = parse_cookies(cookie_hdr);
 
     // ---- Body ---------------------------------------------------------------
-    std::string transfer_enc = req.header("transfer-encoding");
-    for (char& c : transfer_enc) c = static_cast<char>(std::tolower(c));
+    string transfer_enc = req.header("transfer-encoding");
+    for (char& c : transfer_enc) c = static_cast<char>(tolower(c));
 
-    if (transfer_enc.find("chunked") != std::string::npos) {
+    if (transfer_enc.find("chunked") != string::npos) {
         if (!read_chunked_body(fd, req.body)) return false;
     } else {
-        std::string cl_str = req.header("content-length");
+        string cl_str = req.header("content-length");
         if (!cl_str.empty()) {
-            size_t content_length = std::stoul(cl_str);
+            size_t content_length = stoul(cl_str);
             if (content_length > 64 * 1024 * 1024) {
                 // Reject bodies > 64MB
                 return false;
@@ -151,11 +154,11 @@ inline bool read_http_request(int fd, HttpRequest& req) {
 // ---------------------------------------------------------------------------
 inline bool send_http_response(int fd, const HttpResponse& resp,
                                 bool is_head = false) {
-    std::string out;
+    string out;
     out.reserve(512 + resp.body.size());
 
     // Status line
-    out += "HTTP/1.1 " + std::to_string(resp.status_code)
+    out += "HTTP/1.1 " + to_string(resp.status_code)
          + " " + resp.status_text + "\r\n";
 
     // Standard headers
@@ -164,7 +167,7 @@ inline bool send_http_response(int fd, const HttpResponse& resp,
 
     // Content-Length (always set unless chunked)
     if (!resp.chunked) {
-        out += "Content-Length: " + std::to_string(resp.body.size()) + "\r\n";
+        out += "Content-Length: " + to_string(resp.body.size()) + "\r\n";
     } else {
         out += "Transfer-Encoding: chunked\r\n";
     }
@@ -190,14 +193,14 @@ inline bool send_http_response(int fd, const HttpResponse& resp,
 
 // Send a single SSE event (for F1 -- live inbox)
 // Format: "data: <payload>\n\n"
-inline bool send_sse_event(int fd, const std::string& event_type,
-                           const std::string& data) {
-    std::string msg;
+inline bool send_sse_event(int fd, const string& event_type,
+                           const string& data) {
+    string msg;
     if (!event_type.empty()) msg += "event: " + event_type + "\n";
     msg += "data: " + data + "\n\n";
 
     // Send as a single chunk
-    std::string chunk = std::to_string(msg.size()) + "\r\n" + msg + "\r\n";
+    string chunk = to_string(msg.size()) + "\r\n" + msg + "\r\n";
     ssize_t w = ::send(fd, chunk.data(), chunk.size(), MSG_NOSIGNAL);
     return w == static_cast<ssize_t>(chunk.size());
 }

@@ -1,7 +1,5 @@
 
 // server.cc  --  KV server implementation
-
-
 #include "server.h"
 #include "protocol.h"
 #include <iostream>
@@ -15,7 +13,7 @@
 #include <sys/socket.h>
 #include <fcntl.h>
 #include <signal.h>
-
+using namespace std;
 
 // ThreadPool
 
@@ -24,12 +22,12 @@ ThreadPool::ThreadPool(int n) {
     for (int i = 0; i < n; ++i) {
         workers_.emplace_back([this] {
             while (true) {
-                std::function<void()> task;
+                function<void()> task;
                 {
-                    std::unique_lock<std::mutex> lk(mu_);
+                    unique_lock<mutex> lk(mu_);
                     cv_.wait(lk, [this] { return stop_ || !tasks_.empty(); });
                     if (stop_ && tasks_.empty()) return;
-                    task = std::move(tasks_.front());
+                    task = move(tasks_.front());
                     tasks_.pop();
                 }
                 task();
@@ -40,41 +38,38 @@ ThreadPool::ThreadPool(int n) {
 
 ThreadPool::~ThreadPool() {
     {
-        std::lock_guard<std::mutex> lk(mu_);
+        lock_guard<mutex> lk(mu_);
         stop_ = true;
     }
     cv_.notify_all();
     for (auto& w : workers_) w.join();
 }
 
-void ThreadPool::enqueue(std::function<void()> task) {
+void ThreadPool::enqueue(function<void()> task) {
     {
-        std::lock_guard<std::mutex> lk(mu_);
-        if (stop_) throw std::runtime_error("ThreadPool stopped");
-        tasks_.push(std::move(task));
+        lock_guard<mutex> lk(mu_);
+        if (stop_) throw runtime_error("ThreadPool stopped");
+        tasks_.push(move(task));
     }
     cv_.notify_one();
 }
 
-
 // KVServer constructor / destructor
-
 KVServer::KVServer(const Config& cfg)
     : cfg_(cfg) {
-    tablet_ = std::make_unique<Tablet>(cfg_.tablet_name, cfg_.data_dir);
-    pool_   = std::make_unique<ThreadPool>(cfg_.threads);
+    tablet_ = make_unique<Tablet>(cfg_.tablet_name, cfg_.data_dir);
+    pool_   = make_unique<ThreadPool>(cfg_.threads);
 }
 
 KVServer::~KVServer() {
     if (listen_fd_ >= 0) ::close(listen_fd_);
 }
 
-
 // create_listen_socket: SO_REUSEADDR, non-blocking accept loop
 
 int KVServer::create_listen_socket() {
     int fd = ::socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) throw std::runtime_error("socket(): " + std::string(strerror(errno)));
+    if (fd < 0) throw runtime_error("socket(): " + string(strerror(errno)));
 
     int opt = 1;
     ::setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
@@ -85,34 +80,32 @@ int KVServer::create_listen_socket() {
     addr.sin_port        = htons(static_cast<uint16_t>(cfg_.port));
 
     if (::bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0)
-        throw std::runtime_error("bind(): " + std::string(strerror(errno)));
+        throw runtime_error("bind(): " + string(strerror(errno)));
 
     if (::listen(fd, 128) < 0)
-        throw std::runtime_error("listen(): " + std::string(strerror(errno)));
+        throw runtime_error("listen(): " + string(strerror(errno)));
 
     return fd;
 }
 
-
 // run()
-
 void KVServer::run() {
     // Ignore SIGPIPE so writes to closed sockets return -1 instead of crashing
     ::signal(SIGPIPE, SIG_IGN);
 
     // Recover state from disk before accepting any connections
-    std::cout << "[kvserver] recovering tablet...\n";
+    cout << "[kvserver] recovering tablet...\n";
     tablet_->recover();
-    std::cout << "[kvserver] tablet ready: " << tablet_->row_count()
+    cout << "[kvserver] tablet ready: " << tablet_->row_count()
               << " rows, LSN=" << tablet_->lsn() << "\n";
 
     listen_fd_ = create_listen_socket();
     running_   = true;
 
     // Start auto-checkpoint background thread
-    ckpt_thread_ = std::thread(&KVServer::checkpoint_loop, this);
+    ckpt_thread_ = thread(&KVServer::checkpoint_loop, this);
 
-    std::cout << "[kvserver] listening on port " << cfg_.port
+    cout << "[kvserver] listening on port " << cfg_.port
               << " with " << cfg_.threads << " threads\n";
 
     while (running_) {
@@ -123,7 +116,7 @@ void KVServer::run() {
                            &client_len);
         if (cfd < 0) {
             if (running_) {
-                std::cerr << "[kvserver] accept error: " << strerror(errno) << "\n";
+                cerr << "[kvserver] accept error: " << strerror(errno) << "\n";
             }
             continue;
         }
@@ -132,7 +125,7 @@ void KVServer::run() {
         ::inet_ntop(AF_INET, &client_addr.sin_addr, ip, sizeof(ip));
 
         // Dispatch to thread pool -- connection is handled asynchronously
-        pool_->enqueue([this, cfd, ip_str = std::string(ip)] {
+        pool_->enqueue([this, cfd, ip_str = string(ip)] {
             handle_connection(cfd);
         });
     }
@@ -148,9 +141,7 @@ void KVServer::stop() {
     if (ckpt_thread_.joinable()) ckpt_thread_.join();
 }
 
-
 // handle_connection: persistent connection loop
-
 void KVServer::handle_connection(int fd) {
     // Set receive timeout so dead connections don't park threads forever
     struct timeval tv { .tv_sec = 60, .tv_usec = 0 };
@@ -160,21 +151,19 @@ void KVServer::handle_connection(int fd) {
     ::close(fd);
 }
 
-
 // handle_request: parse one request, dispatch, respond
 // Returns false to close the connection.
-
 bool KVServer::handle_request(int fd) {
-    std::string line;
+    string line;
     if (!read_line(fd, line)) return false;  // connection closed or timeout
     if (line.empty())         return true;   // keep-alive ping
 
     // Parse: <OP> <len1> [<len2> [<len3> [<len4>]]]
-    std::istringstream ss(line);
-    std::string op;
+    istringstream ss(line);
+    string op;
     ss >> op;
 
-    auto send = [&](const std::string& resp) -> bool {
+    auto send = [&](const string& resp) -> bool {
         return write_all(fd, resp);
     };
 
@@ -184,7 +173,7 @@ bool KVServer::handle_request(int fd) {
         if (!(ss >> rowlen >> collen >> vallen))
             return send(err_response("malformed PUT header"));
 
-        std::string row, col, val;
+        string row, col, val;
         if (!read_exact(fd, row, rowlen) ||
             !read_exact(fd, col, collen) ||
             !read_exact(fd, val, vallen))
@@ -200,12 +189,12 @@ bool KVServer::handle_request(int fd) {
         if (!(ss >> rowlen >> collen))
             return send(err_response("malformed GET header"));
 
-        std::string row, col;
+        string row, col;
         if (!read_exact(fd, row, rowlen) ||
             !read_exact(fd, col, collen))
             return false;
 
-        std::string val;
+        string val;
         if (tablet_->get(row, col, val))
             return send(ok_value_response(val));
         else
@@ -218,7 +207,7 @@ bool KVServer::handle_request(int fd) {
         if (!(ss >> rowlen >> collen >> v1len >> v2len))
             return send(err_response("malformed CPUT header"));
 
-        std::string row, col, v1, v2;
+        string row, col, v1, v2;
         if (!read_exact(fd, row, rowlen) ||
             !read_exact(fd, col, collen) ||
             !read_exact(fd, v1,  v1len)  ||
@@ -235,7 +224,7 @@ bool KVServer::handle_request(int fd) {
         if (!(ss >> rowlen >> collen))
             return send(err_response("malformed DELETE header"));
 
-        std::string row, col;
+        string row, col;
         if (!read_exact(fd, row, rowlen) ||
             !read_exact(fd, col, collen))
             return false;
@@ -246,15 +235,15 @@ bool KVServer::handle_request(int fd) {
 
     
     if (op == "PING") {
-        return send("+OK LSN=" + std::to_string(tablet_->lsn()) + "\r\n");
+        return send("+OK LSN=" + to_string(tablet_->lsn()) + "\r\n");
     }
 
 
     if (op == "STATS") {
-        std::string body = "rows="  + std::to_string(tablet_->row_count()) + " "
-                         + "ops="   + std::to_string(tablet_->op_count())  + " "
-                         + "lsn="   + std::to_string(tablet_->lsn())       + "\r\n";
-        return send("+OK " + std::to_string(body.size()) + "\r\n" + body);
+        string body = "rows="  + to_string(tablet_->row_count()) + " "
+                         + "ops="   + to_string(tablet_->op_count())  + " "
+                         + "lsn="   + to_string(tablet_->lsn())       + "\r\n";
+        return send("+OK " + to_string(body.size()) + "\r\n" + body);
     }
 
 
@@ -273,13 +262,13 @@ void KVServer::checkpoint_loop() {
     while (running_) {
         // Sleep in 1-second increments so we respond to stop() promptly
         for (int i = 0; i < cfg_.ckpt_interval && running_; ++i)
-            std::this_thread::sleep_for(std::chrono::seconds(1));
+            this_thread::sleep_for(chrono::seconds(1));
 
         if (!running_) break;
-        std::cout << "[kvserver] auto-checkpoint starting...\n";
+        cout << "[kvserver] auto-checkpoint starting...\n";
         if (tablet_->checkpoint())
-            std::cout << "[kvserver] auto-checkpoint done\n";
+            cout << "[kvserver] auto-checkpoint done\n";
         else
-            std::cerr << "[kvserver] auto-checkpoint FAILED\n";
+            cerr << "[kvserver] auto-checkpoint FAILED\n";
     }
 }

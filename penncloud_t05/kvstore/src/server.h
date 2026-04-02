@@ -25,7 +25,7 @@
 #include <atomic>
 #include <memory>
 #include "tablet.h"
-
+using namespace std;
 
 // ThreadPool: fixed-size pool, unbounded task queue
 
@@ -33,13 +33,13 @@ class ThreadPool {
 public:
     explicit ThreadPool(int n_threads);
     ~ThreadPool();
-    void enqueue(std::function<void()> task);
+    void enqueue(function<void()> task);
 
 private:
-    std::vector<std::thread>          workers_;
-    std::queue<std::function<void()>> tasks_;
-    std::mutex                        mu_;
-    std::condition_variable           cv_;
+    vector<thread>          workers_;
+    queue<function<void()>> tasks_;
+    mutex                        mu_;
+    condition_variable           cv_;
     bool                              stop_ = false;
 };
 
@@ -51,8 +51,8 @@ public:
     struct Config {
         int         port          = 5000;
         int         threads       = 16;
-        std::string data_dir      = "./data";
-        std::string tablet_name   = "tablet0";
+        string data_dir      = "./data";
+        string tablet_name   = "tablet0";
         int         ckpt_interval = 300;   // seconds between auto-checkpoints
     };
 
@@ -70,11 +70,11 @@ public:
 
 private:
     Config                  cfg_;
-    std::unique_ptr<Tablet> tablet_;
-    std::unique_ptr<ThreadPool> pool_;
+    unique_ptr<Tablet> tablet_;
+    unique_ptr<ThreadPool> pool_;
     int                     listen_fd_ = -1;
-    std::atomic<bool>       running_{false};
-    std::thread             ckpt_thread_;
+    atomic<bool>       running_{false};
+    thread             ckpt_thread_;
 
     // Handle one persistent client connection
     void handle_connection(int client_fd);

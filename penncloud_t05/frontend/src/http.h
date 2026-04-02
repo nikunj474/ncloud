@@ -20,54 +20,55 @@
 #include <algorithm>
 #include <cctype>
 #include <functional>
+using namespace std;
 
 // ---------------------------------------------------------------------------
 // HttpRequest
 // ---------------------------------------------------------------------------
 struct HttpRequest {
-    std::string method;      // GET POST HEAD
-    std::string path;        // /api/inbox
-    std::string query;       // after ?
-    std::string version;     // HTTP/1.1
-    std::unordered_map<std::string, std::string> headers;
-    std::unordered_map<std::string, std::string> cookies;
-    std::unordered_map<std::string, std::string> query_params;
-    std::string body;        // raw body bytes
+    string method;      // GET POST HEAD
+    string path;        // /api/inbox
+    string query;       // after ?
+    string version;     // HTTP/1.1
+    unordered_map<string, string> headers;
+    unordered_map<string, string> cookies;
+    unordered_map<string, string> query_params;
+    string body;        // raw body bytes
 
     // Convenience accessors
-    std::string header(const std::string& name) const {
+    string header(const string& name) const {
         // headers stored lowercase
-        std::string low = name;
-        for (char& c : low) c = static_cast<char>(std::tolower(c));
+        string low = name;
+        for (char& c : low) c = static_cast<char>(tolower(c));
         auto it = headers.find(low);
         return (it != headers.end()) ? it->second : "";
     }
 
-    std::string cookie(const std::string& name) const {
+    string cookie(const string& name) const {
         auto it = cookies.find(name);
         return (it != cookies.end()) ? it->second : "";
     }
 
-    std::string param(const std::string& name) const {
+    string param(const string& name) const {
         auto it = query_params.find(name);
         return (it != query_params.end()) ? it->second : "";
     }
 
-    bool has_cookie(const std::string& name) const {
+    bool has_cookie(const string& name) const {
         return cookies.count(name) > 0;
     }
 
     // Content-Type helpers
-    bool is_json()       const { return header("content-type").find("application/json") != std::string::npos; }
-    bool is_multipart()  const { return header("content-type").find("multipart/form-data") != std::string::npos; }
-    bool is_urlencoded() const { return header("content-type").find("application/x-www-form-urlencoded") != std::string::npos; }
+    bool is_json()       const { return header("content-type").find("application/json") != string::npos; }
+    bool is_multipart()  const { return header("content-type").find("multipart/form-data") != string::npos; }
+    bool is_urlencoded() const { return header("content-type").find("application/x-www-form-urlencoded") != string::npos; }
 
     bool keep_alive() const {
-        std::string conn = header("connection");
-        for (char& c : conn) c = static_cast<char>(std::tolower(c));
+        string conn = header("connection");
+        for (char& c : conn) c = static_cast<char>(tolower(c));
         // HTTP/1.1 default is keep-alive unless "close" specified
-        if (version == "HTTP/1.1") return conn.find("close") == std::string::npos;
-        return conn.find("keep-alive") != std::string::npos;
+        if (version == "HTTP/1.1") return conn.find("close") == string::npos;
+        return conn.find("keep-alive") != string::npos;
     }
 };
 
@@ -76,25 +77,25 @@ struct HttpRequest {
 // ---------------------------------------------------------------------------
 struct HttpResponse {
     int status_code = 200;
-    std::string status_text = "OK";
-    std::unordered_map<std::string, std::string> headers;
-    std::string body;
+    string status_text = "OK";
+    unordered_map<string, string> headers;
+    string body;
     bool chunked = false;   // set for SSE or large streaming responses
 
     // Factory methods for common responses
-    static HttpResponse ok(const std::string& body,
-                           const std::string& content_type = "text/html; charset=utf-8") {
+    static HttpResponse ok(const string& body,
+                           const string& content_type = "text/html; charset=utf-8") {
         HttpResponse r;
         r.body = body;
         r.headers["Content-Type"] = content_type;
         return r;
     }
 
-    static HttpResponse json(const std::string& body) {
+    static HttpResponse json(const string& body) {
         return ok(body, "application/json");
     }
 
-    static HttpResponse redirect(const std::string& location, int code = 302) {
+    static HttpResponse redirect(const string& location, int code = 302) {
         HttpResponse r;
         r.status_code = code;
         r.status_text = (code == 301) ? "Moved Permanently" : "Found";
@@ -102,11 +103,11 @@ struct HttpResponse {
         return r;
     }
 
-    static HttpResponse error(int code, const std::string& msg) {
+    static HttpResponse error(int code, const string& msg) {
         HttpResponse r;
         r.status_code = code;
         r.status_text = msg;
-        r.body = "<html><body><h1>" + std::to_string(code) + " " + msg + "</h1></body></html>";
+        r.body = "<html><body><h1>" + to_string(code) + " " + msg + "</h1></body></html>";
         r.headers["Content-Type"] = "text/html; charset=utf-8";
         return r;
     }
@@ -115,13 +116,13 @@ struct HttpResponse {
     static HttpResponse forbidden()  { return error(403, "Forbidden"); }
     static HttpResponse server_error() { return error(500, "Internal Server Error"); }
 
-    void set_cookie(const std::string& name, const std::string& value,
-                    const std::string& path = "/",
+    void set_cookie(const string& name, const string& value,
+                    const string& path = "/",
                     bool http_only = true,
                     int max_age = 86400) {
-        std::string cookie = name + "=" + value
+        string cookie = name + "=" + value
                            + "; Path=" + path
-                           + "; Max-Age=" + std::to_string(max_age);
+                           + "; Max-Age=" + to_string(max_age);
         if (http_only) cookie += "; HttpOnly";
         // Multiple Set-Cookie headers -- append index
         headers["Set-Cookie"] = cookie;
@@ -131,14 +132,14 @@ struct HttpResponse {
 // ---------------------------------------------------------------------------
 // URL encoding / decoding
 // ---------------------------------------------------------------------------
-inline std::string url_decode(const std::string& s) {
-    std::string out;
+inline string url_decode(const string& s) {
+    string out;
     out.reserve(s.size());
     for (size_t i = 0; i < s.size(); ++i) {
         if (s[i] == '%' && i + 2 < s.size()) {
             int val = 0;
             for (int j = 1; j <= 2; ++j) {
-                char c = static_cast<char>(std::tolower(s[i + j]));
+                char c = static_cast<char>(tolower(s[i + j]));
                 val = val * 16 + (c >= 'a' ? c - 'a' + 10 : c - '0');
             }
             out += static_cast<char>(val);
@@ -152,14 +153,14 @@ inline std::string url_decode(const std::string& s) {
     return out;
 }
 
-inline std::unordered_map<std::string, std::string>
-parse_urlencoded(const std::string& body) {
-    std::unordered_map<std::string, std::string> params;
-    std::istringstream ss(body);
-    std::string token;
-    while (std::getline(ss, token, '&')) {
+inline unordered_map<string, string>
+parse_urlencoded(const string& body) {
+    unordered_map<string, string> params;
+    istringstream ss(body);
+    string token;
+    while (getline(ss, token, '&')) {
         auto eq = token.find('=');
-        if (eq == std::string::npos) continue;
+        if (eq == string::npos) continue;
         params[url_decode(token.substr(0, eq))] = url_decode(token.substr(eq + 1));
     }
     return params;
@@ -168,18 +169,18 @@ parse_urlencoded(const std::string& body) {
 // ---------------------------------------------------------------------------
 // Cookie parser: "name1=val1; name2=val2"
 // ---------------------------------------------------------------------------
-inline std::unordered_map<std::string, std::string>
-parse_cookies(const std::string& cookie_header) {
-    std::unordered_map<std::string, std::string> cookies;
-    std::istringstream ss(cookie_header);
-    std::string token;
-    while (std::getline(ss, token, ';')) {
+inline unordered_map<string, string>
+parse_cookies(const string& cookie_header) {
+    unordered_map<string, string> cookies;
+    istringstream ss(cookie_header);
+    string token;
+    while (getline(ss, token, ';')) {
         // trim leading spaces
         size_t start = token.find_first_not_of(' ');
-        if (start == std::string::npos) continue;
+        if (start == string::npos) continue;
         token = token.substr(start);
         auto eq = token.find('=');
-        if (eq == std::string::npos) continue;
+        if (eq == string::npos) continue;
         cookies[token.substr(0, eq)] = token.substr(eq + 1);
     }
     return cookies;
@@ -188,8 +189,8 @@ parse_cookies(const std::string& cookie_header) {
 // ---------------------------------------------------------------------------
 // Query string parser: "key1=val1&key2=val2"
 // ---------------------------------------------------------------------------
-inline std::unordered_map<std::string, std::string>
-parse_query(const std::string& query) {
+inline unordered_map<string, string>
+parse_query(const string& query) {
     return parse_urlencoded(query);
 }
 
@@ -198,41 +199,41 @@ parse_query(const std::string& query) {
 // Returns map of field_name -> {filename (empty if not file), content}
 // ---------------------------------------------------------------------------
 struct MultipartPart {
-    std::string name;
-    std::string filename;   // empty for text fields
-    std::string content_type;
-    std::string data;
+    string name;
+    string filename;   // empty for text fields
+    string content_type;
+    string data;
 };
 
-inline std::vector<MultipartPart>
-parse_multipart(const std::string& body, const std::string& content_type_header) {
-    std::vector<MultipartPart> parts;
+inline vector<MultipartPart>
+parse_multipart(const string& body, const string& content_type_header) {
+    vector<MultipartPart> parts;
 
     // Extract boundary from Content-Type: multipart/form-data; boundary=----WebKitFormBoundary...
-    std::string boundary;
+    string boundary;
     auto bpos = content_type_header.find("boundary=");
-    if (bpos == std::string::npos) return parts;
+    if (bpos == string::npos) return parts;
     boundary = "--" + content_type_header.substr(bpos + 9);
     // trim trailing whitespace/CR from boundary
     while (!boundary.empty() && (boundary.back() == '\r' || boundary.back() == ' '))
         boundary.pop_back();
 
-    std::string delim = "\r\n" + boundary;
+    string delim = "\r\n" + boundary;
     size_t pos = body.find(boundary);
-    if (pos == std::string::npos) return parts;
+    if (pos == string::npos) return parts;
     pos += boundary.size() + 2;  // skip past boundary + \r\n
 
     while (pos < body.size()) {
         // Find end of this part's headers
         size_t hdr_end = body.find("\r\n\r\n", pos);
-        if (hdr_end == std::string::npos) break;
+        if (hdr_end == string::npos) break;
 
-        std::string part_headers = body.substr(pos, hdr_end - pos);
+        string part_headers = body.substr(pos, hdr_end - pos);
         size_t data_start = hdr_end + 4;
 
         // Find next boundary
         size_t next = body.find(delim, data_start);
-        if (next == std::string::npos) break;
+        if (next == string::npos) break;
 
         MultipartPart part;
         part.data = body.substr(data_start, next - data_start);
@@ -244,17 +245,17 @@ parse_multipart(const std::string& body, const std::string& content_type_header)
 
         // Parse Content-Disposition
         auto cdpos = part_headers.find("Content-Disposition:");
-        if (cdpos != std::string::npos) {
+        if (cdpos != string::npos) {
             auto cdend = part_headers.find("\r\n", cdpos);
-            std::string cd = part_headers.substr(cdpos, cdend - cdpos);
+            string cd = part_headers.substr(cdpos, cdend - cdpos);
 
             auto npos = cd.find("name=\"");
-            if (npos != std::string::npos) {
+            if (npos != string::npos) {
                 npos += 6;
                 part.name = cd.substr(npos, cd.find('"', npos) - npos);
             }
             auto fpos = cd.find("filename=\"");
-            if (fpos != std::string::npos) {
+            if (fpos != string::npos) {
                 fpos += 10;
                 part.filename = cd.substr(fpos, cd.find('"', fpos) - fpos);
             }
@@ -262,13 +263,13 @@ parse_multipart(const std::string& body, const std::string& content_type_header)
 
         // Parse Content-Type of part
         auto ctpos = part_headers.find("Content-Type:");
-        if (ctpos != std::string::npos) {
+        if (ctpos != string::npos) {
             auto ctend = part_headers.find("\r\n", ctpos);
             part.content_type = part_headers.substr(ctpos + 14,
-                                    (ctend == std::string::npos ? part_headers.size() : ctend) - ctpos - 14);
+                                    (ctend == string::npos ? part_headers.size() : ctend) - ctpos - 14);
         }
 
-        if (!part.name.empty()) parts.push_back(std::move(part));
+        if (!part.name.empty()) parts.push_back(move(part));
 
         pos = next + delim.size();
         if (pos + 2 <= body.size() && body[pos] == '\r') pos += 2;

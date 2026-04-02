@@ -3,7 +3,7 @@ CXXFLAGS := -std=c++17 -O2 -Wall -Wextra -pthread -Isrc -MMD -MP
 
 UNAME_S := $(shell uname -s)
 
-# std::filesystem link handling:
+# filesystem link handling:
 # - macOS: do NOT use -lstdc++fs
 # - Linux: usually safe without it on modern compilers, but keep an easy switch
 LDFLAGS := -pthread

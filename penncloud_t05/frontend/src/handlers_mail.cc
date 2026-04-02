@@ -23,39 +23,40 @@
 #include <random>
 #include <fstream>
 #include <ctime>
+using namespace std;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
 // Generate a unique email UID: <timestamp_ns>_<4 hex random>
-static std::string new_uid() {
-    auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                  std::chrono::system_clock::now().time_since_epoch()).count();
-    std::mt19937 rng(static_cast<unsigned>(ns));
-    std::uniform_int_distribution<int> dist(0, 0xFFFF);
-    std::ostringstream oss;
-    oss << ns << "_" << std::hex << std::setw(4) << std::setfill('0') << dist(rng);
+static string new_uid() {
+    auto ns = chrono::duration_cast<chrono::nanoseconds>(
+                  chrono::system_clock::now().time_since_epoch()).count();
+    mt19937 rng(static_cast<unsigned>(ns));
+    uniform_int_distribution<int> dist(0, 0xFFFF);
+    ostringstream oss;
+    oss << ns << "_" << hex << setw(4) << setfill('0') << dist(rng);
     return oss.str();
 }
 
 // Format current time as "Mar 19, 2026 14:32"
-static std::string now_str() {
-    auto t = std::time(nullptr);
+static string now_str() {
+    auto t = time(nullptr);
     char buf[64];
-    std::strftime(buf, sizeof(buf), "%b %d, %Y %H:%M", std::localtime(&t));
+    strftime(buf, sizeof(buf), "%b %d, %Y %H:%M", localtime(&t));
     return buf;
 }
 
 // Build the metadata JSON stored as msg:{uid}
 // Escapes quotes in fields (basic -- full JSON escaping via json_str() in fe_server.h)
-static std::string make_meta_json(const std::string& from,
-                                   const std::string& to,
-                                   const std::string& subject,
-                                   const std::string& time_str,
-                                   const std::string& uid) {
-    auto esc = [](const std::string& s) {
-        std::string out;
+static string make_meta_json(const string& from,
+                                   const string& to,
+                                   const string& subject,
+                                   const string& time_str,
+                                   const string& uid) {
+    auto esc = [](const string& s) {
+        string out;
         for (char c : s) {
             if (c == '"')  out += "\\\"";
             else if (c == '\\') out += "\\\\";
@@ -63,7 +64,7 @@ static std::string make_meta_json(const std::string& from,
         }
         return out;
     };
-    return std::string("{")
+    return string("{")
          + "\"uid\":"     + "\"" + esc(uid)      + "\","
          + "\"from\":"    + "\"" + esc(from)     + "\","
          + "\"to\":"      + "\"" + esc(to)       + "\","
@@ -89,21 +90,21 @@ static std::string make_meta_json(const std::string& from,
 //   The index column gives us O(1) inbox listing without scanning all cols.
 //   Trade-off: index must be updated on send + delete (use CPUT for safety).
 // ---------------------------------------------------------------------------
-HttpResponse FEServer::handle_inbox(const HttpRequest&, const std::string& user) {
+HttpResponse FEServer::handle_inbox(const HttpRequest&, const string& user) {
     // Get the inbox index
-    std::string row = user + ":mail";
-    std::string index = kv_->get_str(row, "index");
+    string row = user + ":mail";
+    string index = kv_->get_str(row, "index");
 
-    std::string json = "[";
+    string json = "[";
     bool first = true;
 
     if (!index.empty()) {
         // Parse comma-separated UIDs (newest first -- we prepend on send)
-        std::istringstream ss(index);
-        std::string uid;
-        while (std::getline(ss, uid, ',')) {
+        istringstream ss(index);
+        string uid;
+        while (getline(ss, uid, ',')) {
             if (uid.empty()) continue;
-            std::string meta = kv_->get_str(row, "msg:" + uid);
+            string meta = kv_->get_str(row, "msg:" + uid);
             if (meta.empty()) continue;  // deleted or missing
             if (!first) json += ",";
             first = false;
@@ -118,19 +119,19 @@ HttpResponse FEServer::handle_inbox(const HttpRequest&, const std::string& user)
 // GET /api/email/:uid  -> {"ok":true,"email":{uid,from,to,subject,time,body}}
 // ---------------------------------------------------------------------------
 HttpResponse FEServer::handle_get_email(const HttpRequest&,
-                                         const std::string& user,
-                                         const std::string& uid) {
-    std::string row  = user + ":mail";
-    std::string meta = kv_->get_str(row, "msg:" + uid);
-    std::string body = kv_->get_str(row, "body:" + uid);
+                                         const string& user,
+                                         const string& uid) {
+    string row  = user + ":mail";
+    string meta = kv_->get_str(row, "msg:" + uid);
+    string body = kv_->get_str(row, "body:" + uid);
 
     if (meta.empty())
         return HttpResponse::json("{\"ok\":false,\"error\":\"not found\"}");
 
     // Inject body into meta JSON
     // meta = {...}, we add "body":"..." field
-    auto esc = [](const std::string& s) {
-        std::string out;
+    auto esc = [](const string& s) {
+        string out;
         for (char c : s) {
             if (c == '"')  out += "\\\"";
             else if (c == '\\') out += "\\\\";
@@ -142,7 +143,7 @@ HttpResponse FEServer::handle_get_email(const HttpRequest&,
     };
 
     // Remove trailing } and append body field
-    std::string full = meta;
+    string full = meta;
     if (!full.empty() && full.back() == '}') full.pop_back();
     full += ",\"body\":\"" + esc(body) + "\"}";
 
@@ -158,32 +159,32 @@ HttpResponse FEServer::handle_get_email(const HttpRequest&,
 //   - Otherwise -> local delivery (PUT into recipient's KV row)
 // ---------------------------------------------------------------------------
 HttpResponse FEServer::handle_send_email(const HttpRequest& req,
-                                          const std::string& user) {
+                                          const string& user) {
     auto params = parse_urlencoded(req.body);
-    std::string to      = params["to"];
-    std::string subject = params["subject"];
-    std::string body    = params["body"];
+    string to      = params["to"];
+    string subject = params["subject"];
+    string body    = params["body"];
 
     if (to.empty() || subject.empty())
         return HttpResponse::json("{\"ok\":false,\"error\":\"Missing to or subject\"}");
 
-    std::string uid      = new_uid();
-    std::string time_str = now_str();
+    string uid      = new_uid();
+    string time_str = now_str();
 
     // Determine sender address
-    std::string from_addr = user + "@penncloud";
+    string from_addr = user + "@penncloud";
 
     // Store in SENDER's sent box (optional -- uncomment if you want sent mail)
     // kv_->put(user + ":sent", "msg:" + uid, make_meta_json(from_addr, to, subject, time_str, uid));
 
     // Determine recipient
-    std::string recipient;
+    string recipient;
     bool        is_external = false;
 
-    if (to.find('@') != std::string::npos) {
+    if (to.find('@') != string::npos) {
         // Check if it's a local @penncloud address
         auto at = to.find('@');
-        std::string domain = to.substr(at + 1);
+        string domain = to.substr(at + 1);
         if (domain == "penncloud") {
             recipient = to.substr(0, at);  // strip @penncloud
         } else {
@@ -200,8 +201,8 @@ HttpResponse FEServer::handle_send_email(const HttpRequest& req,
     }
 
     // Local delivery: PUT into recipient's KV store
-    std::string meta = make_meta_json(from_addr, to, subject, time_str, uid);
-    std::string rrow = recipient + ":mail";
+    string meta = make_meta_json(from_addr, to, subject, time_str, uid);
+    string rrow = recipient + ":mail";
 
     // Store metadata + body
     kv_->put(rrow, "msg:" + uid,  meta);
@@ -211,8 +212,8 @@ HttpResponse FEServer::handle_send_email(const HttpRequest& req,
     // Use CPUT for optimistic concurrency: if index changed between GET and PUT,
     // retry until it succeeds.
     for (int attempt = 0; attempt < 5; ++attempt) {
-        std::string old_index = kv_->get_str(rrow, "index");
-        std::string new_index = uid + (old_index.empty() ? "" : "," + old_index);
+        string old_index = kv_->get_str(rrow, "index");
+        string new_index = uid + (old_index.empty() ? "" : "," + old_index);
 
         if (old_index.empty()) {
             // First email -- simple PUT
@@ -221,7 +222,7 @@ HttpResponse FEServer::handle_send_email(const HttpRequest& req,
             // CPUT: only update if index hasn't changed since we read it
             if (kv_->cput(rrow, "index", old_index, new_index)) break;
             // If CPUT fails, another sender also delivered -- retry
-            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            this_thread::sleep_for(chrono::milliseconds(5));
         }
     }
 
@@ -236,13 +237,13 @@ HttpResponse FEServer::handle_send_email(const HttpRequest& req,
 // Body: uid=<uid>
 // ---------------------------------------------------------------------------
 HttpResponse FEServer::handle_delete_email(const HttpRequest& req,
-                                            const std::string& user) {
+                                            const string& user) {
     auto params = parse_urlencoded(req.body);
-    std::string uid = params["uid"];
+    string uid = params["uid"];
     if (uid.empty())
         return HttpResponse::json("{\"ok\":false,\"error\":\"Missing uid\"}");
 
-    std::string row = user + ":mail";
+    string row = user + ":mail";
 
     // Remove metadata and body
     kv_->del(row, "msg:"  + uid);
@@ -250,14 +251,14 @@ HttpResponse FEServer::handle_delete_email(const HttpRequest& req,
 
     // Remove from index (CPUT-based -- filter out the uid)
     for (int attempt = 0; attempt < 5; ++attempt) {
-        std::string old_index = kv_->get_str(row, "index");
+        string old_index = kv_->get_str(row, "index");
         if (old_index.empty()) break;
 
         // Filter uid out of comma-separated list
-        std::string new_index;
-        std::istringstream ss(old_index);
-        std::string tok;
-        while (std::getline(ss, tok, ',')) {
+        string new_index;
+        istringstream ss(old_index);
+        string tok;
+        while (getline(ss, tok, ',')) {
             if (tok == uid) continue;
             if (!new_index.empty()) new_index += ',';
             new_index += tok;
@@ -270,7 +271,7 @@ HttpResponse FEServer::handle_delete_email(const HttpRequest& req,
             break;
         }
         if (kv_->cput(row, "index", old_index, new_index)) break;
-        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        this_thread::sleep_for(chrono::milliseconds(5));
     }
 
     return HttpResponse::json("{\"ok\":true}");
