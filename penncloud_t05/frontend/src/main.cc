@@ -34,6 +34,7 @@ static FEServer::Config parse_args(int argc, char* argv[]) {
         else if (a == "--coord-host" && i+1 < argc) cfg.coord_host = argv[++i];
         else if (a == "--coord-port" && i+1 < argc) cfg.coord_port = std::stoi(argv[++i]);
         else if (a == "--static"   && i+1 < argc) cfg.static_dir = argv[++i];
+        else if (a == "--smtp-port" && i+1 < argc) cfg.smtp_port = stoi(argv[++i]);
     }
     return cfg;
 }
@@ -42,11 +43,12 @@ int main(int argc, char* argv[]) {
     FEServer::Config cfg = parse_args(argc, argv);
 
     cout << "=== PennCloud Frontend Server ===\n"
-              << "  port:    " << cfg.port     << "\n"
+              << "  port:    " << cfg.port       << "\n"
+              << "  smtp:    " << cfg.smtp_port  << "\n"
               << "  kv:      " << cfg.kv_host << ":" << cfg.kv_port << "\n"
               << "  coord:   " << cfg.coord_host << ":" << cfg.coord_port << "\n"
-              << "  threads: " << cfg.threads   << "\n"
-              << "  id:      " << cfg.server_id << "\n\n";
+              << "  threads: " << cfg.threads    << "\n"
+              << "  id:      " << cfg.server_id  << "\n\n";
 
     try {
         FEServer server(cfg);

@@ -2,12 +2,7 @@ CXX := g++
 CXXFLAGS := -std=c++17 -O2 -Wall -Wextra -pthread -Isrc -MMD -MP
 
 UNAME_S := $(shell uname -s)
-LDFLAGS := -pthread
-
-ifeq ($(UNAME_S),Linux)
-    # Uncomment only if needed on older Linux compilers
-    # LDFLAGS += -lstdc++fs
-endif
+LDFLAGS := -pthread -lresolv
 
 SRCS := src/main.cc src/fe_server.cc src/handlers_mail.cc
 OBJS := $(SRCS:src/%.cc=build/%.o)

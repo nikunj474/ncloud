@@ -72,9 +72,14 @@ FEServer::FEServer(const Config& cfg) : cfg_(cfg) {
             return kv_->del(r, c);
         }
     );
+
+    // Start inbound SMTP server
+    smtp_ = std::make_unique<SMTPServer>(cfg_.smtp_port, kv_.get());
+    smtp_->start();
 }
 
 FEServer::~FEServer() {
+    if (smtp_) smtp_->stop();
     if (listen_fd_ >= 0) ::close(listen_fd_);
 }
 

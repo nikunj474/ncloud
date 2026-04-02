@@ -29,8 +29,8 @@ cd coordinator && make
 mkdir -p /tmp/pc_data
 ./kvstore/kvserver --port 5000 --data /tmp/pc_data --tablet main
 
-# Terminal 2: Frontend (port 8080)
-./frontend/feserver --port 8080 --kv-host 127.0.0.1 --kv-port 5000 --id fe1
+# Terminal 2: Frontend (port 8080, SMTP on 2500)
+./frontend/feserver --port 8080 --kv-host 127.0.0.1 --kv-port 5000 --id fe1 --smtp-port 2500
 
 # Terminal 3: Coordinator (port 6000)
 ./coordinator/coordinator --port 6000 --config ./coordinator/coordinator.conf
@@ -58,7 +58,8 @@ frontend/
     kv_client.h      -- frontend KV client with connection pool
     fe_server.h      -- FEServer class declaration
     fe_server.cc     -- server impl + SPA shell + auth handlers
-    handlers_mail.cc -- inbox, send, view, delete email handlers
+    handlers_mail.cc -- inbox, send, view, delete email + SMTP outbound client
+    smtp_server.h    -- inbound SMTP server (receives external email)
     main.cc          -- entry point
 
 coordinator/
@@ -84,5 +85,5 @@ tablet tablet_an_zz an   node1 node2 node3
 - [x] Replication: primary-backup protocol, write coalescing (B2), LSN tracking
 - [ ] Drive handlers (Yke — next)
 - [ ] Replication wired into server.cc (Rohit — next)
-- [ ] SMTP inbound/outbound (Liudawei — Phase 2/3)
+- [x] SMTP inbound/outbound (Liudawei — Phase 2/3)
 - [ ] Admin console with live metrics (Yke — Phase 2)

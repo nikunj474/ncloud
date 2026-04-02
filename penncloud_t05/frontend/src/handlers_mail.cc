@@ -23,6 +23,13 @@
 #include <random>
 #include <fstream>
 #include <ctime>
+#include <climits>
+#include <netdb.h>
+#include <arpa/inet.h>
+#include <arpa/nameser.h>
+#include <resolv.h>
+#include <sys/socket.h>
+#include <unistd.h>
 using namespace std;
 
 // ---------------------------------------------------------------------------
@@ -151,6 +158,154 @@ HttpResponse FEServer::handle_get_email(const HttpRequest&,
 }
 
 // ---------------------------------------------------------------------------
+// SMTP outbound client -- DNS MX lookup + RFC 5321 SMTP dialog
+// ---------------------------------------------------------------------------
+
+static bool smtp_read_line(int fd, string& line) {
+    line.clear();
+    char c;
+    while (true) {
+        ssize_t r = ::recv(fd, &c, 1, 0);
+        if (r <= 0) return false;
+        if (c == '\n') {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            return true;
+        }
+        line += c;
+        if (line.size() > 4096) return false;
+    }
+}
+
+// Read SMTP response; returns the 3-digit code, or -1 on error.
+// Handles multi-line responses (code-SP... vs code-DASH...).
+static int smtp_read_response(int fd) {
+    string line;
+    int code = -1;
+    while (true) {
+        if (!smtp_read_line(fd, line)) return -1;
+        if (line.size() < 3) return -1;
+        code = stoi(line.substr(0, 3));
+        if (line.size() == 3 || line[3] != '-') break;
+    }
+    return code;
+}
+
+static bool smtp_send_cmd(int fd, const string& cmd) {
+    string full = cmd + "\r\n";
+    return ::send(fd, full.data(), full.size(), MSG_NOSIGNAL) ==
+           static_cast<ssize_t>(full.size());
+}
+
+// Resolve the lowest-priority MX host for a domain.
+// Falls back to the domain's A record if MX lookup fails.
+static string resolve_mx(const string& domain) {
+    unsigned char answer[4096];
+    int len = res_query(domain.c_str(), ns_c_in, ns_t_mx, answer, sizeof(answer));
+    if (len <= 0) return domain;
+
+    ns_msg msg;
+    if (ns_initparse(answer, len, &msg) != 0) return domain;
+
+    int count = ns_msg_count(msg, ns_s_an);
+    int best_prio = INT_MAX;
+    string best_host = domain;
+
+    for (int i = 0; i < count; ++i) {
+        ns_rr rr;
+        if (ns_parserr(&msg, ns_s_an, i, &rr) != 0) continue;
+        if (ns_rr_type(rr) != ns_t_mx) continue;
+
+        int prio = ns_get16(ns_rr_rdata(rr));
+        char mx_name[256];
+        if (dn_expand(ns_msg_base(msg), ns_msg_end(msg),
+                      ns_rr_rdata(rr) + 2, mx_name, sizeof(mx_name)) > 0) {
+            if (prio < best_prio) {
+                best_prio = prio;
+                best_host = mx_name;
+            }
+        }
+    }
+    return best_host;
+}
+
+// Perform SMTP dot-stuffing on message body (RFC 5321 §4.5.2).
+static string dot_stuff(const string& body) {
+    string out;
+    out.reserve(body.size() + 64);
+    bool at_line_start = true;
+    for (char c : body) {
+        if (at_line_start && c == '.') out += '.';
+        out += c;
+        at_line_start = (c == '\n');
+    }
+    return out;
+}
+
+// Send an email to an external address via SMTP.
+static bool smtp_client_send(const string& from_addr, const string& to_addr,
+                             const string& subject, const string& body,
+                             string& error_out) {
+    auto at = to_addr.find('@');
+    if (at == string::npos) { error_out = "Invalid address"; return false; }
+    string domain = to_addr.substr(at + 1);
+
+    string mx_host = resolve_mx(domain);
+
+    struct addrinfo hints{}, *res = nullptr;
+    hints.ai_family   = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    if (::getaddrinfo(mx_host.c_str(), "25", &hints, &res) != 0 || !res) {
+        error_out = "Cannot resolve " + mx_host;
+        return false;
+    }
+
+    int fd = ::socket(res->ai_family, res->ai_socktype, 0);
+    if (fd < 0) { ::freeaddrinfo(res); error_out = "socket() failed"; return false; }
+
+    struct timeval tv{};
+    tv.tv_sec = 10;
+    ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+    ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+
+    if (::connect(fd, res->ai_addr, res->ai_addrlen) < 0) {
+        ::close(fd);
+        ::freeaddrinfo(res);
+        error_out = "Cannot connect to " + mx_host + ":25";
+        return false;
+    }
+    ::freeaddrinfo(res);
+
+    bool ok = true;
+    ok = ok && (smtp_read_response(fd) == 220);
+    ok = ok && smtp_send_cmd(fd, "EHLO penncloud.local") && (smtp_read_response(fd) == 250);
+    ok = ok && smtp_send_cmd(fd, "MAIL FROM:<" + from_addr + ">") && (smtp_read_response(fd) == 250);
+    ok = ok && smtp_send_cmd(fd, "RCPT TO:<" + to_addr + ">") && (smtp_read_response(fd) == 250);
+    ok = ok && smtp_send_cmd(fd, "DATA") && (smtp_read_response(fd) == 354);
+
+    if (ok) {
+        string msg;
+        msg += "From: <" + from_addr + ">\r\n";
+        msg += "To: <" + to_addr + ">\r\n";
+        msg += "Subject: " + subject + "\r\n";
+        msg += "Date: " + now_str() + "\r\n";
+        msg += "MIME-Version: 1.0\r\n";
+        msg += "Content-Type: text/plain; charset=utf-8\r\n";
+        msg += "\r\n";
+        msg += dot_stuff(body);
+        msg += "\r\n.\r\n";
+        ok = (::send(fd, msg.data(), msg.size(), MSG_NOSIGNAL) ==
+              static_cast<ssize_t>(msg.size()));
+        ok = ok && (smtp_read_response(fd) == 250);
+    }
+
+    smtp_send_cmd(fd, "QUIT");
+    ::close(fd);
+
+    if (!ok) error_out = "SMTP dialog failed with " + mx_host;
+    return ok;
+}
+
+// ---------------------------------------------------------------------------
 // POST /api/send  -> {"ok":true} or {"ok":false,"error":"..."}
 // Body: to=<addr>&subject=<subj>&body=<text>
 //
@@ -195,9 +350,10 @@ HttpResponse FEServer::handle_send_email(const HttpRequest& req,
     }
 
     if (is_external) {
-        // TODO (Liudawei Phase 3): SMTP client -- DNS MX lookup + send
-        // For now return success stub so UI works
-        return HttpResponse::json("{\"ok\":false,\"error\":\"External SMTP not yet implemented\"}");
+        string smtp_err;
+        if (!smtp_client_send(from_addr, to, subject, body, smtp_err))
+            return HttpResponse::json("{\"ok\":false,\"error\":\"" + smtp_err + "\"}");
+        return HttpResponse::json("{\"ok\":true}");
     }
 
     // Local delivery: PUT into recipient's KV store

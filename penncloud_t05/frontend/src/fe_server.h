@@ -40,6 +40,7 @@
 #include "http_reader.h"
 #include "session.h"
 #include "kv_client.h"
+#include "smtp_server.h"
 #include <string>
 #include <thread>
 #include <mutex>
@@ -116,6 +117,7 @@ public:
         int         coord_port    = 6000;
         std::string static_dir    = "./static";
         std::string server_id     = "fe1";   // for load balancer identification
+        int         smtp_port     = 2500;    // inbound SMTP server port
     };
 
     explicit FEServer(const Config& cfg);
@@ -136,6 +138,9 @@ private:
     // Thread pool (reuse pattern from kvserver)
     struct ThreadPool;
     std::unique_ptr<ThreadPool> pool_;
+
+    // Inbound SMTP server (receives external email)
+    std::unique_ptr<SMTPServer> smtp_;
 
     // ---- Connection handling ------------------------------------------------
     void handle_connection(int fd);
