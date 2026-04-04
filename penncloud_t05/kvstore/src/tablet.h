@@ -1,5 +1,6 @@
-// tablet.h  --  PennCloud KV tablet: in-memory store + WAL + checkpoint
+#pragma once
 
+// tablet.h  --  PennCloud KV tablet: in-memory store + WAL + checkpoint
 //
 // A Tablet is one horizontal slice of the key-value table.
 // The coordinator assigns row-key ranges to tablets.

@@ -11,7 +11,6 @@
 using namespace std;
 
 // Little-endian uint32 helpers for WAL binary encoding
-
 static void write_u32_le(ofstream& out, uint32_t v) {
     uint8_t buf[4] = {
         static_cast<uint8_t>(v),

@@ -1,3 +1,5 @@
+#pragma once
+
 // server.h  --  PennCloud KV TCP server
 // Architecture:
 //   - One accept() loop on the main thread
@@ -22,9 +24,11 @@
 #include <mutex>
 #include <condition_variable>
 #include <functional>
+#include <future>
 #include <atomic>
 #include <memory>
 #include "tablet.h"
+#include "replication.h"
 using namespace std;
 
 // ThreadPool: fixed-size pool, unbounded task queue
@@ -51,11 +55,20 @@ public:
     struct Config {
         int         port          = 5000;
         int         threads       = 16;
-        string data_dir      = "./data";
-        string tablet_name   = "tablet0";
+        string data_dir           = "./data";
+        string tablet_name        = "tablet0";
         int         ckpt_interval = 300;   // seconds between auto-checkpoints
+        string node_id            = "node1";  // for replication identification (Phase 2)
+        int         repl_port     = 5100;     // replication port (Phase 2)
+        bool        is_primary    = true;     // start as primary (Phase 2)
+
+        // for Phase 2: list of "id:host:repl_port" 
+        // for replicas to add at startup
+        vector<string> replica_specs; 
     };
 
+    // ReplicationManager is owned by the server,
+    // but tightly coupled to the tablet. (Phase 2)
     explicit KVServer(const Config& cfg);
     ~KVServer();
 
@@ -67,14 +80,16 @@ public:
 
     // Expose tablet for replication layer (Phase 2)
     Tablet& tablet() { return *tablet_; }
+    ReplicationManager& repl() { return *repl_; }
 
 private:
-    Config                  cfg_;
-    unique_ptr<Tablet> tablet_;
-    unique_ptr<ThreadPool> pool_;
-    int                     listen_fd_ = -1;
-    atomic<bool>       running_{false};
-    thread             ckpt_thread_;
+    Config                          cfg_;
+    unique_ptr<Tablet>              tablet_;
+    unique_ptr<ReplicationManager>  repl_;
+    unique_ptr<ThreadPool>          pool_;
+    int                             listen_fd_ = -1;
+    atomic<bool>                    running_{false};
+    thread                          ckpt_thread_;
 
     // Handle one persistent client connection
     void handle_connection(int client_fd);

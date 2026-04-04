@@ -1,4 +1,6 @@
 
+#pragma once
+
 // bloom.h  --  Bloom filter for PennCloud tablet key membership
 
 //
@@ -30,7 +32,7 @@ class BloomFilter {
 public:
     static constexpr size_t BITS  = 2097152;  // 256 KB
     static constexpr size_t BYTES = BITS / 8;
-    static constexpr int    NHASH = 3;
+    static constexpr int    NHASH = 3; // number of hash functions
 
     BloomFilter() { bits_.assign(BYTES, 0); }
 

@@ -1,4 +1,3 @@
-
 // server.cc  --  KV server implementation
 #include "server.h"
 #include "protocol.h"
@@ -14,7 +13,6 @@
 #include <fcntl.h>
 #include <signal.h>
 using namespace std;
-
 // ThreadPool
 
 ThreadPool::ThreadPool(int n) {
@@ -36,6 +34,7 @@ ThreadPool::ThreadPool(int n) {
     }
 }
 
+// Stop all threads and clean up
 ThreadPool::~ThreadPool() {
     {
         lock_guard<mutex> lk(mu_);
@@ -58,6 +57,17 @@ void ThreadPool::enqueue(function<void()> task) {
 KVServer::KVServer(const Config& cfg)
     : cfg_(cfg) {
     tablet_ = make_unique<Tablet>(cfg_.tablet_name, cfg_.data_dir);
+
+    // For Phase 2, initialize the ReplicationManager here,
+    // passing it the tablet and config.
+    ReplicationManager::Config rcfg;
+    rcfg.node_id    = cfg_.node_id;
+    rcfg.repl_port  = cfg_.repl_port;
+
+    repl_   = make_unique<ReplicationManager>(rcfg, *tablet_);
+     
+    // for testing: set replication mode before shutdown
+    repl_->set_primary(cfg_.is_primary);
     pool_   = make_unique<ThreadPool>(cfg_.threads);
 }
 
@@ -66,6 +76,7 @@ KVServer::~KVServer() {
 }
 
 // create_listen_socket: SO_REUSEADDR, non-blocking accept loop
+// Returns the listening socket fd, or throws on error.
 
 int KVServer::create_listen_socket() {
     int fd = ::socket(AF_INET, SOCK_STREAM, 0);
@@ -98,6 +109,20 @@ void KVServer::run() {
     tablet_->recover();
     cout << "[kvserver] tablet ready: " << tablet_->row_count()
               << " rows, LSN=" << tablet_->lsn() << "\n";
+
+    repl_->start();
+    for (const auto& spec : cfg_.replica_specs) {
+        size_t p1 = spec.find(':');
+        size_t p2 = spec.find(':', p1 == string::npos ? p1 : p1 + 1);
+        if (p1 == string::npos || p2 == string::npos) {
+            cerr << "[kvserver] bad replica spec: " << spec << "\n";
+            continue;
+        }
+        string id   = spec.substr(0, p1);
+        string host = spec.substr(p1 + 1, p2 - p1 - 1);
+        int port    = stoi(spec.substr(p2 + 1));
+        repl_->add_replica(id, host, port);
+    }
 
     listen_fd_ = create_listen_socket();
     running_   = true;
@@ -138,6 +163,7 @@ void KVServer::stop() {
         ::close(listen_fd_);
         listen_fd_ = -1;
     }
+    if (repl_) repl_->stop();
     if (ckpt_thread_.joinable()) ckpt_thread_.join();
 }
 
@@ -167,8 +193,10 @@ bool KVServer::handle_request(int fd) {
         return write_all(fd, resp);
     };
 
-    
     if (op == "PUT") {
+        if (!repl_->is_primary())
+            return send(err_response("not primary"));
+
         uint32_t rowlen, collen, vallen;
         if (!(ss >> rowlen >> collen >> vallen))
             return send(err_response("malformed PUT header"));
@@ -179,12 +207,15 @@ bool KVServer::handle_request(int fd) {
             !read_exact(fd, val, vallen))
             return false;
 
-        bool ok = tablet_->put(row, col, val);
+        bool ok = repl_->replicated_put(row, col, val);
         return send(ok ? ok_response() : err_response("PUT failed"));
     }
 
 
     if (op == "GET") {
+        if (!repl_->is_primary())
+            return send(err_response("not primary"));
+
         uint32_t rowlen, collen;
         if (!(ss >> rowlen >> collen))
             return send(err_response("malformed GET header"));
@@ -203,6 +234,9 @@ bool KVServer::handle_request(int fd) {
 
 
     if (op == "CPUT") {
+        if (!repl_->is_primary())
+            return send(err_response("not primary"));
+
         uint32_t rowlen, collen, v1len, v2len;
         if (!(ss >> rowlen >> collen >> v1len >> v2len))
             return send(err_response("malformed CPUT header"));
@@ -214,12 +248,15 @@ bool KVServer::handle_request(int fd) {
             !read_exact(fd, v2,  v2len))
             return false;
 
-        bool ok = tablet_->cput(row, col, v1, v2);
+        bool ok = repl_->replicated_cput(row, col, v1, v2);
         return send(ok ? ok_response() : err_response("value mismatch"));
     }
 
 
     if (op == "DELETE") {
+        if (!repl_->is_primary())
+            return send(err_response("not primary"));
+
         uint32_t rowlen, collen;
         if (!(ss >> rowlen >> collen))
             return send(err_response("malformed DELETE header"));
@@ -229,13 +266,19 @@ bool KVServer::handle_request(int fd) {
             !read_exact(fd, col, collen))
             return false;
 
-        bool ok = tablet_->del(row, col);
+        bool ok = repl_->replicated_delete(row, col);
         return send(ok ? ok_response() : err_response("DELETE failed"));
     }
 
-    
+    if (op == "BECOME_PRIMARY") {
+        repl_->set_primary(true);
+        return send(ok_response());
+    }
+
     if (op == "PING") {
-        return send("+OK LSN=" + to_string(tablet_->lsn()) + "\r\n");
+        string role = repl_->is_primary() ? "primary" : "secondary";
+        return send("+OK LSN=" + to_string(tablet_->lsn())
+                    + " ROLE=" + role + "\r\n");
     }
 
 

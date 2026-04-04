@@ -1,4 +1,6 @@
 
+#pragma once
+
 // protocol.h  --  PennCloud KV wire protocol (shared by KV server + FE server)
 // Every message is LENGTH-PREFIXED so binary values (PDFs, images, video)
 // pass through without any escaping or delimiting.
@@ -17,7 +19,6 @@
 // The \r\n terminates the header line.  After \r\n, raw bytes follow
 // immediately (no extra separator).
 
-
 #include <string>
 #include <vector>
 #include <stdexcept>
@@ -28,7 +29,7 @@
 using namespace std;
 
 // Low-level I/O helpers
-
+// ==================================================================================
 
 // Read exactly n bytes from fd into buf.  Returns false on EOF or error.
 inline bool read_exact(int fd, void* buf, size_t n) {
@@ -66,9 +67,7 @@ inline bool write_all(int fd, const string& s) {
     return write_all(fd, s.data(), s.size());
 }
 
-
 // Read one \r\n-terminated header line from fd (max 256 bytes)
-
 inline bool read_line(int fd, string& line) {
     line.clear();
     char c;
@@ -86,9 +85,7 @@ inline bool read_line(int fd, string& line) {
     }
 }
 
-
 // Response builders (server side)
-
 inline string ok_response() {
     return "+OK\r\n";
 }

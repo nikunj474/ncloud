@@ -1,4 +1,6 @@
 
+#pragma once
+
 // replication.h  --  PennCloud Primary-Backup Replication Protocol
 // DESIGN: Primary-backup replication for linearizable consistency.
 
@@ -41,6 +43,7 @@
 #include <queue>
 #include <condition_variable>
 #include <functional>
+#include <future>
 #include <unordered_map>
 #include <chrono>
 #include <iostream>
@@ -134,6 +137,9 @@ public:
     // Node role
     bool is_primary() const { return is_primary_.load(); }
 
+    // For testing: allow manually setting primary/secondary mode
+    void set_primary(bool v) { is_primary_ = v; }
+
 private:
     Config    cfg_;
     Tablet&   tablet_;
@@ -175,7 +181,7 @@ private:
 // Implementation
 
 
-void ReplicationManager::start() {
+inline void ReplicationManager::start() {
     running_ = true;
 
     // Start coalesce flush thread (B2)
@@ -198,7 +204,7 @@ void ReplicationManager::start() {
               << cfg_.repl_port << "\n";
 }
 
-void ReplicationManager::stop() {
+inline void ReplicationManager::stop() {
     running_ = false;
     coalesce_.cv.notify_all();
     if (coalesce_thread_.joinable())    coalesce_thread_.join();
@@ -206,7 +212,7 @@ void ReplicationManager::stop() {
     if (repl_accept_thread_.joinable()) repl_accept_thread_.join();
 }
 
-void ReplicationManager::add_replica(const string& id,
+inline void ReplicationManager::add_replica(const string& id,
                                       const string& host,
                                       int                repl_port) {
     auto r = make_unique<ReplicaInfo>();
@@ -224,7 +230,7 @@ void ReplicationManager::add_replica(const string& id,
 // B2: Write coalescing loop
 // Flushes the coalesce buffer every coalesce_ms milliseconds.
 
-void ReplicationManager::coalesce_loop() {
+inline void ReplicationManager::coalesce_loop() {
     while (running_) {
         {
             unique_lock<mutex> lk(coalesce_.mu);
@@ -237,7 +243,7 @@ void ReplicationManager::coalesce_loop() {
     }
 }
 
-void ReplicationManager::flush_coalesce_buffer() {
+inline void ReplicationManager::flush_coalesce_buffer() {
     unordered_map<string, CoalescedWrite> batch;
     {
         lock_guard<mutex> lk(coalesce_.mu);
@@ -273,7 +279,7 @@ void ReplicationManager::flush_coalesce_buffer() {
 // replicated_put: apply locally + forward to secondaries
 // Uses coalesce buffer for batching (B2)
 
-bool ReplicationManager::replicated_put(const string& row,
+inline bool ReplicationManager::replicated_put(const string& row,
                                          const string& col,
                                          const string& val) {
     // Apply to primary tablet immediately (WAL ensures crash safety)
@@ -281,32 +287,33 @@ bool ReplicationManager::replicated_put(const string& row,
 
     // Forward to all alive secondaries
     string msg = make_repl_put(tablet_.lsn(), row, col, val);
-    forward_to_all(msg);
-    return true;
+    return forward_to_all(msg);
 }
 
-bool ReplicationManager::replicated_cput(const string& row,
+inline bool ReplicationManager::replicated_cput(const string& row,
                                           const string& col,
                                           const string& v1,
                                           const string& v2) {
     // CPUT is not coalesced -- must be applied atomically
     if (!tablet_.cput(row, col, v1, v2)) return false;
     string msg = make_repl_put(tablet_.lsn(), row, col, v2);
-    forward_to_all(msg);
-    return true;
+    return forward_to_all(msg);
 }
 
-bool ReplicationManager::replicated_delete(const string& row,
+inline bool ReplicationManager::replicated_delete(const string& row,
                                             const string& col) {
     if (!tablet_.del(row, col)) return false;
     string msg = make_repl_delete(tablet_.lsn(), row, col);
-    forward_to_all(msg);
-    return true;
+    return forward_to_all(msg);
+}
+
+inline void ReplicationManager::become_secondary(const string&, int) {
+    is_primary_ = false;
 }
 
 // Forward a replication message to all alive secondaries
 
-bool ReplicationManager::forward_to_all(const string& msg) {
+inline bool ReplicationManager::forward_to_all(const string& msg) {
     lock_guard<mutex> lk(replicas_mu_);
     bool all_ok = true;
     for (auto& r : replicas_) {
@@ -320,7 +327,7 @@ bool ReplicationManager::forward_to_all(const string& msg) {
     return all_ok;
 }
 
-bool ReplicationManager::forward_to_replica(ReplicaInfo& r,
+inline bool ReplicationManager::forward_to_replica(ReplicaInfo& r,
                                               const string& msg) {
     lock_guard<mutex> lk(r.conn_mu);
     if (r.fd < 0) r.fd = connect_replica(r);
@@ -353,7 +360,7 @@ bool ReplicationManager::forward_to_replica(ReplicaInfo& r,
     return false;
 }
 
-int ReplicationManager::connect_replica(ReplicaInfo& r) {
+inline int ReplicationManager::connect_replica(ReplicaInfo& r) {
     int fd = ::socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return -1;
 
@@ -376,7 +383,7 @@ int ReplicationManager::connect_replica(ReplicaInfo& r) {
 
 // Replication message builders
 
-string ReplicationManager::make_repl_put(uint64_t lsn,
+inline string ReplicationManager::make_repl_put(uint64_t lsn,
                                                const string& row,
                                                const string& col,
                                                const string& val) {
@@ -387,7 +394,7 @@ string ReplicationManager::make_repl_put(uint64_t lsn,
          + row + col + val;
 }
 
-string ReplicationManager::make_repl_delete(uint64_t lsn,
+inline string ReplicationManager::make_repl_delete(uint64_t lsn,
                                                    const string& row,
                                                    const string& col) {
     return "REPLICATE " + to_string(lsn) + " DELETE "
@@ -399,7 +406,7 @@ string ReplicationManager::make_repl_delete(uint64_t lsn,
 // Replication listener: secondaries connect here to receive forwarded writes
 // Also accepts SYNC_FROM requests for delta recovery
 
-void ReplicationManager::repl_accept_loop() {
+inline void ReplicationManager::repl_accept_loop() {
     while (running_) {
         sockaddr_in addr{};
         socklen_t   len = sizeof(addr);
@@ -413,7 +420,7 @@ void ReplicationManager::repl_accept_loop() {
     }
 }
 
-void ReplicationManager::handle_repl_client(int fd) {
+inline void ReplicationManager::handle_repl_client(int fd) {
     // This handler runs on SECONDARY nodes.
     // Receives REPLICATE messages from primary and applies them to local tablet.
     string line;
@@ -473,11 +480,9 @@ void ReplicationManager::handle_repl_client(int fd) {
     }
 }
 
-
 // Delta sync: send WAL entries after since_lsn to recovering secondary
 // This is the LSN-based delta recovery (key innovation in proposal section 2.3)
-
-bool ReplicationManager::send_delta(int fd, uint64_t since_lsn) {
+inline bool ReplicationManager::send_delta(int fd, uint64_t since_lsn) {
     // Open WAL file and forward all entries with LSN > since_lsn
     ifstream wal(tablet_.wal_path(), ios::binary);
     if (!wal) {

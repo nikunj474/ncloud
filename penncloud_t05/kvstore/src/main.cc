@@ -35,6 +35,14 @@ static KVServer::Config parse_args(int argc, char* argv[]) {
         else if (arg == "--tablet"  && i+1 < argc) cfg.tablet_name   = argv[++i];
         else if (arg == "--ckpt-interval" && i+1 < argc)
             cfg.ckpt_interval = stoi(argv[++i]);
+        else if (arg == "--node-id" && i+1 < argc) cfg.node_id = argv[++i];
+        else if (arg == "--repl-port" && i+1 < argc) cfg.repl_port = stoi(argv[++i]);
+        else if (arg == "--role" && i+1 < argc) {
+            string role = argv[++i];
+            cfg.is_primary = (role == "primary");
+        } else if (arg == "--replica" && i+1 < argc) {
+            cfg.replica_specs.push_back(argv[++i]);
+        }
         else {
             cerr << "Unknown argument: " << arg << "\n";
             exit(1);
@@ -51,7 +59,11 @@ int main(int argc, char* argv[]) {
               << "  threads:       " << cfg.threads        << "\n"
               << "  data_dir:      " << cfg.data_dir       << "\n"
               << "  tablet:        " << cfg.tablet_name    << "\n"
-              << "  ckpt_interval: " << cfg.ckpt_interval  << "s\n\n";
+              << "  ckpt_interval: " << cfg.ckpt_interval  << "s\n"
+              << "  node_id:       " << cfg.node_id        << "\n"
+              << "  repl_port:     " << cfg.repl_port      << "\n"
+              << "  role:          " << (cfg.is_primary ? "primary" : "secondary")
+              << "\n\n";
 
     try {
         KVServer server(cfg);
