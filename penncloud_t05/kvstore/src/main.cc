@@ -1,7 +1,8 @@
 // main.cc  --  PennCloud KV server entry point
 // Usage:
 //   ./kvserver [--port 5000] [--threads 16] [--data ./data]
-//              [--tablet tablet0] [--ckpt-interval 300]
+//              [--tablet tablet0] [--tablet-range name:start:end]*
+//              [--ckpt-interval 300]
 //
 // Example:
 //   ./kvserver --port 5000 --data /var/penncloud/data --tablet tablet_aa_af
@@ -33,6 +34,7 @@ static KVServer::Config parse_args(int argc, char* argv[]) {
         else if (arg == "--threads" && i+1 < argc) cfg.threads       = stoi(argv[++i]);
         else if (arg == "--data"    && i+1 < argc) cfg.data_dir      = argv[++i];
         else if (arg == "--tablet"  && i+1 < argc) cfg.tablet_name   = argv[++i];
+        else if (arg == "--tablet-range" && i+1 < argc) cfg.tablet_specs.push_back(argv[++i]);
         else if (arg == "--ckpt-interval" && i+1 < argc)
             cfg.ckpt_interval = stoi(argv[++i]);
         else if (arg == "--node-id" && i+1 < argc) cfg.node_id = argv[++i];
@@ -59,6 +61,7 @@ int main(int argc, char* argv[]) {
               << "  threads:       " << cfg.threads        << "\n"
               << "  data_dir:      " << cfg.data_dir       << "\n"
               << "  tablet:        " << cfg.tablet_name    << "\n"
+              << "  tablet_specs:  " << cfg.tablet_specs.size() << "\n"
               << "  ckpt_interval: " << cfg.ckpt_interval  << "s\n"
               << "  node_id:       " << cfg.node_id        << "\n"
               << "  repl_port:     " << cfg.repl_port      << "\n"
@@ -77,7 +80,7 @@ int main(int argc, char* argv[]) {
 
         // Final checkpoint on clean shutdown
         cout << "[main] final checkpoint on shutdown...\n";
-        server.tablet().checkpoint();
+        server.checkpoint_all();
         cout << "[main] done. goodbye.\n";
 
     } catch (const exception& e) {

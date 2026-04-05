@@ -56,23 +56,77 @@ void ThreadPool::enqueue(function<void()> task) {
 // KVServer constructor / destructor
 KVServer::KVServer(const Config& cfg)
     : cfg_(cfg) {
-    tablet_ = make_unique<Tablet>(cfg_.tablet_name, cfg_.data_dir);
+    auto specs = build_tablet_specs();
+    tablets_.reserve(specs.size());
+    for (size_t i = 0; i < specs.size(); ++i) {
+        const auto& spec = specs[i];
 
-    // For Phase 2, initialize the ReplicationManager here,
-    // passing it the tablet and config.
-    ReplicationManager::Config rcfg;
-    rcfg.node_id    = cfg_.node_id;
-    rcfg.repl_port  = cfg_.repl_port;
+        TabletInfo ti;
+        ti.name = spec.name;
+        ti.row_start = spec.row_start;
+        ti.row_end = spec.row_end;
+        ti.tablet = make_unique<Tablet>(spec.name, cfg_.data_dir);
 
-    repl_   = make_unique<ReplicationManager>(rcfg, *tablet_);
-     
-    // for testing: set replication mode before shutdown
-    repl_->set_primary(cfg_.is_primary);
-    pool_   = make_unique<ThreadPool>(cfg_.threads);
+        ReplicationManager::Config rcfg;
+        rcfg.node_id = cfg_.node_id + ":" + spec.name;
+        rcfg.repl_port = cfg_.repl_port + static_cast<int>(i);
+
+        ti.repl = make_unique<ReplicationManager>(rcfg, *ti.tablet);
+        ti.repl->set_primary(cfg_.is_primary);
+        tablets_.push_back(move(ti));
+    }
+
+    pool_ = make_unique<ThreadPool>(cfg_.threads);
 }
 
 KVServer::~KVServer() {
     if (listen_fd_ >= 0) ::close(listen_fd_);
+}
+
+bool KVServer::checkpoint_all() {
+    bool ok = true;
+    for (auto& t : tablets_) {
+        ok = t.tablet->checkpoint() && ok;
+    }
+    return ok;
+}
+
+vector<KVServer::TabletSpec> KVServer::build_tablet_specs() const {
+    vector<TabletSpec> specs;
+    if (cfg_.tablet_specs.empty()) {
+        specs.push_back(TabletSpec{cfg_.tablet_name, "", ""});
+        return specs;
+    }
+
+    for (const auto& raw : cfg_.tablet_specs) {
+        size_t p1 = raw.find(':');
+        size_t p2 = raw.find(':', p1 == string::npos ? p1 : p1 + 1);
+        if (p1 == string::npos || p2 == string::npos) {
+            throw runtime_error("bad tablet spec: " + raw);
+        }
+        specs.push_back(TabletSpec{
+            raw.substr(0, p1),
+            raw.substr(p1 + 1, p2 - p1 - 1),
+            raw.substr(p2 + 1)
+        });
+    }
+    return specs;
+}
+
+KVServer::TabletInfo* KVServer::find_tablet_for_row(const string& row) {
+    for (auto& t : tablets_) {
+        bool after_start = t.row_start.empty() || row >= t.row_start;
+        bool before_end  = t.row_end.empty()   || row < t.row_end;
+        if (after_start && before_end) return &t;
+    }
+    return nullptr;
+}
+
+KVServer::TabletInfo* KVServer::find_tablet_by_name(const string& name) {
+    for (auto& t : tablets_) {
+        if (t.name == name) return &t;
+    }
+    return nullptr;
 }
 
 // create_listen_socket: SO_REUSEADDR, non-blocking accept loop
@@ -105,23 +159,27 @@ void KVServer::run() {
     ::signal(SIGPIPE, SIG_IGN);
 
     // Recover state from disk before accepting any connections
-    cout << "[kvserver] recovering tablet...\n";
-    tablet_->recover();
-    cout << "[kvserver] tablet ready: " << tablet_->row_count()
-              << " rows, LSN=" << tablet_->lsn() << "\n";
+    cout << "[kvserver] recovering " << tablets_.size() << " tablet(s)...\n";
+    for (size_t i = 0; i < tablets_.size(); ++i) {
+        auto& t = tablets_[i];
+        t.tablet->recover();
+        cout << "[kvserver] tablet ready: " << t.name
+             << " rows=" << t.tablet->row_count()
+             << " LSN=" << t.tablet->lsn() << "\n";
 
-    repl_->start();
-    for (const auto& spec : cfg_.replica_specs) {
-        size_t p1 = spec.find(':');
-        size_t p2 = spec.find(':', p1 == string::npos ? p1 : p1 + 1);
-        if (p1 == string::npos || p2 == string::npos) {
-            cerr << "[kvserver] bad replica spec: " << spec << "\n";
-            continue;
+        t.repl->start();
+        for (const auto& spec : cfg_.replica_specs) {
+            size_t p1 = spec.find(':');
+            size_t p2 = spec.find(':', p1 == string::npos ? p1 : p1 + 1);
+            if (p1 == string::npos || p2 == string::npos) {
+                cerr << "[kvserver] bad replica spec: " << spec << "\n";
+                continue;
+            }
+            string id   = spec.substr(0, p1);
+            string host = spec.substr(p1 + 1, p2 - p1 - 1);
+            int base_port = stoi(spec.substr(p2 + 1));
+            t.repl->add_replica(id, host, base_port + static_cast<int>(i));
         }
-        string id   = spec.substr(0, p1);
-        string host = spec.substr(p1 + 1, p2 - p1 - 1);
-        int port    = stoi(spec.substr(p2 + 1));
-        repl_->add_replica(id, host, port);
     }
 
     listen_fd_ = create_listen_socket();
@@ -163,7 +221,9 @@ void KVServer::stop() {
         ::close(listen_fd_);
         listen_fd_ = -1;
     }
-    if (repl_) repl_->stop();
+    for (auto& t : tablets_) {
+        if (t.repl) t.repl->stop();
+    }
     if (ckpt_thread_.joinable()) ckpt_thread_.join();
 }
 
@@ -194,9 +254,6 @@ bool KVServer::handle_request(int fd) {
     };
 
     if (op == "PUT") {
-        if (!repl_->is_primary())
-            return send(err_response("not primary"));
-
         uint32_t rowlen, collen, vallen;
         if (!(ss >> rowlen >> collen >> vallen))
             return send(err_response("malformed PUT header"));
@@ -207,15 +264,17 @@ bool KVServer::handle_request(int fd) {
             !read_exact(fd, val, vallen))
             return false;
 
-        bool ok = repl_->replicated_put(row, col, val);
+        TabletInfo* t = find_tablet_for_row(row);
+        if (!t) return send(err_response("no tablet for row"));
+        if (!t->repl->is_primary())
+            return send(err_response("not primary"));
+
+        bool ok = t->repl->replicated_put(row, col, val);
         return send(ok ? ok_response() : err_response("PUT failed"));
     }
 
 
     if (op == "GET") {
-        if (!repl_->is_primary())
-            return send(err_response("not primary"));
-
         uint32_t rowlen, collen;
         if (!(ss >> rowlen >> collen))
             return send(err_response("malformed GET header"));
@@ -225,8 +284,13 @@ bool KVServer::handle_request(int fd) {
             !read_exact(fd, col, collen))
             return false;
 
+        TabletInfo* t = find_tablet_for_row(row);
+        if (!t) return send(err_response("no tablet for row"));
+        if (!t->repl->is_primary())
+            return send(err_response("not primary"));
+
         string val;
-        if (tablet_->get(row, col, val))
+        if (t->tablet->get(row, col, val))
             return send(ok_value_response(val));
         else
             return send(err_response("not found"));
@@ -234,9 +298,6 @@ bool KVServer::handle_request(int fd) {
 
 
     if (op == "CPUT") {
-        if (!repl_->is_primary())
-            return send(err_response("not primary"));
-
         uint32_t rowlen, collen, v1len, v2len;
         if (!(ss >> rowlen >> collen >> v1len >> v2len))
             return send(err_response("malformed CPUT header"));
@@ -248,15 +309,17 @@ bool KVServer::handle_request(int fd) {
             !read_exact(fd, v2,  v2len))
             return false;
 
-        bool ok = repl_->replicated_cput(row, col, v1, v2);
+        TabletInfo* t = find_tablet_for_row(row);
+        if (!t) return send(err_response("no tablet for row"));
+        if (!t->repl->is_primary())
+            return send(err_response("not primary"));
+
+        bool ok = t->repl->replicated_cput(row, col, v1, v2);
         return send(ok ? ok_response() : err_response("value mismatch"));
     }
 
 
     if (op == "DELETE") {
-        if (!repl_->is_primary())
-            return send(err_response("not primary"));
-
         uint32_t rowlen, collen;
         if (!(ss >> rowlen >> collen))
             return send(err_response("malformed DELETE header"));
@@ -266,32 +329,56 @@ bool KVServer::handle_request(int fd) {
             !read_exact(fd, col, collen))
             return false;
 
-        bool ok = repl_->replicated_delete(row, col);
+        TabletInfo* t = find_tablet_for_row(row);
+        if (!t) return send(err_response("no tablet for row"));
+        if (!t->repl->is_primary())
+            return send(err_response("not primary"));
+
+        bool ok = t->repl->replicated_delete(row, col);
         return send(ok ? ok_response() : err_response("DELETE failed"));
     }
 
     if (op == "BECOME_PRIMARY") {
-        repl_->set_primary(true);
+        string tablet_name;
+        ss >> tablet_name;
+        TabletInfo* t = tablet_name.empty() ? nullptr : find_tablet_by_name(tablet_name);
+        if (!t) return send(err_response("unknown tablet"));
+        t->repl->set_primary(true);
         return send(ok_response());
     }
 
     if (op == "PING") {
-        string role = repl_->is_primary() ? "primary" : "secondary";
-        return send("+OK LSN=" + to_string(tablet_->lsn())
+        uint64_t max_lsn = 0;
+        bool any_primary = false;
+        for (const auto& t : tablets_) {
+            max_lsn = max(max_lsn, t.tablet->lsn());
+            any_primary = any_primary || t.repl->is_primary();
+        }
+        string role = any_primary ? "primary" : "secondary";
+        return send("+OK LSN=" + to_string(max_lsn)
                     + " ROLE=" + role + "\r\n");
     }
 
 
     if (op == "STATS") {
-        string body = "rows="  + to_string(tablet_->row_count()) + " "
-                         + "ops="   + to_string(tablet_->op_count())  + " "
-                         + "lsn="   + to_string(tablet_->lsn())       + "\r\n";
+        size_t rows = 0;
+        uint64_t ops = 0;
+        uint64_t max_lsn = 0;
+        for (const auto& t : tablets_) {
+            rows += t.tablet->row_count();
+            ops += t.tablet->op_count();
+            max_lsn = max(max_lsn, t.tablet->lsn());
+        }
+        string body = "tablets=" + to_string(tablets_.size()) + " "
+                    + "rows="  + to_string(rows) + " "
+                    + "ops="   + to_string(ops)  + " "
+                    + "lsn="   + to_string(max_lsn) + "\r\n";
         return send("+OK " + to_string(body.size()) + "\r\n" + body);
     }
 
 
     if (op == "CHECKPOINT") {
-        bool ok = tablet_->checkpoint();
+        bool ok = checkpoint_all();
         return send(ok ? ok_response() : err_response("checkpoint failed"));
     }
 
@@ -309,7 +396,8 @@ void KVServer::checkpoint_loop() {
 
         if (!running_) break;
         cout << "[kvserver] auto-checkpoint starting...\n";
-        if (tablet_->checkpoint())
+        bool ok = checkpoint_all();
+        if (ok)
             cout << "[kvserver] auto-checkpoint done\n";
         else
             cerr << "[kvserver] auto-checkpoint FAILED\n";

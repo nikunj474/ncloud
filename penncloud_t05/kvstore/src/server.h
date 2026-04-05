@@ -1,5 +1,4 @@
 #pragma once
-
 // server.h  --  PennCloud KV TCP server
 // Architecture:
 //   - One accept() loop on the main thread
@@ -15,7 +14,6 @@
 //
 // The server never closes a connection -- the client does.
 // A dropped connection simply ends the handler thread's loop.
-
 
 #include <string>
 #include <vector>
@@ -47,11 +45,16 @@ private:
     bool                              stop_ = false;
 };
 
-
 // KVServer
 
 class KVServer {
 public:
+    struct TabletSpec {
+        string name;
+        string row_start;
+        string row_end;
+    };
+
     struct Config {
         int         port          = 5000;
         int         threads       = 16;
@@ -65,6 +68,8 @@ public:
         // for Phase 2: list of "id:host:repl_port" 
         // for replicas to add at startup
         vector<string> replica_specs; 
+        // for partitioning: list of "name:start:end"
+        vector<string> tablet_specs;
     };
 
     // ReplicationManager is owned by the server,
@@ -79,13 +84,22 @@ public:
     void stop();
 
     // Expose tablet for replication layer (Phase 2)
-    Tablet& tablet() { return *tablet_; }
-    ReplicationManager& repl() { return *repl_; }
+    Tablet& tablet() { return *tablets_.front().tablet; }
+    ReplicationManager& repl() { return *tablets_.front().repl; }
+    bool checkpoint_all();
 
 private:
     Config                          cfg_;
-    unique_ptr<Tablet>              tablet_;
-    unique_ptr<ReplicationManager>  repl_;
+    struct TabletInfo {
+        string name;
+        string row_start;
+        string row_end;
+        unique_ptr<Tablet> tablet;
+        unique_ptr<ReplicationManager> repl;
+    };
+
+    vector<TabletInfo>              tablets_;
+
     unique_ptr<ThreadPool>          pool_;
     int                             listen_fd_ = -1;
     atomic<bool>                    running_{false};
@@ -102,4 +116,7 @@ private:
     void checkpoint_loop();
 
     int create_listen_socket();
+    vector<TabletSpec> build_tablet_specs() const;
+    TabletInfo* find_tablet_for_row(const string& row);
+    TabletInfo* find_tablet_by_name(const string& name);
 };
