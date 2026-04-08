@@ -17,7 +17,7 @@ build/%.o: src/%.cc
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
 $(TARGET): $(OBJS)
-	$(CXX) $(LDFLAGS) -o $@ $(OBJS)
+	$(CXX) -pthread -o $@ $(OBJS) -lresolv
 
 clean:
 	rm -rf build $(TARGET)

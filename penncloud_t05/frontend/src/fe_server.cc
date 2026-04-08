@@ -734,6 +734,7 @@ async function renderDrive(folderPath = '/') {
             <div class="file-size">${it.size || ''}</div>
             <div class="file-actions">
               <button onclick="renameItem('${escHtml(it.path)}')">Rename</button>
+              <button onclick="moveItem('${escHtml(it.path)}')">Move</button>
               <button onclick="deleteItem('${escHtml(it.path)}')">Delete</button>
             </div>
           </div>`).join('')}
@@ -772,6 +773,19 @@ async function renameItem(path) {
   });
   const data = await r.json();
   showToast(data.ok ? 'Renamed!' : 'Rename failed.');
+  if (data.ok) renderDrive(currentPath);
+}
+
+async function moveItem(path) {
+  const dest = prompt('Move to folder (e.g. / or /docs):');
+  if (!dest) return;
+  const r = await fetch('/api/move', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: `path=${encodeURIComponent(path)}&dest=${encodeURIComponent(dest)}`
+  });
+  const data = await r.json();
+  showToast(data.ok ? 'Moved!' : 'Move failed: ' + (data.error || ''));
   if (data.ok) renderDrive(currentPath);
 }
 
@@ -1447,12 +1461,20 @@ std::string meta_uid(const std::string& meta) {
 HttpResponse FEServer::handle_drive_list(const HttpRequest& req, const std::string& user) {
     std::string path = req.param("path");
     if (path.empty()) path = "/";
+    if (path.size() > 1 && path.back() == '/') path.pop_back(); // normalize
     std::string row = user + ":drive";
     auto items = split_nl(kv_->get_str(row, "index"));
     std::string body = "{\"ok\":true,\"items\":[";
     bool first = true;
+    // Prefix for matching: "/" -> "/", "/docs" -> "/docs/"
+    std::string prefix = (path == "/") ? "/" : path + "/";
     for (const auto& item_path : items) {
-        if (path != "/" && item_path.rfind(path, 0) != 0) continue;
+        // Item must start with prefix
+        if (item_path.rfind(prefix, 0) != 0) continue;
+        // Only show direct children: no further '/' after the prefix
+        std::string remainder = item_path.substr(prefix.size());
+        if (remainder.empty()) continue;
+        if (remainder.find('/') != std::string::npos) continue;
         std::string meta = kv_->get_str(row, "meta:" + item_path);
         if (meta.empty()) continue;
         if (!first) body += ",";
@@ -1555,12 +1577,121 @@ HttpResponse FEServer::handle_rename(const HttpRequest& req, const std::string& 
     return HttpResponse::json(std::string("{\"ok\":true,\"path\":\"") + drive_json_escape(new_path) + "\"}");
 }
 
-HttpResponse FEServer::handle_move(const HttpRequest&, const std::string&) {
-    return HttpResponse::json(R"({"ok":false,"error":"move deferred until Demo II"})");
+HttpResponse FEServer::handle_move(const HttpRequest& req, const std::string& user) {
+    auto params = parse_urlencoded(req.body);
+    std::string src_path = params["path"];
+    std::string dest_dir = params["dest"];
+    if (src_path.empty() || dest_dir.empty())
+        return HttpResponse::json(R"({"ok":false,"error":"missing path or dest"})");
+    if (dest_dir.size() > 1 && dest_dir.back() == '/') dest_dir.pop_back();
+
+    std::string row = user + ":drive";
+    std::string meta = kv_->get_str(row, "meta:" + src_path);
+    if (meta.empty()) return HttpResponse::json(R"({"ok":false,"error":"not found"})");
+
+    // Extract the item name from src_path
+    auto slash = src_path.find_last_of('/');
+    std::string item_name = (slash == std::string::npos) ? src_path : src_path.substr(slash + 1);
+    std::string new_path = (dest_dir == "/") ? "/" + item_name : dest_dir + "/" + item_name;
+
+    // Collect all items to move (src itself + children if it's a folder)
+    auto all_items = split_nl(kv_->get_str(row, "index"));
+    std::string src_prefix = src_path + "/";
+    std::vector<std::pair<std::string, std::string>> renames; // old_path -> new_path
+    renames.push_back({src_path, new_path});
+    for (const auto& item : all_items) {
+        if (item.rfind(src_prefix, 0) == 0) {
+            std::string suffix = item.substr(src_path.size());
+            renames.push_back({item, new_path + suffix});
+        }
+    }
+
+    // Move metadata for each item
+    for (const auto& [old_p, new_p] : renames) {
+        std::string old_meta = kv_->get_str(row, "meta:" + old_p);
+        if (old_meta.empty()) continue;
+        // Rewrite the "path" field in metadata
+        std::string uid = meta_uid(old_meta);
+        // Extract name from new_p
+        auto s = new_p.find_last_of('/');
+        std::string n = (s == std::string::npos) ? new_p : new_p.substr(s + 1);
+        // Check if it's a folder (no uid)
+        if (uid.empty()) {
+            // Folder metadata
+            std::string new_meta = std::string("{")
+                + "\"uid\":\"\","
+                + "\"name\":\"" + drive_json_escape(n) + "\","
+                + "\"size\":\"\","
+                + "\"type\":\"folder\","
+                + "\"path\":\"" + drive_json_escape(new_p) + "\"}";
+            kv_->put(row, "meta:" + new_p, new_meta);
+        } else {
+            // File metadata — read size/mime from file row
+            std::string file_row = user + ":file:" + uid;
+            std::string mime = kv_->get_str(file_row, "mime");
+            if (mime.empty()) mime = "application/octet-stream";
+            std::string data = kv_->get_str(file_row, "data");
+            kv_->put(row, "meta:" + new_p, meta_json(uid, n, data.size(), mime, new_p));
+        }
+        kv_->del(row, "meta:" + old_p);
+    }
+
+    // Update index with CPUT retry
+    for (int i = 0; i < 5; ++i) {
+        std::string old_index = kv_->get_str(row, "index");
+        auto items = split_nl(old_index);
+        std::vector<std::string> new_items;
+        for (const auto& item : items) {
+            bool replaced = false;
+            for (const auto& [old_p, new_p] : renames) {
+                if (item == old_p) { new_items.push_back(new_p); replaced = true; break; }
+            }
+            if (!replaced) new_items.push_back(item);
+        }
+        std::string new_index = join_nl(new_items);
+        if (!old_index.empty() && kv_->cput(row, "index", old_index, new_index)) break;
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return HttpResponse::json(std::string("{\"ok\":true,\"path\":\"") + drive_json_escape(new_path) + "\"}");
 }
 
-HttpResponse FEServer::handle_mkdir(const HttpRequest&, const std::string&) {
-    return HttpResponse::json(R"({"ok":false,"error":"folders deferred until Demo II"})");
+HttpResponse FEServer::handle_mkdir(const HttpRequest& req, const std::string& user) {
+    auto params = parse_urlencoded(req.body);
+    std::string parent = params["path"];
+    std::string name   = params["name"];
+    if (name.empty())
+        return HttpResponse::json(R"({"ok":false,"error":"missing folder name"})");
+    if (parent.empty()) parent = "/";
+    if (parent.size() > 1 && parent.back() == '/') parent.pop_back();
+    std::string folder_path = (parent == "/") ? "/" + name : parent + "/" + name;
+
+    std::string row = user + ":drive";
+    // Store folder metadata (type=folder, no uid, size=0)
+    std::string meta = std::string("{")
+        + "\"uid\":\"\","
+        + "\"name\":\"" + drive_json_escape(name) + "\","
+        + "\"size\":\"\","
+        + "\"type\":\"folder\","
+        + "\"path\":\"" + drive_json_escape(folder_path) + "\"}";
+    kv_->put(row, "meta:" + folder_path, meta);
+
+    // Add to index with CPUT retry
+    for (int i = 0; i < 5; ++i) {
+        std::string old_index = kv_->get_str(row, "index");
+        auto items = split_nl(old_index);
+        bool exists = false;
+        for (const auto& x : items) if (x == folder_path) exists = true;
+        if (exists) break;
+        items.push_back(folder_path);
+        std::string new_index = join_nl(items);
+        if (old_index.empty()) {
+            if (kv_->put(row, "index", new_index)) break;
+        } else if (kv_->cput(row, "index", old_index, new_index)) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    return HttpResponse::json(std::string("{\"ok\":true,\"path\":\"") + drive_json_escape(folder_path) + "\"}");
 }
 
 HttpResponse FEServer::handle_delete_path(const HttpRequest& req, const std::string& user) {
@@ -1570,19 +1701,41 @@ HttpResponse FEServer::handle_delete_path(const HttpRequest& req, const std::str
     std::string row = user + ":drive";
     std::string meta = kv_->get_str(row, "meta:" + path);
     if (meta.empty()) return HttpResponse::json(R"({"ok":false,"error":"not found"})");
-    std::string uid = meta_uid(meta);
-    kv_->del(row, "meta:" + path);
-    if (!uid.empty()) {
-        std::string file_row = user + ":file:" + uid;
-        kv_->del(file_row, "data");
-        kv_->del(file_row, "name");
-        kv_->del(file_row, "mime");
+
+    // Collect all paths to delete (the item itself + children if folder)
+    auto all_items = split_nl(kv_->get_str(row, "index"));
+    std::string prefix = path + "/";
+    std::vector<std::string> to_delete;
+    to_delete.push_back(path);
+    for (const auto& item : all_items) {
+        if (item.rfind(prefix, 0) == 0) to_delete.push_back(item);
     }
+
+    // Delete metadata and file data for each item
+    for (const auto& del_path : to_delete) {
+        std::string m = kv_->get_str(row, "meta:" + del_path);
+        std::string uid = meta_uid(m);
+        kv_->del(row, "meta:" + del_path);
+        if (!uid.empty()) {
+            std::string file_row = user + ":file:" + uid;
+            kv_->del(file_row, "data");
+            kv_->del(file_row, "name");
+            kv_->del(file_row, "mime");
+        }
+    }
+
+    // Remove all deleted paths from index with CPUT retry
     for (int i = 0; i < 5; ++i) {
         std::string old_index = kv_->get_str(row, "index");
         auto items = split_nl(old_index);
         std::vector<std::string> kept;
-        for (const auto& x : items) if (x != path) kept.push_back(x);
+        for (const auto& x : items) {
+            bool should_delete = false;
+            for (const auto& d : to_delete) {
+                if (x == d) { should_delete = true; break; }
+            }
+            if (!should_delete) kept.push_back(x);
+        }
         std::string new_index = join_nl(kept);
         if (!old_index.empty() && kv_->cput(row, "index", old_index, new_index)) break;
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
