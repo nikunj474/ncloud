@@ -171,6 +171,7 @@ private:
                                    const std::string& uid);
     HttpResponse handle_send_email(const HttpRequest& req, const std::string& user);
     HttpResponse handle_delete_email(const HttpRequest& req, const std::string& user);
+    HttpResponse handle_sent(const HttpRequest& req, const std::string& user);
 
     // Drive
     HttpResponse handle_drive_list(const HttpRequest& req, const std::string& user);

@@ -195,6 +195,10 @@ HttpResponse FEServer::dispatch(const HttpRequest& req) {
         if (user.empty()) return HttpResponse::error(401, "Unauthorized");
         return handle_delete_email(req, user);
     }
+    if (path == "/api/sent" && method == "GET") {
+        if (user.empty()) return HttpResponse::error(401, "Unauthorized");
+        return handle_sent(req, user);
+    }
 
     // /api/email/:uid
     {
@@ -474,6 +478,9 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
       <button class="nav-item" id="nav-compose" onclick="navigate('compose')">
         <span class="nav-icon">&#9998;</span> Compose
       </button>
+      <button class="nav-item" id="nav-sent" onclick="navigate('sent')">
+        <span class="nav-icon">&#9993;</span> Sent
+      </button>
       <button class="nav-item" id="nav-drive" onclick="navigate('drive')">
         <span class="nav-icon">&#128193;</span> Drive
       </button>
@@ -580,8 +587,9 @@ function navigate(view, params = {}) {
   switch (view) {
     case 'inbox':   renderInbox();  break;
     case 'compose': renderCompose(params); break;
+    case 'sent':    renderSent(); break;
     case 'drive':   renderDrive(params.path || '/'); break;
-    case 'email':   renderEmail(params.uid); break;
+    case 'email':   renderEmail(params.uid, params.box); break;
     case 'settings':renderSettings(); break;
   }
 }
@@ -608,10 +616,11 @@ async function renderInbox() {
       ${emails.length === 0
         ? '<div style="padding:40px;text-align:center;color:var(--muted)">No messages yet</div>'
         : emails.map(e => `
-          <div class="email-row" onclick="navigate('email', {uid:'${e.uid}'})">
+          <div class="email-row${e.read ? '' : ' unread'}" onclick="navigate('email', {uid:'${e.uid}'})">
             <div class="email-from">${escHtml(e.from)}</div>
             <div class="email-subj">${escHtml(e.subject)}</div>
             <div class="email-time">${escHtml(e.time)}</div>
+            ${e.read ? '' : '<span class="badge-new">New</span>'}
           </div>`).join('')}
     </div>`;
 }
@@ -632,16 +641,47 @@ function prependEmailRow(email) {
   showToast('New email from ' + email.from);
 }
 
+// ---- Sent ------------------------------------------------------------------
+async function renderSent() {
+  const r = await fetch('/api/sent');
+  const data = await r.json();
+  const content = document.getElementById('content');
+  if (!data.ok) { content.innerHTML = '<p>Error loading sent mail.</p>'; return; }
+  const emails = data.emails || [];
+  content.innerHTML = `
+    <div class="page-title">
+      Sent <span style="font-size:14px;color:var(--muted);font-weight:400">${emails.length} messages</span>
+    </div>
+    <div class="email-list">
+      ${emails.length === 0
+        ? '<div style="padding:40px;text-align:center;color:var(--muted)">No sent messages</div>'
+        : emails.map(e => `
+          <div class="email-row" onclick="navigate('email', {uid:'${e.uid}',box:'sent'})">
+            <div class="email-from">To: ${escHtml(e.to)}</div>
+            <div class="email-subj">${escHtml(e.subject)}</div>
+            <div class="email-time">${escHtml(e.time)}</div>
+          </div>`).join('')}
+    </div>`;
+}
+
 // ---- Email view ------------------------------------------------------------
-async function renderEmail(uid) {
-  const r = await fetch(`/api/email/${uid}`);
+let __viewEmail = null;
+let __viewBox = null;
+
+async function renderEmail(uid, box) {
+  const url = box === 'sent' ? `/api/email/${uid}?box=sent` : `/api/email/${uid}`;
+  const r = await fetch(url);
   const data = await r.json();
   const content = document.getElementById('content');
   if (!data.ok) { content.innerHTML = '<p>Email not found.</p>'; return; }
   const e = data.email;
+  __viewEmail = e;
+  __viewBox = box || 'inbox';
+  const backView = __viewBox === 'sent' ? 'sent' : 'inbox';
+  const backLabel = __viewBox === 'sent' ? 'Back to sent' : 'Back to inbox';
   content.innerHTML = `
-    <button onclick="navigate('inbox')" style="margin-bottom:16px;background:none;border:none;cursor:pointer;color:var(--accent);font-size:13px;">
-      &larr; Back to inbox
+    <button onclick="navigate('${backView}')" style="margin-bottom:16px;background:none;border:none;cursor:pointer;color:var(--accent);font-size:13px;">
+      &larr; ${backLabel}
     </button>
     <div class="email-view">
       <h2>${escHtml(e.subject)}</h2>
@@ -651,12 +691,33 @@ async function renderEmail(uid) {
         <span><b>Date:</b> ${escHtml(e.time)}</span>
       </div>
       <div class="email-actions">
-        <button class="action-btn" onclick="navigate('compose',{reply_to:'${escHtml(e.from)}',subject:'Re: ${escHtml(e.subject)}'})">Reply</button>
-        <button class="action-btn" onclick="navigate('compose',{subject:'Fwd: ${escHtml(e.subject)}',body:'\\n\\n--- Forwarded ---\\n${escHtml(e.body)}'})">Forward</button>
+        <button class="action-btn" onclick="replyEmail()">Reply</button>
+        <button class="action-btn" onclick="forwardEmail()">Forward</button>
         <button class="action-btn danger" onclick="deleteEmail('${uid}')">Delete</button>
       </div>
       <div class="email-body">${escHtml(e.body)}</div>
     </div>`;
+}
+
+function replyEmail() {
+  if (!__viewEmail) return;
+  const e = __viewEmail;
+  const quotedBody = '\n\n--- Original Message ---\nFrom: ' + e.from
+    + '\nDate: ' + e.time + '\n\n' + (e.body || '');
+  navigate('compose', {
+    reply_to: e.from,
+    subject: 'Re: ' + (e.subject || ''),
+    body: quotedBody
+  });
+}
+
+function forwardEmail() {
+  if (!__viewEmail) return;
+  const e = __viewEmail;
+  const fwdBody = '\n\n--- Forwarded Message ---\nFrom: ' + e.from
+    + '\nTo: ' + (e.to || '') + '\nDate: ' + e.time
+    + '\nSubject: ' + e.subject + '\n\n' + (e.body || '');
+  navigate('compose', { subject: 'Fwd: ' + (e.subject || ''), body: fwdBody });
 }
 
 async function deleteEmail(uid) {

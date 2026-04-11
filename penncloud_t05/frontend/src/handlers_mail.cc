@@ -50,8 +50,10 @@ static string new_uid() {
 // Format current time as "Mar 19, 2026 14:32"
 static string now_str() {
     auto t = time(nullptr);
+    struct tm tm_buf;
+    localtime_r(&t, &tm_buf);
     char buf[64];
-    strftime(buf, sizeof(buf), "%b %d, %Y %H:%M", localtime(&t));
+    strftime(buf, sizeof(buf), "%b %d, %Y %H:%M", &tm_buf);
     return buf;
 }
 
@@ -65,8 +67,11 @@ static string make_meta_json(const string& from,
     auto esc = [](const string& s) {
         string out;
         for (char c : s) {
-            if (c == '"')  out += "\\\"";
+            if (c == '"')       out += "\\\"";
             else if (c == '\\') out += "\\\\";
+            else if (c == '\n') out += "\\n";
+            else if (c == '\r') out += "\\r";
+            else if (c == '\t') out += "\\t";
             else out += c;
         }
         return out;
@@ -106,16 +111,22 @@ HttpResponse FEServer::handle_inbox(const HttpRequest&, const string& user) {
     bool first = true;
 
     if (!index.empty()) {
-        // Parse comma-separated UIDs (newest first -- we prepend on send)
         istringstream ss(index);
         string uid;
         while (getline(ss, uid, ',')) {
             if (uid.empty()) continue;
             string meta = kv_->get_str(row, "msg:" + uid);
-            if (meta.empty()) continue;  // deleted or missing
+            if (meta.empty()) continue;
             if (!first) json += ",";
             first = false;
-            json += meta;
+            // Inject "read" field into metadata JSON
+            string is_read = kv_->get_str(row, "read:" + uid);
+            string annotated = meta;
+            if (!annotated.empty() && annotated.back() == '}') {
+                annotated.pop_back();
+                annotated += ",\"read\":" + string(is_read.empty() ? "false" : "true") + "}";
+            }
+            json += annotated;
         }
     }
     json += "]";
@@ -125,12 +136,17 @@ HttpResponse FEServer::handle_inbox(const HttpRequest&, const string& user) {
 // ---------------------------------------------------------------------------
 // GET /api/email/:uid  -> {"ok":true,"email":{uid,from,to,subject,time,body}}
 // ---------------------------------------------------------------------------
-HttpResponse FEServer::handle_get_email(const HttpRequest&,
+HttpResponse FEServer::handle_get_email(const HttpRequest& req,
                                          const string& user,
                                          const string& uid) {
-    string row  = user + ":mail";
+    bool is_sent = (req.param("box") == "sent");
+    string row  = is_sent ? (user + ":sent") : (user + ":mail");
     string meta = kv_->get_str(row, "msg:" + uid);
     string body = kv_->get_str(row, "body:" + uid);
+
+    // Mark as read (inbox only)
+    if (!is_sent && !meta.empty())
+        kv_->put(user + ":mail", "read:" + uid, "1");
 
     if (meta.empty())
         return HttpResponse::json("{\"ok\":false,\"error\":\"not found\"}");
@@ -326,35 +342,60 @@ HttpResponse FEServer::handle_send_email(const HttpRequest& req,
     string uid      = new_uid();
     string time_str = now_str();
 
-    // Determine sender address
     string from_addr = user + "@penncloud";
-
-    // Store in SENDER's sent box (optional -- uncomment if you want sent mail)
-    // kv_->put(user + ":sent", "msg:" + uid, make_meta_json(from_addr, to, subject, time_str, uid));
 
     // Determine recipient
     string recipient;
     bool        is_external = false;
 
     if (to.find('@') != string::npos) {
-        // Check if it's a local @penncloud address
         auto at = to.find('@');
         string domain = to.substr(at + 1);
         if (domain == "penncloud") {
-            recipient = to.substr(0, at);  // strip @penncloud
+            recipient = to.substr(0, at);
         } else {
             is_external = true;
         }
     } else {
-        recipient = to;  // bare username = local user
+        recipient = to;
     }
 
     if (is_external) {
         string smtp_err;
-        if (!smtp_client_send(from_addr, to, subject, body, smtp_err))
-            return HttpResponse::json("{\"ok\":false,\"error\":\"" + smtp_err + "\"}");
-        return HttpResponse::json("{\"ok\":true}");
+        if (!smtp_client_send(from_addr, to, subject, body, smtp_err)) {
+            auto esc = [](const string& s) {
+                string out;
+                for (char c : s) {
+                    if (c == '"')       out += "\\\"";
+                    else if (c == '\\') out += "\\\\";
+                    else out += c;
+                }
+                return out;
+            };
+            return HttpResponse::json("{\"ok\":false,\"error\":\"" + esc(smtp_err) + "\"}");
+        }
     }
+
+    // Store in sender's sent box (only after delivery succeeds)
+    {
+        string sent_row = user + ":sent";
+        kv_->put(sent_row, "msg:" + uid, make_meta_json(from_addr, to, subject, time_str, uid));
+        kv_->put(sent_row, "body:" + uid, body);
+        for (int attempt = 0; attempt < 5; ++attempt) {
+            string old_index = kv_->get_str(sent_row, "index");
+            string new_index = uid + (old_index.empty() ? "" : "," + old_index);
+            if (old_index.empty()) {
+                if (kv_->put(sent_row, "index", new_index)) break;
+            } else {
+                if (kv_->cput(sent_row, "index", old_index, new_index)) break;
+                this_thread::sleep_for(chrono::milliseconds(5));
+            }
+        }
+    }
+
+    if (is_external)
+        return HttpResponse::json("{\"ok\":true}");
+
 
     // Local delivery: PUT into recipient's KV store
     string meta = make_meta_json(from_addr, to, subject, time_str, uid);
@@ -401,9 +442,9 @@ HttpResponse FEServer::handle_delete_email(const HttpRequest& req,
 
     string row = user + ":mail";
 
-    // Remove metadata and body
     kv_->del(row, "msg:"  + uid);
     kv_->del(row, "body:" + uid);
+    kv_->del(row, "read:" + uid);
 
     // Remove from index (CPUT-based -- filter out the uid)
     for (int attempt = 0; attempt < 5; ++attempt) {
@@ -431,4 +472,30 @@ HttpResponse FEServer::handle_delete_email(const HttpRequest& req,
     }
 
     return HttpResponse::json("{\"ok\":true}");
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/sent  -> {"ok":true,"emails":[{uid,from,to,subject,time},...]}
+// ---------------------------------------------------------------------------
+HttpResponse FEServer::handle_sent(const HttpRequest&, const string& user) {
+    string row = user + ":sent";
+    string index = kv_->get_str(row, "index");
+
+    string json = "[";
+    bool first = true;
+
+    if (!index.empty()) {
+        istringstream ss(index);
+        string uid;
+        while (getline(ss, uid, ',')) {
+            if (uid.empty()) continue;
+            string meta = kv_->get_str(row, "msg:" + uid);
+            if (meta.empty()) continue;
+            if (!first) json += ",";
+            first = false;
+            json += meta;
+        }
+    }
+    json += "]";
+    return HttpResponse::json("{\"ok\":true,\"emails\":" + json + "}");
 }

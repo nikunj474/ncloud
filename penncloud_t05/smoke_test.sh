@@ -63,15 +63,35 @@ assert r['ok'], f"send failed: {r}"
 uid = r.get('uid','')
 print(f"[PASS] POST /api/send  ->  email sent, uid={uid[:16]}...")
 
-# 5. Inbox now has one email
+# 5. Inbox now has one email, marked unread
 r = json.loads(get('/api/inbox'))
 assert r['ok'] and len(r['emails']) == 1, f"inbox should have 1 email: {r}"
-print("[PASS] GET /api/inbox  ->  1 email in inbox")
+assert r['emails'][0].get('read') == False, f"new email should be unread: {r['emails'][0]}"
+print("[PASS] GET /api/inbox  ->  1 unread email in inbox")
 
-# 6. Read email
+# 5b. Sent box has one email
+r = json.loads(get('/api/sent'))
+assert r['ok'] and len(r['emails']) == 1, f"sent should have 1 email: {r}"
+assert r['emails'][0]['subject'] == 'Hello', f"sent subject mismatch: {r['emails'][0]}"
+print("[PASS] GET /api/sent  ->  1 email in sent box")
+
+# 6. Read email -> marks it as read
 r = json.loads(get(f'/api/email/{uid}'))
 assert r['ok'] and r['email']['subject'] == 'Hello', f"read failed: {r}"
 print("[PASS] GET /api/email/:uid  ->  email body correct")
+
+# 6b. Inbox now shows email as read
+r = json.loads(get('/api/inbox'))
+assert r['ok'] and r['emails'][0].get('read') == True, f"email should be marked read: {r['emails'][0]}"
+print("[PASS] GET /api/inbox  ->  email marked as read after viewing")
+
+# 6c. View sent email via ?box=sent
+sent_r = json.loads(get('/api/sent'))
+sent_uid = sent_r['emails'][0]['uid']
+r = json.loads(get(f'/api/email/{sent_uid}?box=sent'))
+assert r['ok'] and r['email']['subject'] == 'Hello', f"sent email view failed: {r}"
+assert 'body' in r['email'], f"sent email missing body field: {r['email']}"
+print("[PASS] GET /api/email/:uid?box=sent  ->  sent email viewable")
 
 # 7. Delete email
 r = post('/api/delete-email', {'uid': uid})

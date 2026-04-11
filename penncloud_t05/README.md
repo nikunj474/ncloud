@@ -38,6 +38,28 @@ mkdir -p /tmp/pc_data
 
 Open browser at `http://127.0.0.1:8080`
 
+## Testing
+
+```bash
+# Quick smoke test (Python)
+bash smoke_test.sh
+
+# Smoke test (curl, no Python dependency)
+bash smoke_test_curl.sh
+
+# SMTP protocol unit tests
+bash test_smtp_unit.sh
+
+# SMTP end-to-end integration tests
+bash test_smtp_e2e.sh
+
+# Webmail feature tests (sent box, read/unread, etc.)
+bash test_mail_features.sh
+
+# Full rebuild + smoke test
+bash test_demo1.sh
+```
+
 ## Directory Structure
 
 ```
@@ -58,7 +80,7 @@ frontend/
     kv_client.h      -- frontend KV client with connection pool
     fe_server.h      -- FEServer class declaration
     fe_server.cc     -- server impl + SPA shell + auth handlers
-    handlers_mail.cc -- inbox, send, view, delete email + SMTP outbound client
+    handlers_mail.cc -- inbox, send, view, delete, sent email + SMTP outbound
     smtp_server.h    -- inbound SMTP server (receives external email)
     main.cc          -- entry point
 
@@ -66,6 +88,18 @@ coordinator/
   src/
     coordinator.cc   -- tablet map + heartbeat + leader election
 ```
+
+## Webmail API
+
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/api/inbox` | List inbox emails (includes `read` status) |
+| GET | `/api/email/:uid` | View email body (marks as read) |
+| GET | `/api/email/:uid?box=sent` | View sent email body |
+| POST | `/api/send` | Send email (local or external SMTP) |
+| POST | `/api/delete-email` | Delete email from inbox |
+| GET | `/api/sent` | List sent emails |
+| GET | `/events` | SSE stream for live inbox updates (F1) |
 
 ## Coordinator Config (`coordinator/coordinator.conf`)
 
@@ -77,13 +111,14 @@ tablet tablet_aa_am aa am node1 node2 node3
 tablet tablet_an_zz an   node1 node2 node3
 ```
 
-
+## Progress
 
 - [x] KV server: PUT/GET/CPUT/DELETE, WAL, checkpoint, recovery, Bloom filter, shared_mutex locking
 - [x] Frontend: HTTP/1.1, cookies, sessions, SPA shell, auth, webmail handlers
 - [x] Coordinator: heartbeat, fault detection, leader election, LOOKUP
 - [x] Replication: primary-backup protocol, write coalescing (B2), LSN tracking
-- [ ] Drive handlers (Yke — next)
+- [x] Drive handlers (Yke)
+- [x] SMTP inbound/outbound (Liudawei)
+- [x] Webmail: sent box, read/unread tracking, reply with quoted body (Liudawei)
+- [x] Admin console with live metrics (Yke)
 - [ ] Replication wired into server.cc (Rohit — next)
-- [x] SMTP inbound/outbound (Liudawei — Phase 2/3)
-- [ ] Admin console with live metrics (Yke — Phase 2)

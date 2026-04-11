@@ -67,17 +67,35 @@ OK=$(json_val "ok" "$RESP")
 EMAIL_UID=$(json_val "uid" "$RESP")
 check "POST /api/send  ->  email sent, uid=${EMAIL_UID:0:16}..." '[[ "$OK" == "true" ]]'
 
-# 5. Inbox now has one email
+# 5. Inbox now has one unread email
 RESP=$(curl -s -b $COOKIES $BASE/api/inbox)
 OK=$(json_val "ok" "$RESP")
 HAS_EMAIL=$(echo "$RESP" | grep -c '"uid"' || true)
-check "GET /api/inbox  ->  1 email in inbox" '[[ "$OK" == "true" && "$HAS_EMAIL" -ge 1 ]]'
+HAS_UNREAD=$(echo "$RESP" | grep -c '"read":false' || true)
+check "GET /api/inbox  ->  1 unread email in inbox" '[[ "$OK" == "true" && "$HAS_EMAIL" -ge 1 && "$HAS_UNREAD" -ge 1 ]]'
 
-# 6. Read email
+# 5b. Sent box has one email
+RESP=$(curl -s -b $COOKIES $BASE/api/sent)
+OK=$(json_val "ok" "$RESP")
+SENT_COUNT=$(echo "$RESP" | grep -c '"uid"' || true)
+check "GET /api/sent  ->  1 email in sent box" '[[ "$OK" == "true" && "$SENT_COUNT" -ge 1 ]]'
+
+# 6. Read email -> marks as read
 RESP=$(curl -s -b $COOKIES "$BASE/api/email/$EMAIL_UID")
 OK=$(json_val "ok" "$RESP")
 SUBJ=$(json_val "subject" "$RESP")
 check "GET /api/email/:uid  ->  email body correct" '[[ "$OK" == "true" && "$SUBJ" == "Hello" ]]'
+
+# 6b. Inbox now shows email as read
+RESP=$(curl -s -b $COOKIES $BASE/api/inbox)
+HAS_READ=$(echo "$RESP" | grep -c '"read":true' || true)
+check "GET /api/inbox  ->  email marked as read after viewing" '[[ "$HAS_READ" -ge 1 ]]'
+
+# 6c. View sent email via ?box=sent
+RESP=$(curl -s -b $COOKIES "$BASE/api/email/$EMAIL_UID?box=sent")
+OK=$(json_val "ok" "$RESP")
+SUBJ=$(json_val "subject" "$RESP")
+check "GET /api/email/:uid?box=sent  ->  sent email viewable" '[[ "$OK" == "true" && "$SUBJ" == "Hello" ]]'
 
 # 7. Delete email
 RESP=$(curl -s -b $COOKIES -X POST $BASE/api/delete-email -d "uid=$EMAIL_UID")

@@ -78,16 +78,21 @@ private:
 
     static std::string now_str() {
         auto t = time(nullptr);
+        struct tm tm_buf;
+        localtime_r(&t, &tm_buf);
         char buf[64];
-        strftime(buf, sizeof(buf), "%b %d, %Y %H:%M", localtime(&t));
+        strftime(buf, sizeof(buf), "%b %d, %Y %H:%M", &tm_buf);
         return buf;
     }
 
     static std::string json_escape(const std::string& s) {
         std::string out;
         for (char c : s) {
-            if (c == '"') out += "\\\"";
+            if (c == '"')       out += "\\\"";
             else if (c == '\\') out += "\\\\";
+            else if (c == '\n') out += "\\n";
+            else if (c == '\r') out += "\\r";
+            else if (c == '\t') out += "\\t";
             else out += c;
         }
         return out;

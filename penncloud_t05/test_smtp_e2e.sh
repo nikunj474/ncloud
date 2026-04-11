@@ -201,11 +201,40 @@ if inbox.get('emails'):
           "alice" in e.get('from', ''),
           e.get('from', ''))
 
-    # Read full email
+# =====================================================================
+# Scenario 1b: Alice's sent box has the email
+# =====================================================================
+sent = alice.get_json('/api/sent')
+check("S1b: Alice's sent box has 1 email",
+      sent.get('ok') and len(sent.get('emails', [])) == 1,
+      f"sent emails={len(sent.get('emails', []))}")
+if sent.get('emails'):
+    check("S1b: Sent email subject correct",
+          sent['emails'][0].get('subject') == "Hello Bob",
+          sent['emails'][0].get('subject', ''))
+
+# =====================================================================
+# Scenario 1c: Bob's inbox email is unread, becomes read after viewing
+# (Must run BEFORE get_email which marks as read)
+# =====================================================================
+inbox = bob.inbox()
+if inbox.get('emails'):
+    e = inbox['emails'][0]
+    check("S1c: Email is initially unread",
+          e.get('read') == False,
+          f"read={e.get('read')}")
+
+    # Now read the full email (marks as read + verifies body)
     full = bob.get_email(e['uid'])
     check("S1: Email body correct",
           full.get('ok') and "Hi Bob, this is Alice!" in full.get('email', {}).get('body', ''),
           full.get('email', {}).get('body', '')[:80])
+
+    inbox2 = bob.inbox()
+    e2 = inbox2['emails'][0]
+    check("S1c: Email is read after viewing",
+          e2.get('read') == True,
+          f"read={e2.get('read')}")
 
 # =====================================================================
 # Scenario 2: External server sends email to Alice via SMTP
