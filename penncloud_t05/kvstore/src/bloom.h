@@ -2,7 +2,6 @@
 #pragma once
 
 // bloom.h  --  Bloom filter for PennCloud tablet key membership
-
 //
 // WHY: On GET, before hitting the unordered_map, we check the Bloom
 // filter.  If it says "definitely NOT present" we return -ERR immediately 
@@ -19,7 +18,6 @@
 //
 // THREAD SAFETY: NOT thread-safe internally.  Callers must hold appropriate
 // lock (shared lock for may_contain, exclusive lock for add).
-
 
 #include <cstdint>
 #include <cstring>

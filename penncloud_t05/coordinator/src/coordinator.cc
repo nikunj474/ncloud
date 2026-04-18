@@ -131,6 +131,11 @@ private:
     const TabletGroup* find_tablet(const string& row) const;
     // Find the primary node for a tablet
     StorageNode* primary_for_tablet(const TabletGroup& tg);
+
+    bool promote_node(const string& tablet_name, const string& node_id);
+    bool update_tablet_primary(const string& tablet_name, const string& new_primary_id);
+    void refresh_roles_for_tablet(const TabletGroup& tg);
+
 };
 
 // ---------------------------------------------------------------------------
@@ -146,17 +151,24 @@ private:
 //   tablet tablet_an_zz an zz node1 node2 node3
 // ---------------------------------------------------------------------------
 void Coordinator::load_config(const string& path) {
+
     ifstream f(path);
     if (!f) {
         cout << "[coord] no config file found at " << path
                   << " -- using single-node defaults\n";
+
         // Default: one node, one tablet covering all rows
         StorageNode n;
-        n.id = "node1"; n.host = "127.0.0.1"; n.port = 5000;
+        n.id = "node1"; 
+        n.host = "127.0.0.1"; 
+        n.port = 5000;
+        n.role = NodeRole::PRIMARY;
         nodes_["node1"] = n;
 
         TabletGroup tg;
-        tg.name = "tablet0"; tg.row_start = ""; tg.row_end = "";
+        tg.name = "tablet0"; 
+        tg.row_start = ""; 
+        tg.row_end = "";
         tg.node_ids = {"node1"};
         tablets_.push_back(tg);
         return;
@@ -165,25 +177,48 @@ void Coordinator::load_config(const string& path) {
     string line;
     while (getline(f, line)) {
         if (line.empty() || line[0] == '#') continue;
+
         istringstream ss(line);
         string type;
         ss >> type;
 
+        // Note: nodes must be loaded before tablets so we can validate node IDs
         if (type == "node") {
             StorageNode n;
             ss >> n.id >> n.host >> n.port;
             nodes_[n.id] = n;
             cout << "[coord] registered node " << n.id
                       << " at " << n.host << ":" << n.port << "\n";
+
+        // Note: tablets must be loaded after nodes so we can validate node IDs              
         } else if (type == "tablet") {
             TabletGroup tg;
             ss >> tg.name >> tg.row_start >> tg.row_end;
+
             string nid;
             while (ss >> nid) tg.node_ids.push_back(nid);
+
+            if (tg.node_ids.empty()) {
+                cerr << "[coord] warning: tablet " << tg.name
+                     << " has no replicas\n";
+            }
+
             tablets_.push_back(tg);
+
             cout << "[coord] tablet " << tg.name
                       << " [" << tg.row_start << ", " << tg.row_end << ")"
                       << " on " << tg.node_ids.size() << " nodes\n";
+
+        }
+    }
+
+    for (const auto& tg : tablets_) {
+        for (size_t i = 0; i < tg.node_ids.size(); ++i) {
+            auto it = nodes_.find(tg.node_ids[i]);
+            if (it == nodes_.end()) continue;
+
+            if (i == 0) it->second.role = NodeRole::PRIMARY;
+            else        it->second.role = NodeRole::SECONDARY;
         }
     }
 }
@@ -232,6 +267,10 @@ void Coordinator::ping_node(StorageNode& node) {
                   << node.missed << "/" << cfg_.hb_miss_thresh << "\n";
         if (node.alive && node.missed >= cfg_.hb_miss_thresh) {
             node.alive = false;
+            
+            // Role is unknown until we can confirm it's alive again (could be network blip)
+            node.role = NodeRole::UNKNOWN;
+
             cout << "[coord] node " << node.id << " marked DOWN\n";
             handle_node_failure(node);
         }
@@ -263,52 +302,53 @@ void Coordinator::ping_node(StorageNode& node) {
 // handle_node_failure: if the dead node was a primary, elect new primary
 // ---------------------------------------------------------------------------
 void Coordinator::handle_node_failure(StorageNode& dead_node) {
-    shared_lock<shared_mutex> tlk(tablets_mu_);
-    for (auto& tg : tablets_) {
-        if (tg.node_ids.empty()) continue;
-        if (tg.node_ids[0] != dead_node.id) continue;
+    vector<pair<string, string>> promotions; // {tablet_name, new_primary_id}
 
-        // Dead node was primary for this tablet
-        cout << "[coord] tablet " << tg.name
-                  << " primary " << dead_node.id << " is down, electing...\n";
-        // Find alive secondary with highest LSN
-        string best_id;
-        uint64_t    best_lsn = 0;
-        for (size_t i = 1; i < tg.node_ids.size(); ++i) {
-            auto it = nodes_.find(tg.node_ids[i]);
-            if (it == nodes_.end() || !it->second.alive) continue;
-            if (it->second.lsn >= best_lsn) {
-                best_lsn = it->second.lsn;
-                best_id  = it->second.id;
+    {
+        shared_lock<shared_mutex> tlk(tablets_mu_);
+        shared_lock<shared_mutex> nlk(nodes_mu_);
+
+        for (const auto& tg : tablets_) {
+            if (tg.node_ids.empty()) continue;
+            if (tg.node_ids[0] != dead_node.id) continue;
+
+            string best_id;
+            uint64_t best_lsn = 0;
+
+            for (size_t i = 1; i < tg.node_ids.size(); ++i) {
+                auto it = nodes_.find(tg.node_ids[i]);
+                if (it == nodes_.end() || !it->second.alive) continue;
+                if (it->second.lsn >= best_lsn) {
+                    best_lsn = it->second.lsn;
+                    best_id = it->second.id;
+                }
             }
+
+            if (best_id.empty()) {
+                cerr << "[coord] tablet " << tg.name
+                     << " has NO alive secondaries -- unavailable!\n";
+                continue;
+            }
+
+            promotions.push_back({tg.name, best_id});
         }
-        if (best_id.empty()) {
-            cerr << "[coord] tablet " << tg.name
-                      << " has NO alive secondaries -- unavailable!\n";
+    }
+
+    for (const auto& [tablet_name, new_primary_id] : promotions) {
+        cout << "[coord] promoting " << new_primary_id
+             << " as new primary for " << tablet_name << "\n";
+
+        if (!promote_node(tablet_name, new_primary_id)) {
+            cerr << "[coord] promotion failed for " << tablet_name
+                 << " -> " << new_primary_id << "\n";
             continue;
         }
 
-        // Promote: move best_id to front of node_ids list
-        // (requires upgrading the shared lock -- done here under unique lock)
-        // NOTE: tablets_mu_ is already held as shared_lock from caller.
-        // We need to re-acquire as unique to modify. Safe because this is
-        // a failure path (rare) and correctness > performance here.
-        cout << "[coord] promoting " << best_id
-                  << " (LSN=" << best_lsn << ") as new primary for "
-                  << tg.name << "\n";
-
-        // Signal new primary to take over (send BECOME_PRIMARY command)
-        auto& new_primary = nodes_.at(best_id);
-        int fd = connect_node(new_primary);
-        if (fd >= 0) {
-            string cmd = "BECOME_PRIMARY " + tg.name + "\r\n";
-            ::send(fd, cmd.data(), cmd.size(), MSG_NOSIGNAL);
-            ::close(fd);
+        if (!update_tablet_primary(tablet_name, new_primary_id)) {
+            cerr << "[coord] failed to update tablet map for "
+                 << tablet_name << "\n";
+            continue;
         }
-
-        // Update tablet map (needs unique lock on tablets_mu_ -- restructure)
-        // For Phase 1, log the election and let the next LOOKUP reflect it.
-        // In Phase 2, this is updated atomically under exclusive write lock.
     }
 }
 
@@ -325,7 +365,7 @@ const TabletGroup* Coordinator::find_tablet(const string& row) const {
     return nullptr;
 }
 
-string Coordinator::handle_lookup(const string& row) {
+/* string Coordinator::handle_lookup(const string& row) {
     const TabletGroup* tg = find_tablet(row);
     if (!tg) return "-ERR no tablet for row\r\n";
 
@@ -340,7 +380,8 @@ string Coordinator::handle_lookup(const string& row) {
              + "\r\n";
     }
     return "-ERR all replicas down\r\n";
-}
+} */
+
 
 // ---------------------------------------------------------------------------
 // STATUS: return JSON of all nodes (for admin console F5)
@@ -464,6 +505,87 @@ int Coordinator::connect_node(const StorageNode& node) {
     return fd;
 }
 
+bool Coordinator::promote_node(const string& tablet_name, const string& node_id) {
+    StorageNode node_copy;
+    {
+        shared_lock<shared_mutex> nlk(nodes_mu_);
+        auto it = nodes_.find(node_id);
+        if (it == nodes_.end()) return false;
+        node_copy = it->second;
+    }
+
+    int fd = connect_node(node_copy);
+    if (fd < 0) return false;
+
+    string cmd = "BECOME_PRIMARY " + tablet_name + "\r\n";
+    if (::send(fd, cmd.data(), cmd.size(), MSG_NOSIGNAL) < 0) {
+        ::close(fd);
+        return false;
+    }
+
+    string resp;
+    bool ok = read_line(fd, resp) && resp.rfind("+OK", 0) == 0;
+    ::close(fd);
+    return ok;
+}
+
+bool Coordinator::update_tablet_primary(const string& tablet_name, 
+                                        const string& new_primary_id) {
+    TabletGroup update_tg;
+
+    {
+        unique_lock<shared_mutex> tlk(tablets_mu_);
+        auto it = find_if(tablets_.begin(), tablets_.end(),
+                        [&](const TabletGroup& tg) { return tg.name == tablet_name; });
+        if (it == tablets_.end()) return false;
+        
+        auto pos = find(it->node_ids.begin(), it->node_ids.end(), new_primary_id);
+        if (pos == it->node_ids.end()) return false;
+
+        it->node_ids.erase(pos);
+        it->node_ids.insert(it->node_ids.begin(), new_primary_id);
+        update_tg = *it;
+
+    }
+    refresh_roles_for_tablet(update_tg);
+    return true;
+}
+
+void Coordinator::refresh_roles_for_tablet(const TabletGroup& tg) {
+    unique_lock<shared_mutex> nlk(tablets_mu_);
+
+    for (size_t i = 0; i < tg.node_ids.size(); ++i) {
+        auto it = nodes_.find(tg.node_ids[i]);
+        if (it == nodes_.end()) continue;
+
+        if (i == 0) it->second.role = NodeRole::PRIMARY;
+        else         it->second.role = NodeRole::SECONDARY;
+    }
+}
+
+string Coordinator::handle_lookup(const string& row) {
+    const TabletGroup* tg = find_tablet(row);
+    if (!tg) return "-ERR no tablet for row\r\n";
+    if (tg->node_ids.empty()) return "-ERR no replicas\r\n";
+
+    shared_lock<shared_mutex> nlk(nodes_mu_);
+
+    auto it = nodes_.find(tg->node_ids[0]);
+    if (it != nodes_.end() && it->second.alive) {
+        const StorageNode& n = it->second;
+        return "+OK " + n.host + " " + to_string(n.port) + " primary\r\n";
+    }
+
+    for (size_t i = 1; i < tg->node_ids.size(); ++i) {
+        auto jt = nodes_.find(tg->node_ids[i]);
+        if (jt == nodes_.end() || !jt->second.alive) continue;
+        const StorageNode& n = jt->second;
+        return "+OK " + n.host + " " + to_string(n.port) + " secondary\r\n";
+    }
+
+    return "-ERR all replicas down\r\n";
+}
+
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
@@ -489,3 +611,5 @@ int main(int argc, char* argv[]) {
     coord.run();
     return 0;
 }
+
+

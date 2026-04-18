@@ -7,7 +7,6 @@
 // Example:
 //   ./kvserver --port 5000 --data /var/penncloud/data --tablet tablet_aa_af
 
-
 #include "server.h"
 #include <iostream>
 #include <csignal>
@@ -15,7 +14,6 @@
 #include <string>
 #include <stdexcept>
 using namespace std;
-
 
 // Global server pointer for signal handler
 static KVServer* g_server = nullptr;
