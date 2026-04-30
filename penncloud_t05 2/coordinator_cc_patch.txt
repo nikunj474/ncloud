@@ -1,0 +1,126 @@
+Replace only the `handle_node_failure` function in `coordinator/src/coordinator.cc` with this:
+
+void Coordinator::handle_node_failure(const std::string& dead_id) {
+    struct FailurePlan {
+        std::string tablet_name;
+        std::string dead_id;
+        StorageNode new_primary;
+        std::vector<StorageNode> followers;
+    };
+
+    std::vector<FailurePlan> plans;
+    {
+        std::shared_lock<std::shared_mutex> nlk(nodes_mu_);
+        std::shared_lock<std::shared_mutex> tlk(tablets_mu_);
+
+        auto dead_it = nodes_.find(dead_id);
+        if (dead_it == nodes_.end()) return;
+
+        for (const auto& tg : tablets_) {
+            if (tg.node_ids.empty() || tg.node_ids[0] != dead_id) continue;
+
+            std::cout << "[coord] tablet " << tg.name << " primary " << dead_id
+                      << " is down, electing...\n";
+
+            std::string best_id;
+            uint64_t best_lsn = 0;
+            std::vector<StorageNode> followers;
+
+            for (size_t i = 1; i < tg.node_ids.size(); ++i) {
+                auto it = nodes_.find(tg.node_ids[i]);
+                if (it == nodes_.end() || !it->second.alive) continue;
+                if (best_id.empty() || it->second.lsn >= best_lsn) {
+                    best_lsn = it->second.lsn;
+                    best_id = it->second.id;
+                }
+            }
+            if (best_id.empty()) {
+                std::cerr << "[coord] tablet " << tg.name
+                          << " has NO alive secondaries -- unavailable!\n";
+                continue;
+            }
+
+            auto pit = nodes_.find(best_id);
+            if (pit == nodes_.end()) continue;
+
+            for (size_t i = 1; i < tg.node_ids.size(); ++i) {
+                if (tg.node_ids[i] == best_id) continue;
+                auto it = nodes_.find(tg.node_ids[i]);
+                if (it == nodes_.end() || !it->second.alive) continue;
+                followers.push_back(it->second);
+            }
+
+            plans.push_back(FailurePlan{tg.name, dead_id, pit->second, followers});
+        }
+    }
+
+    for (const auto& plan : plans) {
+        if (!promote_node(const_cast<StorageNode&>(plan.new_primary), plan.tablet_name)) {
+            std::cerr << "[coord] promotion RPC failed for " << plan.new_primary.id << "\n";
+            continue;
+        }
+
+        std::vector<std::string> healthy_followers;
+        for (const auto& replica : plan.followers) {
+            std::cout << "[coord] reconfiguring " << replica.id
+                      << " as secondary of new primary " << plan.new_primary.id
+                      << " for " << plan.tablet_name << "\n";
+
+            if (!demote_and_sync_node(const_cast<StorageNode&>(replica), plan.new_primary, plan.tablet_name)) {
+                std::cerr << "[coord] failed to re-sync replica " << replica.id
+                          << " under new primary " << plan.new_primary.id
+                          << " for " << plan.tablet_name << "\n";
+                continue;
+            }
+
+            if (!add_replica_to_primary(const_cast<StorageNode&>(plan.new_primary), replica, plan.tablet_name)) {
+                std::cerr << "[coord] failed to add replica " << replica.id
+                          << " to new primary " << plan.new_primary.id
+                          << " for " << plan.tablet_name << "\n";
+                continue;
+            }
+
+            healthy_followers.push_back(replica.id);
+        }
+
+        {
+            std::unique_lock<std::shared_mutex> nlk(nodes_mu_);
+            std::unique_lock<std::shared_mutex> tlk(tablets_mu_);
+
+            auto dead_it = nodes_.find(plan.dead_id);
+            auto new_it = nodes_.find(plan.new_primary.id);
+            if (new_it == nodes_.end()) continue;
+
+            for (auto& tg : tablets_) {
+                if (tg.name != plan.tablet_name) continue;
+                auto pos = std::find(tg.node_ids.begin(), tg.node_ids.end(), plan.new_primary.id);
+                if (pos == tg.node_ids.end()) break;
+                std::swap(tg.node_ids[0], *pos);
+                break;
+            }
+
+            if (dead_it != nodes_.end()) {
+                dead_it->second.role = NodeRole::UNKNOWN;
+                dead_it->second.alive = false;
+            }
+            new_it->second.role = NodeRole::PRIMARY;
+            new_it->second.alive = true;
+
+            for (auto& [id, node] : nodes_) {
+                if (id == plan.new_primary.id) continue;
+                if (!node.alive) {
+                    node.role = NodeRole::UNKNOWN;
+                    continue;
+                }
+                node.role = NodeRole::UNKNOWN;
+            }
+            for (const auto& follower_id : healthy_followers) {
+                auto fit = nodes_.find(follower_id);
+                if (fit != nodes_.end()) fit->second.role = NodeRole::SECONDARY;
+            }
+        }
+
+        std::cout << "[coord] promoted " << plan.new_primary.id
+                  << " as new primary for " << plan.tablet_name << "\n";
+    }
+}

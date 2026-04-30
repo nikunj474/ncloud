@@ -1,7 +1,3 @@
-build/
-*.o
-*.d
-*.out
+.env
 *.log
 .DS_Store
-.env
