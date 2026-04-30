@@ -5,12 +5,21 @@ UNAME_S := $(shell uname -s)
 LDFLAGS := -pthread
 LDLIBS :=
 
+# Optional libcurl-backed SMTP relay path. Off by default so the build does
+# not require libcurl. Enable with: make USE_CURL=1
+USE_CURL ?= 0
+
 ifeq ($(UNAME_S),Linux)
-    LDLIBS += -lresolv -lcurl
+    LDLIBS += -lresolv
 endif
 
 ifeq ($(UNAME_S),Darwin)
-    LDLIBS += -lresolv -lcurl
+    LDLIBS += -lresolv
+endif
+
+ifeq ($(USE_CURL),1)
+    CXXFLAGS += -DPENN_USE_CURL
+    LDLIBS += -lcurl
 endif
 
 SRCS := src/main.cc src/fe_server.cc src/handlers_mail.cc

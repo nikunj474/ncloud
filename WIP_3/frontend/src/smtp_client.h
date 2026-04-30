@@ -38,7 +38,9 @@
 #include <vector>
 #include <iostream>
 
+#ifdef PENN_USE_CURL
 #include <curl/curl.h>
+#endif
 
 struct SMTPExternalResult {
     bool ok = false;
@@ -63,6 +65,7 @@ inline bool starts_with(const std::string& s, const std::string& p) {
     return s.size() >= p.size() && s.compare(0, p.size(), p) == 0;
 }
 
+#ifdef PENN_USE_CURL
 inline CURLcode ensure_curl_global_init() {
     static std::once_flag once;
     static CURLcode init_rc = CURLE_OK;
@@ -90,6 +93,7 @@ inline size_t curl_payload_source(char* ptr, size_t size, size_t nmemb, void* us
     st->bytes_read += take;
     return take;
 }
+#endif  // PENN_USE_CURL
 
 inline std::string rfc2822_date_now() {
     std::time_t t = std::time(nullptr);
@@ -133,6 +137,7 @@ inline std::string build_message(const std::string& from_addr,
     return oss.str();
 }
 
+#ifdef PENN_USE_CURL
 inline SMTPExternalResult smtp_send_via_relay(const std::string& from_addr,
                                               const std::string& to_addr,
                                               const std::string& subject,
@@ -209,6 +214,7 @@ inline SMTPExternalResult smtp_send_via_relay(const std::string& from_addr,
     curl_easy_cleanup(curl);
     return res;
 }
+#endif  // PENN_USE_CURL
 
 // Direct MX fallback path
 
@@ -495,7 +501,13 @@ inline SMTPExternalResult smtp_send_external(const std::string& from_addr,
     std::string mode_s = mode ? mode : "direct";
 
     if (mode_s == "relay") {
+#ifdef PENN_USE_CURL
         return smtp_client_detail::smtp_send_via_relay(from_addr, to_addr, subject, body);
+#else
+        SMTPExternalResult res;
+        res.error = "SMTP relay mode requires libcurl; rebuild with USE_CURL=1 (or unset SMTP_MODE to use direct MX)";
+        return res;
+#endif
     }
     return smtp_client_detail::smtp_send_direct(from_addr, to_addr, subject, body);
 }

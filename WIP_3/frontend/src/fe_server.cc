@@ -451,17 +451,17 @@ static std::string frontend_self_kill_helper_cmd_admin(const std::vector<int>& k
                                                        int stub_port,
                                                        int stub_peer,
                                                        const std::string& fe_bin) {
+    // No lsof in the container; use pkill -f matching the --port argument.
     std::string script = "sleep 0.15; ";
     for (int port : kill_ports) {
         if (port <= 0) continue;
         std::string p = std::to_string(port);
-        script += "pids=$(lsof -nP -tiTCP:" + p + " -sTCP:LISTEN 2>/dev/null||true); ";
-        script += "[ -n \"$pids\" ] && kill -KILL $pids 2>/dev/null||true; ";
+        script += "pkill -KILL -f -- \"--port " + p + "\" 2>/dev/null || true; ";
     }
     if (stub_port > 0 && stub_peer > 0 && !fe_bin.empty() && file_exists_admin(fe_bin)) {
         std::string sp = std::to_string(stub_port);
         script += "for i in 1 2 3 4 5 6 7 8 9 10; do ";
-        script += "if ! lsof -nP -tiTCP:" + sp + " -sTCP:LISTEN >/dev/null 2>&1; then ";
+        script += "if ! pgrep -f -- \"--port " + sp + "\" >/dev/null 2>&1; then ";
         script += "exec " + shell_escape_admin(fe_bin) +
                   " --port " + sp +
                   " --redirect-to http://127.0.0.1:" + std::to_string(stub_peer) + "; ";
@@ -492,23 +492,30 @@ static void start_fe_redirect_stub(int killed_port, const std::string& fe_bin) {
 
 static std::string kill_port_cmd_admin(int port) {
     std::string p = std::to_string(port);
+    // No lsof in the container; match by --port argument with pkill -f.
+    // Send SIGKILL immediately -- admin kill must be instant.
     std::string cmd;
-    // Send SIGKILL immediately — no grace period; admin kill must be instant
-    cmd += "pids=$(lsof -nP -tiTCP:" + p + " -sTCP:LISTEN 2>/dev/null || true); ";
-    cmd += "[ -n \"$pids\" ] && kill -KILL $pids 2>/dev/null || true; ";
+    cmd += "pkill -KILL -f -- \"--port " + p + "\" 2>/dev/null || true; ";
     cmd += "true";
     return cmd;
 }
 
 static void kill_ports_fast_admin(const std::string& label, const std::vector<int>& ports) {
-    // Kill all ports in parallel in a single shell invocation to minimize latency
+    // Kill all ports in parallel in a single shell invocation to minimize latency.
+    // The course container does not ship lsof/fuser/ss, so we match by command
+    // line using pkill -f. Patterns are written so that "--port N" does not
+    // accidentally match "--kv-port N" or "--repl-port N" -- the longer flags do
+    // not contain "--port" as a substring.
     std::string combined;
     for (int port : ports) {
         if (port <= 0) continue;
         admin_log("graceful shutdown triggered for " + label + " port " + std::to_string(port));
         std::string p = std::to_string(port);
-        combined += "{ pids=$(lsof -nP -tiTCP:" + p + " -sTCP:LISTEN 2>/dev/null || true); "
-                    "[ -n \"$pids\" ] && kill -KILL $pids 2>/dev/null || true; } & ";
+        // The "--" separator tells pkill that the pattern, which starts with
+        // "--", is positional and not an option flag.
+        combined += "{ pkill -KILL -f -- \"--port " + p + "\" 2>/dev/null; "
+                    "pkill -KILL -f -- \"--repl-port " + p + "\" 2>/dev/null; "
+                    "true; } & ";
     }
     if (!combined.empty()) {
         combined += "wait; true";
