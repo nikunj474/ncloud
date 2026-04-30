@@ -532,8 +532,13 @@ void Coordinator::handle_node_recovery(const std::string& live_id) {
             if (tg.node_ids.empty()) continue;
             auto pit = nodes_.find(tg.node_ids[0]);
             if (pit == nodes_.end() || !pit->second.alive) {
-                std::cerr << "[coord] cannot recover node " << live_id
-                          << " for " << tg.name << ": no live primary\\n";
+                // No live primary in this tablet group. Promote the recovering
+                // node instead of refusing recovery; otherwise "all dead, then
+                // restart first node" leaves it stuck in UNKNOWN forever and
+                // the system never becomes available again (checklist 10).
+                std::cout << "[coord] no live primary for " << tg.name
+                          << "; promoting recovering node " << live_id << "\n";
+                plans.push_back(RecoveryPlan{tg.name, live_it->second, {}, true});
                 continue;
             }
 
@@ -555,6 +560,28 @@ void Coordinator::handle_node_recovery(const std::string& live_id) {
             }
 
             std::unique_lock<std::shared_mutex> nlk(nodes_mu_);
+            std::unique_lock<std::shared_mutex> tlk(tablets_mu_);
+
+            // Move the recovering node into the primary slot of its tablet
+            // group so subsequent recoveries find a live primary at index 0.
+            // Demote whatever id was previously sitting in the primary slot
+            // (it was either the same node, or a stale entry from when the
+            // group had no live primary).
+            for (auto& tg : tablets_) {
+                if (tg.name != plan.tablet_name) continue;
+                auto pos = std::find(tg.node_ids.begin(), tg.node_ids.end(), live_id);
+                if (pos == tg.node_ids.end()) break;
+                std::string prior_primary_id = tg.node_ids[0];
+                std::swap(tg.node_ids[0], *pos);
+                if (prior_primary_id != live_id) {
+                    auto prior_it = nodes_.find(prior_primary_id);
+                    if (prior_it != nodes_.end() && prior_it->second.role == NodeRole::PRIMARY) {
+                        prior_it->second.role = NodeRole::UNKNOWN;
+                    }
+                }
+                break;
+            }
+
             auto it = nodes_.find(live_id);
             if (it != nodes_.end()) {
                 it->second.role = NodeRole::PRIMARY;
