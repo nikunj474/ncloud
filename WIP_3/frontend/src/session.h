@@ -32,7 +32,7 @@ using KVGetStatusFn = std::function<SessionKVReadStatus(
     const std::string& col,
     std::string& val_out)>;
 
-static constexpr int SESSION_TTL_SECONDS = 86400;  // 24 hours
+static constexpr int SESSION_TTL_SECONDS = 7 * 86400;  // 7 days
 
 inline std::string generate_sid() {
     std::ifstream urandom("/dev/urandom", std::ios::binary);

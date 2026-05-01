@@ -111,6 +111,7 @@ private:
     HttpResponse handle_mail_upload_attachment(const HttpRequest& req, const std::string& user);
     HttpResponse handle_mail_download_attachment(const HttpRequest& req, const std::string& user);
     HttpResponse handle_chat_rooms(const HttpRequest& req, const std::string& user);
+    HttpResponse handle_chat_create_room(const HttpRequest& req, const std::string& user);
     HttpResponse handle_chat_messages(const HttpRequest& req, const std::string& user);
     HttpResponse handle_chat_send(const HttpRequest& req, const std::string& user);
     HttpResponse handle_chat_dms(const HttpRequest& req, const std::string& user);

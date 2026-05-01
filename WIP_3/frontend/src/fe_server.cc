@@ -20,6 +20,7 @@
 #include <map>
 #include <vector>
 #include <algorithm>
+#include <cctype>
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <fcntl.h>
@@ -1030,12 +1031,23 @@ HttpResponse FEServer::dispatch(const HttpRequest& req) {
     if (path.rfind("/static/", 0) == 0)
         return handle_static(req);
 
+    if (method == "GET" &&
+        (path == "/inbox" || path == "/compose" || path == "/drive" ||
+         path == "/chat" || path == "/settings" || path == "/email")) {
+        return handle_spa_shell(req);
+    }
+
     // ---- Auth endpoints (no session required) --------------------------------
     if (path == "/api/login"  && method == "POST") return handle_login(req);
     if (path == "/api/signup" && method == "POST") return handle_signup(req);
 
     // ---- Protected endpoints (session required) ------------------------------
     std::string user = get_user(req);
+
+    if (path == "/api/me" && method == "GET") {
+        if (user.empty()) return HttpResponse::json(R"({"ok":false})");
+        return HttpResponse::json(std::string("{\"ok\":true,\"user\":") + json_str(user) + "}");
+    }
 
     if (path == "/api/logout"          && method == "POST") return handle_logout(req);
     if (path == "/api/change-password" && method == "POST") {
@@ -1083,6 +1095,10 @@ HttpResponse FEServer::dispatch(const HttpRequest& req) {
     if (path == "/api/chat/rooms" && method == "GET") {
         if (user.empty()) return HttpResponse::error(401, "Unauthorized");
         return handle_chat_rooms(req, user);
+    }
+    if (path == "/api/chat/rooms" && method == "POST") {
+        if (user.empty()) return HttpResponse::error(401, "Unauthorized");
+        return handle_chat_create_room(req, user);
     }
     if (path == "/api/chat/messages" && method == "GET") {
         if (user.empty()) return HttpResponse::error(401, "Unauthorized");
@@ -1191,19 +1207,27 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
       --success:   #1A6B3A;
       --danger:    #C53030;
       --sidebar-w: 220px;
+      --shadow-sm: 0 6px 18px rgba(1,31,91,0.06);
+      --shadow-md: 0 14px 34px rgba(1,31,91,0.10);
     }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-           background: var(--bg); color: var(--text); min-height: 100vh; }
+           background: linear-gradient(180deg, #F8FAFC 0%, var(--bg) 260px);
+           color: var(--text); min-height: 100vh;
+           -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
 
     /* ---- Login page ---- */
     #login-page {
       display: flex; align-items: center; justify-content: center;
-      min-height: 100vh; background: var(--penn-blue);
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at top left, rgba(0,102,204,0.35), transparent 34%),
+        linear-gradient(135deg, #011F5B 0%, #001642 100%);
     }
     .login-card {
       background: var(--surface); border-radius: 12px;
       padding: 40px 36px; width: 360px;
-      box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+      box-shadow: 0 24px 70px rgba(0,0,0,0.30);
+      border: 1px solid rgba(255,255,255,0.45);
     }
     .login-card h1 { color: var(--penn-blue); font-size: 26px; margin-bottom: 6px; }
     .login-card p  { color: var(--muted); font-size: 14px; margin-bottom: 24px; }
@@ -1212,15 +1236,41 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
                         color: var(--muted); margin-bottom: 6px; }
     .form-group input {
       width: 100%; padding: 10px 14px; border: 1px solid var(--border);
-      border-radius: 8px; font-size: 14px; outline: none; transition: border .15s;
+      border-radius: 8px; font-size: 14px; outline: none;
+      transition: border .15s, box-shadow .15s, background .15s;
     }
-    .form-group input:focus { border-color: var(--accent); }
+    .form-group input:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(0,102,204,0.12);
+    }
+    .field-help { font-size: 12px; color: var(--muted); margin-top: 6px; line-height: 1.35; }
+    .password-field { display: flex; gap: 8px; align-items: center; }
+    .password-field input { margin-bottom: 0; min-width: 0; }
+    .password-toggle {
+      flex: 0 0 40px; width: 40px; height: 40px; padding: 0;
+      display: inline-flex; align-items: center; justify-content: center;
+      border: 1px solid var(--border);
+      border-radius: 8px; background: var(--surface); color: var(--muted);
+      cursor: pointer;
+    }
+    .password-toggle:hover { background: #F8FBFF; color: var(--text); }
+    .password-toggle svg {
+      width: 18px; height: 18px; display: block;
+      stroke: currentColor; fill: none; stroke-width: 1.9;
+      stroke-linecap: round; stroke-linejoin: round;
+    }
+    .password-toggle .icon-eye { display: none; }
+    .password-toggle .icon-eye-off { display: block; }
+    .password-toggle.showing .icon-eye { display: block; }
+    .password-toggle.showing .icon-eye-off { display: none; }
     .btn {
       width: 100%; padding: 11px; border: none; border-radius: 8px;
-      font-size: 14px; font-weight: 600; cursor: pointer; transition: opacity .15s;
+      font-size: 14px; font-weight: 600; cursor: pointer;
+      transition: opacity .15s, transform .12s, box-shadow .15s;
     }
-    .btn-primary { background: var(--penn-blue); color: white; }
-    .btn-primary:hover { opacity: .88; }
+    .btn-primary { background: var(--penn-blue); color: white; box-shadow: var(--shadow-sm); }
+    .btn-primary:hover { opacity: .92; transform: translateY(-1px); box-shadow: var(--shadow-md); }
+    .btn:disabled { transform: none; box-shadow: none; }
     .btn-link { background: none; color: var(--accent); font-size: 13px;
                 text-decoration: underline; cursor: pointer; border: none; }
     .error-msg { color: var(--danger); font-size: 13px; margin-top: 8px; display: none; }
@@ -1231,13 +1281,16 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
       background: var(--penn-blue); color: white;
       padding: 0 24px; height: 52px;
       display: flex; align-items: center; justify-content: space-between;
+      box-shadow: 0 2px 12px rgba(1,31,91,0.18);
+      position: sticky; top: 0; z-index: 20;
     }
     .topbar .brand { font-size: 18px; font-weight: 700; letter-spacing: -0.3px; }
     .topbar .user-info { font-size: 13px; opacity: .8; display: flex;
                          align-items: center; gap: 16px; }
     .topbar .logout-btn { background: rgba(255,255,255,0.15); border: none;
                           color: white; padding: 5px 12px; border-radius: 6px;
-                          cursor: pointer; font-size: 12px; }
+                          cursor: pointer; font-size: 12px; transition: background .15s; }
+    .topbar .logout-btn:hover { background: rgba(255,255,255,0.24); }
     .main-layout { display: flex; flex: 1; }
     .sidebar {
       width: var(--sidebar-w); background: var(--surface);
@@ -1253,8 +1306,17 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
     .nav-item:hover { background: var(--bg); color: var(--text); }
     .nav-item.active { background: #EEF3FB; color: var(--penn-blue);
                        font-weight: 600; border-right: 3px solid var(--penn-blue); }
-    .nav-icon { width: 18px; text-align: center; font-size: 16px; }
-    .content { flex: 1; padding: 24px; overflow-y: auto; }
+    .nav-icon {
+      width: 24px; height: 24px; flex: 0 0 24px;
+      display: inline-flex; align-items: center; justify-content: center;
+      color: currentColor;
+    }
+    .nav-icon svg {
+      width: 18px; height: 18px; display: block;
+      stroke: currentColor; fill: none; stroke-width: 1.9;
+      stroke-linecap: round; stroke-linejoin: round;
+    }
+    .content { flex: 1; padding: 28px; overflow-y: auto; }
 
     /* ---- Inbox ---- */
     .page-title { font-size: 20px; font-weight: 700; color: var(--penn-blue);
@@ -1263,16 +1325,18 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
     .compose-btn {
       background: var(--penn-blue); color: white; border: none;
       padding: 8px 16px; border-radius: 8px; cursor: pointer;
-      font-size: 13px; font-weight: 600;
+      font-size: 13px; font-weight: 600; box-shadow: var(--shadow-sm);
+      transition: transform .12s, box-shadow .15s, opacity .15s;
     }
+    .compose-btn:hover { transform: translateY(-1px); box-shadow: var(--shadow-md); opacity: .94; }
     .email-list { background: var(--surface); border-radius: 10px;
-                  border: 1px solid var(--border); overflow: hidden; }
+                  border: 1px solid var(--border); overflow: hidden; box-shadow: var(--shadow-sm); }
     .email-row {
       display: flex; align-items: center; padding: 14px 20px;
       border-bottom: 1px solid var(--border); cursor: pointer;
-      transition: background .1s; gap: 16px;
+      transition: background .1s, transform .12s; gap: 16px;
     }
-    .email-row:hover { background: var(--bg); }
+    .email-row:hover { background: #F8FBFF; transform: translateX(2px); }
     .email-row:last-child { border-bottom: none; }
     .email-row.unread .email-from { font-weight: 700; }
     .email-from  { width: 160px; flex-shrink: 0; font-size: 14px;
@@ -1287,7 +1351,7 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
 
     /* ---- Email view ---- */
     .email-view { background: var(--surface); border-radius: 10px;
-                  border: 1px solid var(--border); padding: 28px; }
+                  border: 1px solid var(--border); padding: 28px; box-shadow: var(--shadow-sm); }
     .email-view h2 { font-size: 18px; margin-bottom: 12px; }
     .email-meta { color: var(--muted); font-size: 13px; margin-bottom: 16px;
                   display: flex; flex-direction: column; gap: 4px; }
@@ -1297,35 +1361,120 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
     .action-btn {
       padding: 7px 14px; border-radius: 7px; font-size: 13px; cursor: pointer;
       border: 1px solid var(--border); background: var(--surface);
+      transition: background .12s, border-color .12s, transform .12s;
     }
+    .action-btn:hover { background: #F8FBFF; border-color: #B8C7DA; transform: translateY(-1px); }
     .action-btn.danger { color: var(--danger); border-color: var(--danger); }
+
+    /* ---- Chat ---- */
+    .chat-panel {
+      display: grid; grid-template-rows: 1fr auto; gap: 14px; min-height: 520px;
+      background: linear-gradient(180deg, #FFFFFF 0%, #F8FBFF 100%);
+      border: 1px solid var(--border); border-radius: 14px; padding: 16px;
+      box-shadow: var(--shadow-sm);
+    }
+    .chat-messages {
+      overflow: auto; max-height: 460px; padding: 4px 6px 4px 2px;
+      scrollbar-width: thin;
+    }
+    .chat-empty {
+      padding: 42px 16px; text-align: center; color: var(--muted);
+      border: 1px dashed #D6E0EC; border-radius: 12px; background: rgba(255,255,255,.72);
+    }
+    .chat-bubble {
+      max-width: 76%; padding: 10px 12px; border: 1px solid var(--border);
+      border-radius: 14px; background: white; margin-bottom: 10px;
+      box-shadow: 0 2px 8px rgba(15,23,42,.04);
+    }
+    .chat-bubble.mine {
+      margin-left: auto; background: #EEF3FB; border-color: #C9D6EA;
+    }
+    .chat-meta {
+      display: flex; justify-content: space-between; gap: 12px; margin-bottom: 6px;
+      font-size: 12px; color: var(--muted);
+    }
+    .chat-meta b { color: #111827; }
+    .chat-text { white-space: pre-wrap; word-break: break-word; font-size: 14px; line-height: 1.45; }
+    .chat-composer {
+      display: flex; gap: 10px; align-items: flex-end;
+      padding: 10px; border: 1px solid #D6E0EC; border-radius: 14px;
+      background: rgba(255,255,255,.9);
+    }
+    .chat-composer:focus-within {
+      border-color: var(--accent); box-shadow: 0 0 0 3px rgba(0,102,204,.10);
+    }
+    .chat-input {
+      flex: 1; min-height: 48px; max-height: 150px; resize: vertical;
+      border: none; outline: none; background: transparent; padding: 8px 10px;
+      font: inherit; line-height: 1.45; color: var(--text);
+    }
+    .chat-input::placeholder { color: #8A97A8; }
+    .chat-send {
+      width: auto; padding: 10px 20px; border-radius: 10px;
+      align-self: stretch; min-height: 44px;
+    }
+    .chat-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .chat-section-head {
+      margin-top: -6px; margin-bottom: 8px;
+      font-size: 12px; color: var(--muted); font-weight: 600;
+    }
+    .modal-backdrop {
+      position: fixed; inset: 0; background: rgba(15,23,42,.36);
+      display: flex; align-items: center; justify-content: center;
+      z-index: 100; padding: 20px;
+    }
+    .chat-dialog {
+      width: min(420px, 100%); background: var(--surface); border: 1px solid var(--border);
+      border-radius: 14px; padding: 22px; box-shadow: 0 18px 50px rgba(15,23,42,.22);
+    }
+    .chat-dialog h3 { font-size: 17px; margin-bottom: 6px; color: var(--penn-blue); }
+    .chat-dialog p { font-size: 13px; color: var(--muted); margin-bottom: 14px; }
+    .chat-dialog input {
+      width: 100%; padding: 10px 12px; border: 1px solid var(--border);
+      border-radius: 9px; font: inherit; outline: none; margin-bottom: 8px;
+    }
+    .chat-dialog input:focus {
+      border-color: var(--accent); box-shadow: 0 0 0 3px rgba(0,102,204,.10);
+    }
+    .chat-dialog-actions {
+      display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px;
+    }
 
     /* ---- Compose ---- */
     .compose-form { background: var(--surface); border-radius: 10px;
-                    border: 1px solid var(--border); padding: 28px; max-width: 700px; }
+                    border: 1px solid var(--border); padding: 28px; max-width: 700px;
+                    box-shadow: var(--shadow-sm); }
     .compose-form input, .compose-form textarea {
       width: 100%; padding: 10px 14px; border: 1px solid var(--border);
       border-radius: 8px; font-size: 14px; margin-bottom: 12px;
       font-family: inherit; outline: none;
+      transition: border .15s, box-shadow .15s, background .15s;
     }
     .compose-form textarea { height: 200px; resize: vertical; }
-    .compose-form input:focus, .compose-form textarea:focus { border-color: var(--accent); }
+    .compose-form input:focus, .compose-form textarea:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(0,102,204,0.12);
+    }
 
     /* ---- Drive ---- */
     .drive-toolbar { display: flex; gap: 8px; margin-bottom: 16px; }
     .drive-toolbar button {
       padding: 7px 14px; border-radius: 7px; font-size: 13px; cursor: pointer;
       border: 1px solid var(--border); background: var(--surface);
+      transition: background .12s, border-color .12s, transform .12s;
     }
+    .drive-toolbar button:hover { background: #F8FBFF; border-color: #B8C7DA; transform: translateY(-1px); }
     .breadcrumb { font-size: 13px; color: var(--muted); margin-bottom: 12px; }
     .breadcrumb span { cursor: pointer; color: var(--accent); }
     .breadcrumb span:hover { text-decoration: underline; }
     .file-grid { background: var(--surface); border-radius: 10px;
-                 border: 1px solid var(--border); overflow: hidden; }
+                 border: 1px solid var(--border); overflow: hidden; box-shadow: var(--shadow-sm); }
     .file-row {
       display: flex; align-items: center; padding: 12px 20px;
       border-bottom: 1px solid var(--border); gap: 12px;
+      transition: background .12s;
     }
+    .file-row:hover { background: #F8FBFF; }
     .file-row:last-child { border-bottom: none; }
     .file-icon { font-size: 18px; width: 24px; text-align: center; }
     .file-name { flex: 1; font-size: 14px; cursor: pointer; }
@@ -1335,17 +1484,26 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
     .file-actions button {
       padding: 3px 8px; font-size: 11px; border-radius: 5px;
       border: 1px solid var(--border); cursor: pointer; background: var(--surface);
+      transition: background .12s, border-color .12s;
     }
+    .file-actions button:hover { background: var(--bg); border-color: #B8C7DA; }
 
     /* ---- Notifications ---- */
     .toast {
       position: fixed; bottom: 24px; right: 24px;
       background: var(--text); color: white;
       padding: 12px 20px; border-radius: 8px; font-size: 13px;
-      opacity: 0; transition: opacity .3s; pointer-events: none; z-index: 999;
+      opacity: 0; transition: opacity .3s, transform .3s; pointer-events: none; z-index: 999;
+      transform: translateY(8px); box-shadow: 0 14px 30px rgba(0,0,0,0.18);
     }
-    .toast.show { opacity: 1; }
+    .toast.show { opacity: 1; transform: translateY(0); }
     .spinner { text-align: center; padding: 40px; color: var(--muted); }
+    @media (max-width: 760px) {
+      :root { --sidebar-w: 170px; }
+      .content { padding: 18px; }
+      .email-from { width: 120px; }
+      .file-actions { flex-wrap: wrap; justify-content: flex-end; }
+    }
   </style>
 </head>
 <body>
@@ -1358,15 +1516,35 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
     <div class="form-group">
       <label>Username</label>
       <input id="username-in" type="text" placeholder="e.g. nikunj" autocomplete="username">
+      <div id="username-help" class="field-help signup-only" style="display:none">Use lowercase letters, numbers, dash, or underscore. Start with a letter.</div>
     </div>
     <div class="form-group">
       <label>Password</label>
-      <input id="password-in" type="password" placeholder="Your password" autocomplete="current-password">
+      <div class="password-field">
+        <input id="password-in" type="password" placeholder="Your password" autocomplete="current-password">
+        <button class="password-toggle" type="button" onclick="toggleAuthPassword()" aria-label="Show password" title="Show password">
+          <svg class="icon-eye" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"/>
+            <circle cx="12" cy="12" r="3"/>
+          </svg>
+          <svg class="icon-eye-off" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M3 3l18 18"/>
+            <path d="M10.6 10.6A3 3 0 0 0 13.4 13.4"/>
+            <path d="M7.1 7.6C4.2 9.3 2.5 12 2.5 12s3.5 6 9.5 6c1.8 0 3.3-.5 4.6-1.2"/>
+            <path d="M14.1 6.3C18.7 7.2 21.5 12 21.5 12s-.9 1.5-2.5 3"/>
+          </svg>
+        </button>
+      </div>
+      <div id="password-help" class="field-help signup-only" style="display:none">Use at least 8 characters.</div>
+    </div>
+    <div class="form-group signup-only" id="confirm-password-group" style="display:none">
+      <label>Confirm password</label>
+      <input id="confirm-password-in" type="password" placeholder="Re-enter your password" autocomplete="new-password">
     </div>
     <button class="btn btn-primary" id="login-btn" onclick="doLogin()">Sign in</button>
     <div id="login-error" class="error-msg"></div>
     <br>
-    <button class="btn-link" onclick="showSignup()">Create an account</button>
+    <button class="btn-link" id="auth-switch-btn" onclick="showSignup()">Create an account</button>
   </div>
 </div>
 
@@ -1382,19 +1560,29 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
   <div class="main-layout">
     <div class="sidebar">
       <button class="nav-item" id="nav-inbox" onclick="navigate('inbox')">
-        <span class="nav-icon">&#9993;</span> Inbox
+        <span class="nav-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M4 6h16v12H4z"/><path d="m4 7 8 6 8-6"/></svg>
+        </span> Inbox
       </button>
       <button class="nav-item" id="nav-compose" onclick="navigate('compose')">
-        <span class="nav-icon">&#9998;</span> Compose
+        <span class="nav-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"/></svg>
+        </span> Compose
       </button>
       <button class="nav-item" id="nav-drive" onclick="navigate('drive')">
-        <span class="nav-icon">&#128193;</span> Drive
+        <span class="nav-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M3 7h7l2 2h9v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M3 7V5a2 2 0 0 1 2-2h4l2 4"/></svg>
+        </span> Drive
       </button>
       <button class="nav-item" id="nav-chat" onclick="navigate('chat')">
-        <span class="nav-icon">&#128172;</span> Chat
+        <span class="nav-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-8 8H7l-4 3 1.4-5A8 8 0 1 1 21 12Z"/></svg>
+        </span> Chat
       </button>
       <button class="nav-item" id="nav-settings" onclick="navigate('settings')">
-        <span class="nav-icon">&#9881;</span> Settings
+        <span class="nav-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 0 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6V21a2 2 0 0 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1A2 2 0 0 1 4.2 17l.1-.1A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.6-1H3a2 2 0 0 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1A2 2 0 0 1 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3 1.7 1.7 0 0 0 1-1.6V3a2 2 0 0 1 4 0v.1a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1A2 2 0 0 1 19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.1a2 2 0 0 1 0 4H21a1.7 1.7 0 0 0-1.6 1Z"/></svg>
+        </span> Settings
       </button>
     </div>
     <div class="content" id="content">
@@ -1440,6 +1628,8 @@ let appHealthTimer = null;
 let frontendHealthFailures = 0;
 let frontendRedirecting = false;
 let lastFrontendNodes = [];
+let pendingRoute = null;
+let authMode = 'login';
 const frontendDownParam = 'pc_down';
 
 function renderPageNotFound() {
@@ -1469,6 +1659,37 @@ function queryWithDownFrontend(extraId = '') {
   else params.delete(frontendDownParam);
   const qs = params.toString();
   return qs ? '?' + qs : '';
+}
+
+function appRouteFromLocation() {
+  const path = window.location.pathname || '/';
+  const qs = new URLSearchParams(window.location.search || '');
+  if (path === '/' || path === '/index.html') return {view: 'inbox', params: {folder: qs.get('folder') || 'inbox'}, explicit: false};
+  if (path === '/inbox') return {view: 'inbox', params: {folder: qs.get('folder') || 'inbox'}, explicit: true};
+  if (path === '/compose') return {view: 'compose', params: {}, explicit: true};
+  if (path === '/drive') return {view: 'drive', params: {path: qs.get('path') || '/'}, explicit: true};
+  if (path === '/chat') return {view: 'chat', params: {room: qs.get('room') || 'general', dm: qs.get('dm') || ''}, explicit: true};
+  if (path === '/settings') return {view: 'settings', params: {}, explicit: true};
+  return {view: 'inbox', params: {folder: 'inbox'}, explicit: false};
+}
+
+function appRouteUrl(view, params = {}) {
+  const qs = new URLSearchParams();
+  const down = Array.from(downFrontendSet());
+  if (down.length) qs.set(frontendDownParam, down.join(','));
+  if (view === 'inbox' && params.folder && params.folder !== 'inbox') qs.set('folder', params.folder);
+  if (view === 'drive' && params.path && params.path !== '/') qs.set('path', params.path);
+  if (view === 'chat') {
+    if (params.dm) qs.set('dm', params.dm);
+    else if (params.room && params.room !== 'general') qs.set('room', params.room);
+  }
+  const query = qs.toString();
+  return '/' + view + (query ? '?' + query : '');
+}
+
+function routeLabel(route) {
+  const labels = {inbox: 'Inbox', compose: 'Compose', drive: 'Drive', chat: 'Chat', settings: 'Settings'};
+  return labels[route && route.view] || 'PennCloud';
 }
 
 function peerFrontendPorts(extraDownId = '') {
@@ -1580,10 +1801,27 @@ function emailLabel(e, key) {
 }
 
 // ---- Auth ------------------------------------------------------------------
+function validUsername(u) {
+  return /^[a-z][a-z0-9_-]{2,31}$/.test(u || '');
+}
+
+function validPassword(p) {
+  return typeof p === 'string' && p.length >= 8;
+}
+
+function usernameHelp() {
+  return 'Username must be 3-32 chars, start with a lowercase letter, and use only lowercase letters, numbers, dash, or underscore.';
+}
+
+function passwordHelp() {
+  return 'Password must be at least 8 characters.';
+}
+
 async function doLogin() {
   const u = document.getElementById('username-in').value.trim();
   const p = document.getElementById('password-in').value;
   if (!u || !p) { showError('Please enter username and password.'); return; }
+  if (!validUsername(u)) { showError('Invalid username or password.'); return; }
 
   const r = await fetch('/api/login', {
     method: 'POST',
@@ -1635,18 +1873,22 @@ async function doLogout() {
   } catch (_) {}
   contactsCache = [];
   quotaCache = null;
+  pendingRoute = null;
   showLogin();
 }
 
 function showSignup() {
-  document.getElementById('login-subtitle').textContent = 'Create a new account';
-  document.getElementById('login-btn').textContent = 'Create account';
-  document.getElementById('login-btn').onclick = doSignup;
+  setAuthMode('signup');
 }
 
 async function doSignup() {
   const u = document.getElementById('username-in').value.trim();
   const p = document.getElementById('password-in').value;
+  const p2 = document.getElementById('confirm-password-in').value;
+  if (!u || !p) { showError('Please enter username and password.'); return; }
+  if (!validUsername(u)) { showError(usernameHelp()); return; }
+  if (!validPassword(p)) { showError(passwordHelp()); return; }
+  if (p !== p2) { showError('Passwords do not match.'); return; }
   const r = await fetch('/api/signup', {
     method: 'POST',
     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
@@ -1662,12 +1904,67 @@ async function doSignup() {
   else showError(data.error || 'Signup failed.');
 }
 
-function showLogin() {
-  document.getElementById('login-page').style.display = 'flex';
-  document.getElementById('app').style.display = 'none';
+function toggleAuthPassword() {
+  const p = document.getElementById('password-in');
+  const p2 = document.getElementById('confirm-password-in');
+  const btn = document.querySelector('.password-toggle');
+  const next = p.type === 'password' ? 'text' : 'password';
+  p.type = next;
+  if (p2) p2.type = next;
+  if (btn) {
+    const showing = next === 'text';
+    btn.classList.toggle('showing', showing);
+    btn.setAttribute('aria-label', showing ? 'Hide password' : 'Show password');
+    btn.setAttribute('title', showing ? 'Hide password' : 'Show password');
+  }
 }
 
-async function showApp() {
+function resetAuthPasswordVisibility() {
+  const p = document.getElementById('password-in');
+  const p2 = document.getElementById('confirm-password-in');
+  const btn = document.querySelector('.password-toggle');
+  if (p) p.type = 'password';
+  if (p2) p2.type = 'password';
+  if (btn) {
+    btn.classList.remove('showing');
+    btn.setAttribute('aria-label', 'Show password');
+    btn.setAttribute('title', 'Show password');
+  }
+}
+
+function setAuthMode(mode) {
+  authMode = mode === 'signup' ? 'signup' : 'login';
+  const signup = authMode === 'signup';
+  document.getElementById('login-subtitle').textContent = signup ? 'Create a new account' : 'Sign in to your account';
+  document.getElementById('login-btn').textContent = signup ? 'Create account' : 'Sign in';
+  document.getElementById('login-btn').onclick = signup ? doSignup : doLogin;
+  document.getElementById('auth-switch-btn').textContent = signup ? 'Back to sign in' : 'Create an account';
+  document.getElementById('auth-switch-btn').onclick = signup ? (() => showLogin()) : showSignup;
+  document.querySelectorAll('.signup-only').forEach(el => {
+    el.style.display = signup ? '' : 'none';
+  });
+  document.getElementById('password-in').autocomplete = signup ? 'new-password' : 'current-password';
+  resetAuthPasswordVisibility();
+  const err = document.getElementById('login-error');
+  err.textContent = '';
+  err.style.display = 'none';
+}
+
+function showLogin(message = '') {
+  document.getElementById('login-page').style.display = 'flex';
+  document.getElementById('app').style.display = 'none';
+  setAuthMode('login');
+  const err = document.getElementById('login-error');
+  if (message) {
+    err.textContent = message;
+    err.style.display = 'block';
+  } else {
+    err.textContent = '';
+    err.style.display = 'none';
+  }
+}
+
+async function showApp(route = null) {
   document.getElementById('login-page').style.display = 'none';
   document.getElementById('app').style.display = 'flex';
   document.getElementById('topbar-user').textContent = currentUser;
@@ -1676,7 +1973,9 @@ async function showApp() {
   await Promise.all([loadContacts(true), loadQuota(true)]);
   startSSE();
   startAppHealthMonitor();
-  navigate('inbox', {folder: 'inbox'});
+  const target = route || pendingRoute || appRouteFromLocation();
+  pendingRoute = null;
+  navigate(target.view || 'inbox', target.params || {folder: 'inbox'}, {replace: true});
 }
 
 function showError(msg) {
@@ -1695,7 +1994,7 @@ function startAppHealthMonitor() {
 }
 
 // ---- Navigation ------------------------------------------------------------
-function navigate(view, params = {}) {
+function navigate(view, params = {}, options = {}) {
   currentView = view;
   const routeSeq = ++appRouteSeq;
   if (chatPollTimer) { clearTimeout(chatPollTimer); chatPollTimer = null; }
@@ -1703,7 +2002,9 @@ function navigate(view, params = {}) {
   const navKey = view === 'email' ? 'inbox' : view;
   const navEl = document.getElementById('nav-' + navKey);
   if (navEl) navEl.classList.add('active');
-  history.pushState({view, params}, '', '/' + view);
+  const url = appRouteUrl(view, params);
+  if (options.replace) history.replaceState({view, params}, '', url);
+  else history.pushState({view, params}, '', url);
 
   const content = document.getElementById('content');
   content.innerHTML = '<div class="spinner">Loading...</div>';
@@ -1724,7 +2025,8 @@ async function renderProtectedView(view, params = {}, routeSeq = appRouteSeq) {
 }
 
 window.addEventListener('popstate', e => {
-  if (e.state) navigate(e.state.view, e.state.params || {});
+  const route = e.state || appRouteFromLocation();
+  navigate(route.view, route.params || {}, {replace: true});
 });
 
 // Expose frequently used handlers explicitly for reliability with dynamic views.
@@ -2164,15 +2466,18 @@ function renderChatMessages(messages) {
   const box = document.getElementById('chat-messages');
   if (!box) return;
   box.innerHTML = messages.length === 0
-    ? `<div style="padding:40px;text-align:center;color:var(--muted)">No messages yet in this ${currentChatMode === 'dm' ? 'conversation' : 'room'}.</div>`
-    : messages.map(m => `
-        <div style="padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:white;margin-bottom:10px">
-          <div style="display:flex;justify-content:space-between;gap:12px;margin-bottom:6px;font-size:12px;color:var(--muted)">
-            <span><b style="color:#111827">${escHtml(m.from || '')}</b>${m.to ? ` <span style="opacity:.7">→ ${escHtml(m.to)}</span>` : ''}</span>
+    ? `<div class="chat-empty">No messages yet in this ${currentChatMode === 'dm' ? 'conversation' : 'room'}.</div>`
+    : messages.map(m => {
+        const mine = (m.from || '') === currentUser;
+        return `
+        <div class="chat-bubble ${mine ? 'mine' : ''}">
+          <div class="chat-meta">
+            <span><b>${escHtml(m.from || '')}</b>${m.to ? ` <span style="opacity:.7">→ ${escHtml(m.to)}</span>` : ''}</span>
             <span>${escHtml(m.time || '')}</span>
           </div>
-          <div style="white-space:pre-wrap;word-break:break-word">${escHtml(m.text || '')}</div>
-        </div>`).join('');
+          <div class="chat-text">${escHtml(m.text || '')}</div>
+        </div>`;
+      }).join('');
   box.scrollTop = box.scrollHeight;
 }
 
@@ -2307,22 +2612,34 @@ async function renderChat(room = 'general', dmPeer = '') {
     content.innerHTML = `
       <div class="page-title" style="display:flex;justify-content:space-between;align-items:center;gap:12px"> 
         <span>Chat <span id="chat-header-label" style="font-size:14px;color:var(--muted);font-weight:600">${escHtml(chatHeaderLabel())}</span></span>
-        <button class="action-btn" onclick="startDirectMessage()">+ Direct message</button>
+        <div class="chat-actions">
+          <button class="action-btn" onclick="openChatRoomDialog()">+ New room</button>
+          <button class="action-btn" onclick="startDirectMessage()">+ Direct message</button>
+        </div>
       </div>
-      <div style="font-size:12px;color:var(--muted);margin-top:-6px;margin-bottom:8px">Rooms</div>
+      <div class="chat-section-head">Rooms</div>
       ${renderChatRooms(currentChatRoom, rooms, counts)}
-      <div style="font-size:12px;color:var(--muted);margin-top:-4px;margin-bottom:8px">Direct messages</div>
+      <div class="chat-section-head" style="margin-top:-4px">Direct messages</div>
       ${renderDmPeers(currentChatPeer, chatDmPeers)}
-      <div style="display:grid;grid-template-rows:1fr auto;gap:14px;min-height:520px;background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:16px">
-        <div id="chat-messages" style="overflow:auto;max-height:460px;padding-right:6px"></div>
-        <div style="display:flex;gap:10px;align-items:flex-end">
-          <textarea id="chat-input" placeholder="Message ${escHtml(chatHeaderLabel())}" style="flex:1;min-height:70px;max-height:160px"></textarea>
-          <button id="chat-send-btn" class="btn btn-primary" style="width:auto;padding:10px 22px" onclick="sendChatMessage()">Send</button>
+      <div class="chat-panel">
+        <div id="chat-messages" class="chat-messages"></div>
+        <div class="chat-composer">
+          <textarea id="chat-input" class="chat-input" placeholder="Message ${escHtml(chatHeaderLabel())}"></textarea>
+          <button id="chat-send-btn" class="btn btn-primary chat-send" onclick="sendChatMessage()">Send</button>
         </div>
       </div>`;
 
     if (currentChatMode === 'dm') markCurrentDmSeen();
     renderChatMessages(chatMessagesCache);
+    const input = document.getElementById('chat-input');
+    if (input) {
+      input.addEventListener('keydown', e => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          sendChatMessage();
+        }
+      });
+    }
     await syncDmSidebarState();
     scheduleChatPoll();
   } catch (err) {
@@ -2336,7 +2653,7 @@ async function switchChatRoom(room) {
   currentChatMode = 'room';
   currentChatPeer = '';
   currentChatRoom = room || currentChatRoom || 'general';
-  history.replaceState({view:'chat', params:{room: currentChatRoom}}, '', '/chat');
+  history.replaceState({view:'chat', params:{room: currentChatRoom}}, '', appRouteUrl('chat', {room: currentChatRoom}));
   await renderChat(currentChatRoom, '');
 }
 
@@ -2353,18 +2670,112 @@ async function switchDirectMessage(peer) {
   if (input) input.placeholder = 'Message @' + peer;
   refreshDmPeersUi();
 
-  history.replaceState({view:'chat', params:{dm: peer}}, '', '/chat');
+  history.replaceState({view:'chat', params:{dm: peer}}, '', appRouteUrl('chat', {dm: peer}));
   await renderChat(currentChatRoom || 'general', peer);
 }
 
+function closeChatDialog() {
+  const el = document.getElementById('chat-modal-backdrop');
+  if (el) el.remove();
+}
+
+function openChatDialog({title, description, placeholder, submitText, onSubmit}) {
+  closeChatDialog();
+  const overlay = document.createElement('div');
+  overlay.id = 'chat-modal-backdrop';
+  overlay.className = 'modal-backdrop';
+  overlay.innerHTML = `
+    <div class="chat-dialog" role="dialog" aria-modal="true">
+      <h3>${escHtml(title)}</h3>
+      <p>${escHtml(description)}</p>
+      <input id="chat-dialog-input" type="text" placeholder="${escHtml(placeholder)}" autocomplete="off">
+      <div id="chat-dialog-error" class="error-msg" style="display:none"></div>
+      <div class="chat-dialog-actions">
+        <button class="action-btn" type="button" id="chat-dialog-cancel">Cancel</button>
+        <button class="btn btn-primary" type="button" id="chat-dialog-submit" style="width:auto;padding:9px 18px">${escHtml(submitText)}</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const input = overlay.querySelector('#chat-dialog-input');
+  const err = overlay.querySelector('#chat-dialog-error');
+  const submit = async () => {
+    err.style.display = 'none';
+    err.textContent = '';
+    const value = input.value.trim();
+    try {
+      await onSubmit(value, err);
+    } catch (_) {
+      err.textContent = 'Something went wrong. Please try again.';
+      err.style.display = 'block';
+    }
+  };
+  overlay.querySelector('#chat-dialog-cancel').addEventListener('click', closeChatDialog);
+  overlay.querySelector('#chat-dialog-submit').addEventListener('click', submit);
+  overlay.addEventListener('click', e => { if (e.target === overlay) closeChatDialog(); });
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') submit();
+    if (e.key === 'Escape') closeChatDialog();
+  });
+  input.focus();
+}
+
+function openDirectMessageDialog() {
+  openChatDialog({
+    title: 'Start direct message',
+    description: 'Enter a PennCloud username to open a private conversation.',
+    placeholder: 'e.g. demo_bob',
+    submitText: 'Start chat',
+    onSubmit: async (value, err) => {
+      const peer = value.replace(/@penncloud$/i, '');
+      if (!peer) {
+        err.textContent = 'Please enter a username.';
+        err.style.display = 'block';
+        return;
+      }
+      if (peer === currentUser) {
+        err.textContent = 'Choose another user.';
+        err.style.display = 'block';
+        return;
+      }
+      closeChatDialog();
+      navigate('chat', { dm: peer });
+    }
+  });
+}
+
+function openChatRoomDialog() {
+  openChatDialog({
+    title: 'Create chat room',
+    description: 'Room names can use letters, numbers, dashes, and underscores.',
+    placeholder: 'e.g. demo-room',
+    submitText: 'Create room',
+    onSubmit: async (value, err) => {
+      const room = value.replace(/^#/, '').trim();
+      if (!room) {
+        err.textContent = 'Please enter a room name.';
+        err.style.display = 'block';
+        return;
+      }
+      const r = await fetch('/api/chat/rooms', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'room=' + encodeURIComponent(room)
+      });
+      const data = await r.json().catch(() => ({ok:false, error:'bad response'}));
+      if (!data.ok) {
+        err.textContent = data.error || 'Could not create room.';
+        err.style.display = 'block';
+        return;
+      }
+      closeChatDialog();
+      showToast('Room #' + data.room + ' ready.');
+      navigate('chat', { room: data.room });
+    }
+  });
+}
+
 function startDirectMessage() {
-  const peer = (prompt('Chat with which PennCloud user?') || '').trim().replace(/@penncloud$/i, '');
-  if (!peer) return;
-  if (peer === currentUser) {
-    showToast('Choose another user.');
-    return;
-  }
-  navigate('chat', { dm: peer });
+  openDirectMessageDialog();
 }
 
 async function sendChatMessage() {
@@ -2380,6 +2791,8 @@ async function sendChatMessage() {
   if (btn) {
     btn.disabled = true;
     btn.textContent = 'Sending...';
+    btn.style.opacity = '0.72';
+    btn.style.cursor = 'not-allowed';
   }
 
   try {
@@ -2419,6 +2832,8 @@ async function sendChatMessage() {
     if (btn) {
       btn.disabled = false;
       btn.textContent = 'Send';
+      btn.style.opacity = '1';
+      btn.style.cursor = 'pointer';
     }
   }
 }
@@ -3068,6 +3483,7 @@ async function changePassword() {
   const old = document.getElementById('old-pw').value;
   const n1  = document.getElementById('new-pw').value;
   const n2  = document.getElementById('new-pw2').value;
+  if (!validPassword(n1)) { showPwMsg(passwordHelp()); return; }
   if (n1 !== n2) { showPwMsg('Passwords do not match.'); return; }
   const r = await fetch('/api/change-password', {
     method: 'POST',
@@ -3190,18 +3606,66 @@ function showToast(msg) {
   setTimeout(() => t.classList.remove('show'), 3000);
 }
 
+async function bootstrapApp() {
+  if (!(await ensureBackendStorageAvailable())) return;
+  const route = appRouteFromLocation();
+  pendingRoute = route;
+  try {
+    const r = await fetch('/api/me', { cache: 'no-store' });
+    const data = await r.json();
+    if (data.ok && data.user) {
+      currentUser = data.user;
+      await showApp(route);
+      return;
+    }
+  } catch (_) {}
+
+  const msg = route.explicit
+    ? `Please sign in to open ${routeLabel(route)}.`
+    : '';
+  showLogin(msg);
+}
+
 // Keyboard shortcut: Enter to login
 document.addEventListener('keydown', e => {
   if (e.key === 'Enter' && document.getElementById('login-page').style.display !== 'none') {
     doLogin();
   }
 });
+
+bootstrapApp();
 </script>
 </body>
 </html>
 )HTML";
     return HttpResponse::ok(html, "text/html; charset=utf-8");
 }
+
+namespace {
+
+bool valid_account_username(const std::string& username) {
+    if (username.size() < 3 || username.size() > 32) return false;
+    if (username[0] < 'a' || username[0] > 'z') return false;
+    for (unsigned char ch : username) {
+        if (!(std::islower(ch) || std::isdigit(ch) || ch == '_' || ch == '-')) return false;
+    }
+    return true;
+}
+
+bool valid_account_password(const std::string& password) {
+    return password.size() >= 8 && password.size() <= 128;
+}
+
+HttpResponse invalid_username_response() {
+    return HttpResponse::json(
+        R"({"ok":false,"error":"Username must be 3-32 chars, start with a lowercase letter, and use only lowercase letters, numbers, dash, or underscore"})");
+}
+
+HttpResponse invalid_password_response() {
+    return HttpResponse::json(R"({"ok":false,"error":"Password must be at least 8 characters"})");
+}
+
+}  // namespace
 
 // ---------------------------------------------------------------------------
 // Auth handlers
@@ -3213,6 +3677,7 @@ HttpResponse FEServer::handle_login(const HttpRequest& req) {
 
     if (username.empty() || password.empty())
         return HttpResponse::json(R"({"ok":false,"error":"Missing credentials"})");
+    if (!valid_account_username(username)) return HttpResponse::json(R"({"ok":false,"error":"Invalid username or password"})");
 
     // Fetch stored password from KV and distinguish not-found from unavailable.
     std::string stored_pwd;
@@ -3260,6 +3725,8 @@ HttpResponse FEServer::handle_signup(const HttpRequest& req) {
 
     if (username.empty() || password.empty())
         return HttpResponse::json(R"({"ok":false,"error":"Missing fields"})");
+    if (!valid_account_username(username)) return invalid_username_response();
+    if (!valid_account_password(password)) return invalid_password_response();
 
     // Check if user already exists and distinguish not-found from unavailable.
     std::string existing;
@@ -3301,6 +3768,7 @@ HttpResponse FEServer::handle_change_password(const HttpRequest& req) {
     auto params = parse_urlencoded(req.body);
     std::string old_pw = params["old_password"];
     std::string new_pw = params["new_password"];
+    if (!valid_account_password(new_pw)) return invalid_password_response();
 
     std::string stored = kv_->get_str(user, "pwd");
     if (stored != old_pw)
@@ -4050,14 +4518,59 @@ std::string chat_join_csv(const std::vector<std::string>& items) {
     return out;
 }
 
-const std::vector<std::string>& chat_room_names() {
+const std::vector<std::string>& chat_default_room_names() {
     static const std::vector<std::string> kRooms = {"general", "team", "random"};
     return kRooms;
 }
 
-bool valid_chat_room(const std::string& room) {
-    const auto& rooms = chat_room_names();
+std::string chat_rooms_row() { return "chat:rooms"; }
+
+bool valid_chat_room_name(const std::string& room) {
+    if (room.empty() || room.size() > 32) return false;
+    for (unsigned char ch : room) {
+        if (!(std::isalnum(ch) || ch == '-' || ch == '_')) return false;
+    }
+    return true;
+}
+
+std::vector<std::string> chat_room_names(KVClient* kv) {
+    std::vector<std::string> rooms = chat_default_room_names();
+    auto custom = chat_split_csv(kv->get_str(chat_rooms_row(), "names"));
+    for (const auto& room : custom) {
+        if (valid_chat_room_name(room) &&
+            std::find(rooms.begin(), rooms.end(), room) == rooms.end()) {
+            rooms.push_back(room);
+        }
+    }
+    return rooms;
+}
+
+bool valid_chat_room(KVClient* kv, const std::string& room) {
+    if (!valid_chat_room_name(room)) return false;
+    const auto rooms = chat_room_names(kv);
     return std::find(rooms.begin(), rooms.end(), room) != rooms.end();
+}
+
+bool append_chat_room(KVClient* kv, const std::string& room) {
+    if (!valid_chat_room_name(room)) return false;
+    const auto& defaults = chat_default_room_names();
+    if (std::find(defaults.begin(), defaults.end(), room) != defaults.end()) return true;
+    const std::string row = chat_rooms_row();
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        std::string old_rooms = kv->get_str(row, "names");
+        auto rooms = chat_split_csv(old_rooms);
+        if (std::find(rooms.begin(), rooms.end(), room) != rooms.end()) return true;
+        rooms.push_back(room);
+        std::sort(rooms.begin(), rooms.end());
+        std::string next = chat_join_csv(rooms);
+        if (old_rooms.empty()) {
+            if (kv->put(row, "names", next)) return true;
+        } else {
+            if (kv->cput(row, "names", old_rooms, next)) return true;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return false;
 }
 
 std::string chat_room_row(const std::string& room) { return "chat:room:" + room; }
@@ -4440,7 +4953,7 @@ HttpResponse FEServer::handle_chat_rooms(const HttpRequest&, const std::string&)
     std::string counts = "{";
     bool first = true;
     bool first_count = true;
-    for (const auto& room : chat_room_names()) {
+    for (const auto& room : chat_room_names(kv_.get())) {
         if (!first) rooms += ",";
         rooms += "{\"name\":" + json_str(room) + "}";
         first = false;
@@ -4454,9 +4967,21 @@ HttpResponse FEServer::handle_chat_rooms(const HttpRequest&, const std::string&)
     return HttpResponse::json(std::string("{\"ok\":true,\"rooms\":") + rooms + ",\"counts\":" + counts + "}");
 }
 
+HttpResponse FEServer::handle_chat_create_room(const HttpRequest& req, const std::string&) {
+    auto params = parse_urlencoded(req.body);
+    std::string room = params.count("room") ? params["room"] : "";
+    if (!valid_chat_room_name(room)) {
+        return HttpResponse::json(R"({"ok":false,"error":"Use 1-32 letters, numbers, dashes, or underscores"})");
+    }
+    if (!append_chat_room(kv_.get(), room)) {
+        return HttpResponse::json(R"({"ok":false,"error":"failed to create room"})");
+    }
+    return HttpResponse::json(std::string("{\"ok\":true,\"room\":") + json_str(room) + "}");
+}
+
 HttpResponse FEServer::handle_chat_messages(const HttpRequest& req, const std::string&) {
     std::string room = req.query_params.count("room") ? req.query_params.at("room") : "general";
-    if (!valid_chat_room(room)) {
+    if (!valid_chat_room(kv_.get(), room)) {
         return HttpResponse::json(R"({"ok":false,"error":"unknown room"})");
     }
     auto ids = chat_split_csv(kv_->get_str(chat_room_row(room), "ids"));
@@ -4485,7 +5010,7 @@ HttpResponse FEServer::handle_chat_send(const HttpRequest& req, const std::strin
     auto params = parse_urlencoded(req.body);
     std::string room = params.count("room") ? params["room"] : "general";
     std::string textv = params.count("text") ? params["text"] : "";
-    if (!valid_chat_room(room)) return HttpResponse::json(R"({"ok":false,"error":"unknown room"})");
+    if (!valid_chat_room(kv_.get(), room)) return HttpResponse::json(R"({"ok":false,"error":"unknown room"})");
     if (textv.empty()) return HttpResponse::json(R"({"ok":false,"error":"message cannot be empty"})");
     if (textv.size() > 2000) return HttpResponse::json(R"({"ok":false,"error":"message too long"})");
 
