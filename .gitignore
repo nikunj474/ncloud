@@ -1,3 +1,4 @@
 .env
+.smtp.env
 *.log
 .DS_Store

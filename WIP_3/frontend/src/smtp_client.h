@@ -61,6 +61,40 @@ inline std::string trim(std::string s) {
     return s.substr(a, b - a);
 }
 
+inline std::string sanitize_header_value(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    bool last_space = false;
+    for (char c : s) {
+        unsigned char uc = static_cast<unsigned char>(c);
+        if (c == '\r' || c == '\n') {
+            if (!last_space) out.push_back(' ');
+            last_space = true;
+        } else if (uc < 32 && c != '\t') {
+            continue;
+        } else {
+            out.push_back(c);
+            last_space = std::isspace(uc) != 0;
+        }
+    }
+    return trim(out);
+}
+
+inline bool is_safe_mailbox(const std::string& addr) {
+    if (addr.empty() || addr.size() > 254) return false;
+    if (addr.front() == '.' || addr.back() == '.') return false;
+    auto at = addr.find('@');
+    if (at == std::string::npos || at == 0 || at + 1 >= addr.size()) return false;
+    if (addr.find('@', at + 1) != std::string::npos) return false;
+    for (char c : addr) {
+        unsigned char uc = static_cast<unsigned char>(c);
+        if (uc <= 32 || c == '<' || c == '>' || c == '"' || c == '\\' || c == '\r' || c == '\n') {
+            return false;
+        }
+    }
+    return true;
+}
+
 inline bool starts_with(const std::string& s, const std::string& p) {
     return s.size() >= p.size() && s.compare(0, p.size(), p) == 0;
 }
@@ -102,6 +136,12 @@ inline std::string rfc2822_date_now() {
     return buf;
 }
 
+inline std::string message_id_now() {
+    auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                  std::chrono::system_clock::now().time_since_epoch()).count();
+    return "<" + std::to_string(ns) + "." + std::to_string(::getpid()) + "@penncloud.com>";
+}
+
 inline std::string quote_header_phrase(std::string s) {
     std::string out = "\"";
     for (char c : s) {
@@ -127,14 +167,27 @@ inline std::string build_message(const std::string& from_addr,
         oss << "Reply-To: <" << reply_to_addr << ">\r\n";
     }
     oss << "To: <" << to_addr << ">\r\n";
-    oss << "Subject: " << subject << "\r\n";
+    oss << "Subject: " << sanitize_header_value(subject) << "\r\n";
     oss << "Date: " << rfc2822_date_now() << "\r\n";
+    oss << "Message-ID: " << message_id_now() << "\r\n";
     oss << "MIME-Version: 1.0\r\n";
     oss << "Content-Type: text/plain; charset=UTF-8\r\n";
     oss << "Content-Transfer-Encoding: 8bit\r\n";
     oss << "\r\n";
     oss << body << "\r\n";
     return oss.str();
+}
+
+inline std::string dot_stuff_data(const std::string& msg) {
+    std::string out;
+    out.reserve(msg.size() + 16);
+    bool at_line_start = true;
+    for (char c : msg) {
+        if (at_line_start && c == '.') out.push_back('.');
+        out.push_back(c);
+        at_line_start = (c == '\n');
+    }
+    return out;
 }
 
 #ifdef PENN_USE_CURL
@@ -159,6 +212,11 @@ inline SMTPExternalResult smtp_send_via_relay(const std::string& from_addr,
     std::string from = from_env ? from_env : user;
     std::string reply_to = reply_to_env ? reply_to_env : from_addr;
     std::string display_from = (from != from_addr) ? from_addr : "";
+    if (!is_safe_mailbox(from) || !is_safe_mailbox(to_addr) ||
+        (!reply_to.empty() && !is_safe_mailbox(reply_to))) {
+        res.error = "invalid SMTP address";
+        return res;
+    }
 
     CURLcode ginit = ensure_curl_global_init();
     if (ginit != CURLE_OK) {
@@ -302,7 +360,7 @@ inline bool send_cmd_expect(int fd, const std::string& cmd, int want_class, std:
 
 inline int connect_host_port(const std::string& host, int port, int timeout_ms = 1000) {
     struct addrinfo hints{}, *res = nullptr, *rp = nullptr;
-    hints.ai_family = AF_UNSPEC;
+    hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
 
     std::string port_s = std::to_string(port);
@@ -371,10 +429,14 @@ inline bool try_send_once(const std::string& mx_host,
                           std::string& err_out,
                           bool& temp_fail_out) {
     temp_fail_out = false;
+    if (!is_safe_mailbox(from_addr) || !is_safe_mailbox(to_addr)) {
+        err_out = "invalid SMTP address";
+        return false;
+    }
 
     std::cerr << "[smtp] trying " << mx_host << ":25\n";
 
-    int fd = connect_host_port(mx_host, 25, 1000);
+    int fd = connect_host_port(mx_host, 25, 5000);
     if (fd < 0) {
         err_out = "connect failed to " + mx_host + ":25";
         return false;
@@ -422,7 +484,7 @@ inline bool try_send_once(const std::string& mx_host,
         return finish(false);
     }
 
-    std::string msg = build_message(from_addr, to_addr, subject, body);
+    std::string msg = dot_stuff_data(build_message(from_addr, to_addr, subject, body));
     if (!write_all(fd, msg + "\r\n.\r\n")) {
         err_out = "failed sending DATA body";
         return finish(false);
@@ -450,7 +512,8 @@ inline SMTPExternalResult smtp_send_direct(const std::string& from_addr,
     SMTPExternalResult res;
 
     auto at = to_addr.find('@');
-    if (at == std::string::npos || at + 1 >= to_addr.size()) {
+    if (at == std::string::npos || at + 1 >= to_addr.size() ||
+        !is_safe_mailbox(from_addr) || !is_safe_mailbox(to_addr)) {
         res.error = "invalid recipient address";
         return res;
     }
@@ -466,14 +529,12 @@ inline SMTPExternalResult smtp_send_direct(const std::string& from_addr,
         mx.push_back({0, domain});
     }
 
-    if (mx.size() > 1) mx.resize(1);
-
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
 
     std::string last_err;
     for (const auto& rec : mx) {
         if (std::chrono::steady_clock::now() >= deadline) {
-            res.error = "outbound SMTP timed out";
+            res.error = "direct MX delivery timed out; configure SMTP_MODE=relay for faster Gmail/SEAS delivery";
             return res;
         }
 
@@ -483,7 +544,7 @@ inline SMTPExternalResult smtp_send_direct(const std::string& from_addr,
             return res;
         }
 
-        if (temp_fail) break;
+        (void)temp_fail;
     }
 
     if (last_err.empty()) last_err = "all MX delivery attempts failed";

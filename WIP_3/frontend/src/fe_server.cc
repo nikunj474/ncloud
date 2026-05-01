@@ -934,7 +934,7 @@ bool FEServer::handle_one_request(int fd) {
                 "Connection: close\r\n"
                 "\r\n"
                 "{\"ok\":false,\"error\":\"auth\"}";
-            ::send(fd, r401.data(), r401.size(), MSG_NOSIGNAL);
+            http_write_all(fd, r401);
         } else {
             handle_sse(fd, req, user);
         }
@@ -942,9 +942,10 @@ bool FEServer::handle_one_request(int fd) {
     }
 
     HttpResponse resp = dispatch(req);
+    resp.headers["Connection"] = req.keep_alive() ? "keep-alive" : "close";
     bool is_head = (req.method == "HEAD");
-    send_http_response(fd, resp, is_head);
-    return false;
+    if (!send_http_response(fd, resp, is_head)) return false;
+    return req.keep_alive();
 }
 
 // ---------------------------------------------------------------------------
@@ -3929,7 +3930,7 @@ void FEServer::handle_sse(int fd, const HttpRequest&, const std::string& user) {
         "Transfer-Encoding: chunked\r\n"
         "Access-Control-Allow-Origin: *\r\n"
         "\r\n";
-    ::send(fd, headers.data(), headers.size(), MSG_NOSIGNAL);
+    if (!http_write_all(fd, headers)) return;
 
     std::string last_notify;
     int keepalive_ticks = 0;
@@ -3968,7 +3969,7 @@ void FEServer::handle_sse(int fd, const HttpRequest&, const std::string& user) {
             keepalive_ticks = 0;
             std::string ping = ": keep-alive\n\n";
             std::string chunk = http_chunk_prefix(ping.size()) + "\r\n" + ping + "\r\n";
-            if (::send(fd, chunk.data(), chunk.size(), MSG_NOSIGNAL) <= 0) break;
+            if (!http_write_all(fd, chunk)) break;
         }
     }
 }

@@ -18,7 +18,7 @@
 #include <string>
 #include <thread>
 #include <vector>
-#include <algorithm>
+#include <cstdlib>
 
 static std::atomic<bool> g_running{true};
 
@@ -141,6 +141,11 @@ static bool is_external_recipient(const std::string& addr) {
     if (at == std::string::npos || at == 0 || at + 1 >= addr.size()) return false;
     std::string domain = lower_copy(addr.substr(at + 1));
     return domain != "penncloud.com" && domain != "penncloud";
+}
+
+static bool inbound_relay_enabled() {
+    const char* v = std::getenv("SMTP_ALLOW_INBOUND_RELAY");
+    return v && (std::string(v) == "1" || lower_copy(v) == "true");
 }
 
 static bool parse_subject_and_body(const std::string& raw_data,
@@ -281,18 +286,22 @@ private:
         if (!kv_.put(row, "body:" + uid, body)) return false;
 
         for (int attempt = 0; attempt < 5; ++attempt) {
-            std::string old_index = kv_.get_str(row, "inbox");
+            std::string old_index = kv_.get_str(row, "folder:inbox");
+            if (old_index.empty()) old_index = kv_.get_str(row, "inbox");
             if (old_index.empty()) old_index = kv_.get_str(row, "index");
             std::string new_index = uid + (old_index.empty() ? "" : "," + old_index);
 
             if (old_index.empty()) {
-                if (kv_.put(row, "inbox", new_index)) {
+                if (kv_.put(row, "folder:inbox", new_index)) {
+                    kv_.put(row, "inbox", new_index);
                     kv_.put(row, "index", new_index);
                     break;
                 }
             } else {
-                if (kv_.cput(row, "inbox", old_index, new_index) ||
+                if (kv_.cput(row, "folder:inbox", old_index, new_index) ||
+                    kv_.cput(row, "inbox", old_index, new_index) ||
                     kv_.cput(row, "index", old_index, new_index)) {
+                    kv_.put(row, "folder:inbox", new_index);
                     kv_.put(row, "inbox", new_index);
                     kv_.put(row, "index", new_index);
                     break;
@@ -370,7 +379,7 @@ private:
                     continue;
                 }
                 std::string addr = extract_path_arg(line, "MAIL FROM:");
-                if (addr.empty()) {
+                if (addr.empty() || !smtp_client_detail::is_safe_mailbox(addr)) {
                     write_all_fd(fd, "501 Bad MAIL FROM\r\n");
                     continue;
                 }
@@ -385,8 +394,13 @@ private:
                 }
                 std::string addr = extract_path_arg(line, "RCPT TO:");
                 std::string user = extract_local_user(addr);
-                if (addr.empty() || (user.empty() && !is_external_recipient(addr))) {
+                if (addr.empty() || !smtp_client_detail::is_safe_mailbox(addr) ||
+                    (user.empty() && !is_external_recipient(addr))) {
                     write_all_fd(fd, "550 Bad recipient\r\n");
+                    continue;
+                }
+                if (user.empty() && is_external_recipient(addr) && !inbound_relay_enabled()) {
+                    write_all_fd(fd, "550 Relay denied\r\n");
                     continue;
                 }
                 if (!user.empty()) {

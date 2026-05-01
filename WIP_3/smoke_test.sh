@@ -42,49 +42,104 @@ def post(path, data):
 def get(path):
     return opener.open(BASE+path).read()
 
+def cookie_header():
+    return '; '.join(f'{c.name}={c.value}' for c in jar)
+
+def recv_until(sock, needle, limit=65536):
+    data = b''
+    while needle not in data and len(data) < limit:
+        chunk = sock.recv(4096)
+        if not chunk:
+            break
+        data += chunk
+    return data
+
 # 1. SPA shell
 html = get('/')
 assert b'PennCloud' in html, "SPA shell missing"
 print("[PASS] GET /  ->  SPA shell")
 
-# 2. Signup
+# 2. Persistent HTTP connection
+s = socket.create_connection(('127.0.0.1', 8090), timeout=3)
+s.sendall(
+    b'HEAD / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: keep-alive\r\n\r\n'
+    b'HEAD / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n'
+)
+raw = recv_until(s, b'Connection: close')
+s.close()
+assert raw.count(b'HTTP/1.1 200 OK') == 2, raw[:300]
+print("[PASS] HTTP/1.1 keep-alive  ->  two requests on one socket")
+
+# 3. Malformed chunked body closes request but does not crash server
+s = socket.create_connection(('127.0.0.1', 8090), timeout=3)
+s.sendall(
+    b'POST /api/signup HTTP/1.1\r\n'
+    b'Host: 127.0.0.1\r\n'
+    b'Transfer-Encoding: chunked\r\n'
+    b'Content-Type: application/x-www-form-urlencoded\r\n'
+    b'Connection: close\r\n\r\n'
+    b'nothex\r\nabc\r\n0\r\n\r\n'
+)
+try:
+    s.recv(1024)
+except (socket.timeout, OSError):
+    pass
+s.close()
+assert b'PennCloud' in get('/'), "server did not respond after malformed chunked request"
+print("[PASS] malformed chunked request  ->  rejected without crashing server")
+
+# 4. Signup
 r = post('/api/signup', {'username':'testuser','password':'testpass'})
 assert r['ok'], f"signup failed: {r}"
 print("[PASS] POST /api/signup  ->  account created")
 
-# 3. Inbox (authenticated)
+# 5. Inbox (authenticated)
 r = json.loads(get('/api/inbox'))
 assert r['ok'], f"inbox failed: {r}"
 print("[PASS] GET /api/inbox  ->  empty inbox (authenticated)")
 
-# 4. Send email to self
+# 6. Send email to self
 r = post('/api/send', {'to':'testuser','subject':'Hello','body':'Test body'})
 assert r['ok'], f"send failed: {r}"
 uid = r.get('uid','')
+inbox_uid = r.get('inbox_uid', uid)
 print(f"[PASS] POST /api/send  ->  email sent, uid={uid[:16]}...")
 
-# 5. Inbox now has one email
+# 7. SSE sees latest inbox notification
+s = socket.create_connection(('127.0.0.1', 8090), timeout=3)
+s.sendall((
+    'GET /events HTTP/1.1\r\n'
+    'Host: 127.0.0.1\r\n'
+    f'Cookie: {cookie_header()}\r\n'
+    'Connection: close\r\n\r\n'
+).encode())
+raw = recv_until(s, b'new_email', limit=8192)
+s.close()
+assert b'HTTP/1.1 200 OK' in raw and b'event: new_email' in raw, raw[:300]
+print("[PASS] GET /events  ->  chunked SSE new_email event")
+
+# 8. Inbox now has one email
 r = json.loads(get('/api/inbox'))
 assert r['ok'] and len(r['emails']) == 1, f"inbox should have 1 email: {r}"
 print("[PASS] GET /api/inbox  ->  1 email in inbox")
 
-# 6. Read email
-r = json.loads(get(f'/api/email/{uid}'))
+# 9. Read email
+r = json.loads(get(f'/api/email/{inbox_uid}'))
 assert r['ok'] and r['email']['subject'] == 'Hello', f"read failed: {r}"
 print("[PASS] GET /api/email/:uid  ->  email body correct")
 
-# 7. Delete email
-r = post('/api/delete-email', {'uid': uid})
+# 10. Delete email
+r = post('/api/delete-email', {'uid': inbox_uid, 'folder': 'inbox'})
 assert r['ok'], f"delete failed: {r}"
 print("[PASS] POST /api/delete-email  ->  deleted")
 
-# 8. Inbox empty again
+# 11. Inbox empty again
 r = json.loads(get('/api/inbox'))
 assert r['ok'] and len(r['emails']) == 0, f"inbox should be empty: {r}"
 print("[PASS] GET /api/inbox  ->  inbox empty after delete")
 
 
-# 9. Upload a file to Drive
+# 12. Upload a file to Drive
 boundary = '----PennCloudBoundary'
 file_content = b'PennCloud Demo I file\n'
 body = (
@@ -104,38 +159,38 @@ uid = r['uid']
 path = r['path']
 print("[PASS] POST /api/upload  ->  uploaded demo.txt")
 
-# 10. Drive list shows uploaded file
+# 13. Drive list shows uploaded file
 r = json.loads(get('/api/drive?path=/'))
 assert r['ok'] and len(r['items']) == 1 and r['items'][0]['name'] == 'demo.txt', f"drive list failed: {r}"
 print("[PASS] GET /api/drive  ->  1 file listed")
 
-# 11. Download file
+# 14. Download file
 blob = get(f'/api/download/{uid}')
 assert blob == file_content, f"download mismatch: {blob!r}"
 print("[PASS] GET /api/download/:uid  ->  file bytes correct")
 
-# 12. Rename file
+# 15. Rename file
 r = post('/api/rename', {'path': path, 'name': 'demo-renamed.txt'})
 assert r['ok'], f"rename failed: {r}"
 path = r['path']
 print("[PASS] POST /api/rename  ->  renamed file")
 
-# 13. Delete file
+# 16. Delete file
 r = post('/api/delete-path', {'path': path})
 assert r['ok'], f"delete path failed: {r}"
 print("[PASS] POST /api/delete-path  ->  deleted file")
 
-# 14. Drive list empty again
+# 17. Drive list empty again
 r = json.loads(get('/api/drive?path=/'))
 assert r['ok'] and len(r['items']) == 0, f"drive should be empty: {r}"
 print("[PASS] GET /api/drive  ->  drive empty after delete")
 
-# 15. Logout
+# 18. Logout
 r = post('/api/logout', {})
 assert r['ok']
 print("[PASS] POST /api/logout  ->  session destroyed")
 
-# 16. Inbox without auth -> 401
+# 19. Inbox without auth -> 401
 try:
     get('/api/inbox')
     print("[FAIL] should have returned 401")

@@ -17,6 +17,7 @@
 #include <string>
 #include <sstream>
 #include <iostream>
+#include <cerrno>
 
 // Read one \r\n-terminated line from fd (max 8KB)
 inline bool http_read_line(int fd, std::string& line) {
@@ -56,7 +57,14 @@ inline bool read_chunked_body(int fd, std::string& body) {
         size_t semi = size_line.find(';');
         if (semi != std::string::npos) size_line = size_line.substr(0, semi);
 
-        size_t chunk_size = std::stoul(size_line, nullptr, 16);
+        size_t chunk_size = 0;
+        try {
+            size_t parsed = 0;
+            chunk_size = std::stoul(size_line, &parsed, 16);
+            if (parsed != size_line.size()) return false;
+        } catch (...) {
+            return false;
+        }
         if (chunk_size == 0) {
             // Trailing CRLF after final chunk
             std::string empty;
@@ -129,7 +137,14 @@ inline bool read_http_request(int fd, HttpRequest& req) {
     } else {
         std::string cl_str = req.header("content-length");
         if (!cl_str.empty()) {
-            size_t content_length = std::stoul(cl_str);
+            size_t content_length = 0;
+            try {
+                size_t parsed = 0;
+                content_length = std::stoul(cl_str, &parsed, 10);
+                if (parsed != cl_str.size()) return false;
+            } catch (...) {
+                return false;
+            }
             if (content_length > 64 * 1024 * 1024) {
                 // Reject bodies > 64MB
                 return false;
@@ -144,6 +159,17 @@ inline bool read_http_request(int fd, HttpRequest& req) {
 // send_http_response: serialize HttpResponse to socket
 // Supports: Content-Length for normal responses,
 //           Transfer-Encoding: chunked for streaming (SSE)
+
+inline bool http_write_all(int fd, const std::string& out) {
+    size_t off = 0;
+    while (off < out.size()) {
+        ssize_t w = ::send(fd, out.data() + off, out.size() - off, MSG_NOSIGNAL);
+        if (w < 0 && errno == EINTR) continue;
+        if (w <= 0) return false;
+        off += static_cast<size_t>(w);
+    }
+    return true;
+}
 
 inline bool send_http_response(int fd, const HttpResponse& resp,
                                 bool is_head = false) {
@@ -167,7 +193,9 @@ inline bool send_http_response(int fd, const HttpResponse& resp,
     }
 
     // Custom headers (Content-Type, Location, Set-Cookie, etc.)
-    for (auto& [k, v] : resp.headers) {
+    for (const auto& header : resp.headers) {
+        const std::string& k = header.first;
+        const std::string& v = header.second;
         if (k == "Connection") continue;
         out += k + ": " + v + "\r\n";
     }
@@ -182,8 +210,7 @@ inline bool send_http_response(int fd, const HttpResponse& resp,
         out += resp.body;
     }
 
-    ssize_t w = ::send(fd, out.data(), out.size(), MSG_NOSIGNAL);
-    return w == static_cast<ssize_t>(out.size());
+    return http_write_all(fd, out);
 }
 
 inline std::string http_chunk_prefix(size_t n) {
@@ -202,6 +229,5 @@ inline bool send_sse_event(int fd, const std::string& event_type,
 
     // HTTP chunk sizes must be HEX, not decimal
     std::string chunk = http_chunk_prefix(msg.size()) + "\r\n" + msg + "\r\n";
-    ssize_t w = ::send(fd, chunk.data(), chunk.size(), MSG_NOSIGNAL);
-    return w == static_cast<ssize_t>(chunk.size());
+    return http_write_all(fd, chunk);
 }
