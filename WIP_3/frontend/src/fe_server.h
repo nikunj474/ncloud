@@ -82,12 +82,13 @@ private:
     std::unique_ptr<SessionManager> sessions_;
     int listen_fd_ = -1;
     std::atomic<bool> running_{false};
+    std::atomic<int> active_sse_{0};
 
     struct ThreadPool;
     std::unique_ptr<ThreadPool> pool_;
 
     void handle_connection(int fd);
-    bool handle_one_request(int fd);
+    bool handle_one_request(int fd, bool& detached);
     HttpResponse dispatch(const HttpRequest& req);
     std::string get_user(const HttpRequest& req);
 

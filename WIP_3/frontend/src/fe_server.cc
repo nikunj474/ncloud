@@ -37,6 +37,8 @@ struct AdminFrontendNode {
 
 static bool frontend_admin_status_ok_admin(int port);
 
+constexpr int kMaxSSEConnections = 64;
+
 static bool tcp_probe_admin(const std::string& host, int port, int timeout_ms = 300) {
     int fd = ::socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return false;
@@ -861,6 +863,10 @@ FEServer::FEServer(const Config& cfg) : cfg_(cfg) {
 }
 
 FEServer::~FEServer() {
+    running_ = false;
+    for (int i = 0; i < 20 && active_sse_.load() > 0; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
     if (listen_fd_ >= 0) ::close(listen_fd_);
 }
 
@@ -913,11 +919,12 @@ int FEServer::create_listen_socket() {
 void FEServer::handle_connection(int fd) {
     struct timeval tv{.tv_sec = 5, .tv_usec = 0};
     ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-    while (running_ && handle_one_request(fd)) {}
-    ::close(fd);
+    bool detached = false;
+    while (running_ && !detached && handle_one_request(fd, detached)) {}
+    if (!detached) ::close(fd);
 }
 
-bool FEServer::handle_one_request(int fd) {
+bool FEServer::handle_one_request(int fd, bool& detached) {
     HttpRequest req;
     if (!read_http_request(fd, req)) return false;
 
@@ -936,9 +943,39 @@ bool FEServer::handle_one_request(int fd) {
                 "{\"ok\":false,\"error\":\"auth\"}";
             http_write_all(fd, r401);
         } else {
-            handle_sse(fd, req, user);
+            int active = active_sse_.fetch_add(1) + 1;
+            if (active > kMaxSSEConnections) {
+                active_sse_.fetch_sub(1);
+                std::string body = "{\"ok\":false,\"error\":\"too many events\"}";
+                std::string r503 = std::string(
+                    "HTTP/1.1 503 Service Unavailable\r\n"
+                    "Content-Type: application/json\r\n") +
+                    "Content-Length: " + std::to_string(body.size()) + "\r\n"
+                    "Connection: close\r\n"
+                    "\r\n" + body;
+                http_write_all(fd, r503);
+                return false;
+            }
+            try {
+                std::thread([this, fd, req, user] {
+                    handle_sse(fd, req, user);
+                    active_sse_.fetch_sub(1);
+                    ::close(fd);
+                }).detach();
+                detached = true;
+            } catch (...) {
+                active_sse_.fetch_sub(1);
+                std::string body = "{\"ok\":false,\"error\":\"events failed\"}";
+                std::string r503 = std::string(
+                    "HTTP/1.1 503 Service Unavailable\r\n"
+                    "Content-Type: application/json\r\n") +
+                    "Content-Length: " + std::to_string(body.size()) + "\r\n"
+                    "Connection: close\r\n"
+                    "\r\n" + body;
+                http_write_all(fd, r503);
+            }
         }
-        return false;  // SSE connection is long-lived, close after
+        return false;  // SSE connection is long-lived and owned by the SSE thread.
     }
 
     HttpResponse resp = dispatch(req);
@@ -3915,8 +3952,9 @@ HttpResponse FEServer::handle_static(const HttpRequest& req) {
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
-// SSE handler -- holds connection open and streams new email events (F1)
-// This runs in its own thread (from thread pool).
+// SSE handler -- holds connection open and streams new email events (F1).
+// Long-lived SSE sockets are handed off to detached SSE threads so the main
+// HTTP worker pool remains available for normal requests.
 // The SMTP server writes to "notify:{user}" col "latest" when new mail arrives.
 // We poll that key every 500ms and push SSE events on change.
 // ---------------------------------------------------------------------------
@@ -3935,7 +3973,7 @@ void FEServer::handle_sse(int fd, const HttpRequest&, const std::string& user) {
     std::string last_notify;
     int keepalive_ticks = 0;
 
-    while (true) {
+    while (running_) {
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
         // Check for new email notification
