@@ -980,10 +980,18 @@ bool FEServer::handle_one_request(int fd, bool& detached) {
     }
 
     HttpResponse resp = dispatch(req);
-    resp.headers["Connection"] = req.keep_alive() ? "keep-alive" : "close";
+    // Only add a default Connection header if the handler did not set one.
+    // Self-kill redirects must force Connection: close so the browser tears
+    // down the connection before the helper SIGKILLs this process; with
+    // keep-alive the browser may keep the dying socket and miss the redirect.
+    auto conn_it = resp.headers.find("Connection");
+    if (conn_it == resp.headers.end()) {
+        resp.headers["Connection"] = req.keep_alive() ? "keep-alive" : "close";
+    }
+    bool keep = (resp.headers["Connection"] != "close");
     bool is_head = (req.method == "HEAD");
     if (!send_http_response(fd, resp, is_head)) return false;
-    return req.keep_alive();
+    return keep;
 }
 
 // ---------------------------------------------------------------------------
@@ -3892,7 +3900,13 @@ HttpResponse FEServer::handle_admin_control_redirect(const HttpRequest& req) {
             if (!down.empty()) location += "?pc_down=" + down + "," + target;
             else               location += "?pc_down=" + target;
             admin_log("self-kill: killing " + target + " via shell subshell, redirecting browser to " + p.first);
-            return HttpResponse::redirect(location, 302);
+            // Force connection close: this process is about to be SIGKILLed.
+            // With HTTP keep-alive, the browser may hold the dying socket and
+            // mishandle the in-flight redirect when the kernel later tears the
+            // connection down asynchronously.
+            HttpResponse r = HttpResponse::redirect(location, 302);
+            r.headers["Connection"] = "close";
+            return r;
         }
         // No real peer found — fall through to perform_admin_control (self-kill fallback)
     }
