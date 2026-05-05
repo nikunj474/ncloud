@@ -81,7 +81,9 @@ inline bool http_write_all(int fd, const std::string& data) {
     return true;
 }
 
-static constexpr size_t kMaxRequestBodyBytes = 1024ull * 1024ull * 1024ull;  // 1 GB hard cap (raised from 128 MB to test large files)
+// Allows a 1 GB file plus multipart form overhead; Drive enforces the exact
+// per-file/quota limit after parsing the upload.
+static constexpr size_t kMaxRequestBodyBytes = 1030ull * 1024ull * 1024ull;
 
 // Read a chunked body from socket
 inline bool read_chunked_body(int fd, std::string& body) {
@@ -189,9 +191,9 @@ inline bool read_http_request(int fd, HttpRequest& req) {
                 static const std::string k413 =
                     "HTTP/1.1 413 Content Too Large\r\n"
                     "Content-Type: application/json\r\n"
-                    "Content-Length: 46\r\n"
+                    "Content-Length: 52\r\n"
                     "Connection: close\r\n\r\n"
-                    "{\"ok\":false,\"error\":\"file exceeds 1 GB limit\"}";
+                    "{\"ok\":false,\"error\":\"request exceeds 1030 MB limit\"}";
                 http_write_all(fd, k413);
                 return false;
             }

@@ -12,6 +12,8 @@ set -euo pipefail
 #   - Starts nginx on the EC2 host as the public gateway for ports 80/443.
 #   - Optionally configures Let's Encrypt HTTPS for a public DNS name.
 #   - Optionally preserves KV data under /opt/penncloud-data/kv.
+#   - Configures nginx with a high upload ceiling so Drive quota, not nginx,
+#     decides whether a large upload is allowed.
 #
 # Prerequisites:
 #   1. Start the AWS Academy Learner Lab and copy its temporary CLI credentials
@@ -74,6 +76,8 @@ set -euo pipefail
 #   - Persistent data only survives when PERSIST_DATA=1 and the same instance
 #     or attached host path is reused.
 #   - Let's Encrypt requires public port 80 to reach nginx for the challenge.
+#   - nginx uses client_max_body_size 4096m so it is not the first bottleneck
+#     for large Drive uploads; app-level quota still limits stored data.
 #   - The script is idempotent for normal redeploys: it reuses EC2, key pair,
 #     security group, Elastic IP, and existing certificates when possible.
 
@@ -396,6 +400,7 @@ upstream penncloud_frontends {
 server {
     listen 80 default_server;
     server_name ${SERVER_NAME} ${PUBLIC_IP_EC2};
+    client_max_body_size 4096m;
 
     location ^~ /.well-known/acme-challenge/ {
         root /var/www/certbot;
@@ -414,8 +419,9 @@ server {
         proxy_next_upstream error timeout invalid_header http_500 http_502 http_503 http_504;
         proxy_next_upstream_tries 3;
         proxy_connect_timeout 1s;
-        proxy_read_timeout 30s;
-        proxy_send_timeout 30s;
+        proxy_request_buffering off;
+        proxy_read_timeout 900s;
+        proxy_send_timeout 900s;
 
         # Direct FE redirect stubs use :8091/:8092. Through nginx, keep users
         # on the canonical entrypoint instead of exposing backend ports.
@@ -441,6 +447,7 @@ upstream penncloud_frontends {
 server {
     listen 80 default_server;
     server_name ${SERVER_NAME} ${PUBLIC_IP_EC2};
+    client_max_body_size 4096m;
 
     location ^~ /.well-known/acme-challenge/ {
         root /var/www/certbot;
@@ -459,8 +466,9 @@ server {
         proxy_next_upstream error timeout invalid_header http_500 http_502 http_503 http_504;
         proxy_next_upstream_tries 3;
         proxy_connect_timeout 1s;
-        proxy_read_timeout 30s;
-        proxy_send_timeout 30s;
+        proxy_request_buffering off;
+        proxy_read_timeout 900s;
+        proxy_send_timeout 900s;
         proxy_redirect ~^http://([^/:]+):809[0-2](/.*)\$ \$scheme://\$host\$2;
     }
 }
@@ -468,6 +476,7 @@ server {
 server {
     listen 443 ssl;
     server_name ${DOMAIN_NAME};
+    client_max_body_size 4096m;
 
     ssl_certificate /etc/letsencrypt/live/${DOMAIN_NAME}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/${DOMAIN_NAME}/privkey.pem;
@@ -488,8 +497,9 @@ server {
         proxy_next_upstream error timeout invalid_header http_500 http_502 http_503 http_504;
         proxy_next_upstream_tries 3;
         proxy_connect_timeout 1s;
-        proxy_read_timeout 30s;
-        proxy_send_timeout 30s;
+        proxy_request_buffering off;
+        proxy_read_timeout 900s;
+        proxy_send_timeout 900s;
         proxy_redirect ~^http://([^/:]+):809[0-2](/.*)\$ https://\$host\$2;
     }
 }

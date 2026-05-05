@@ -1047,9 +1047,9 @@ int FEServer::create_listen_socket() {
 // Connection handling -- persistent HTTP/1.1
 // ---------------------------------------------------------------------------
 void FEServer::handle_connection(int fd) {
-    // 120 s idle timeout — long enough for a slow 128 MB upload from the browser
-    // without being infinite (guards against zombie connections).
-    struct timeval tv{.tv_sec = 120, .tv_usec = 0};
+    // Long enough for larger browser uploads without being infinite (guards
+    // against zombie connections).
+    struct timeval tv{.tv_sec = 900, .tv_usec = 0};
     ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     bool detached = false;
     while (running_ && !detached && handle_one_request(fd, detached)) {}
@@ -1767,37 +1767,113 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
     .contact-actions button:hover { background: var(--bg); border-color: #B8C7DA; }
 
     /* ---- Drive ---- */
-    .drive-toolbar { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+    .drive-shell { display: flex; flex-direction: column; gap: 16px; }
+    .drive-top {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+      padding: 18px 20px; display: grid; grid-template-columns: minmax(0,1fr) minmax(250px,340px);
+      gap: 20px; align-items: center; box-shadow: var(--shadow-sm);
+    }
+    .drive-eyebrow { color: var(--danger); font-size: 12px; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
+    .drive-title { color: var(--penn-blue); font-size: 24px; font-weight: 800; margin-top: 3px; overflow-wrap: anywhere; }
+    .drive-subtitle { color: var(--muted); font-size: 13px; margin-top: 6px; overflow-wrap: anywhere; }
+    .drive-quota { background: #F8FBFF; border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
+    .drive-quota-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 9px; font-size: 13px; }
+    .drive-quota-row strong { color: var(--penn-blue); }
+    .drive-quota-meta { color: var(--muted); font-size: 12px; white-space: nowrap; }
+    .quota-track { height: 9px; background: #E2E8F0; border-radius: 999px; overflow: hidden; }
+    .quota-fill { height: 100%; background: var(--accent); border-radius: inherit; transition: width .2s; }
+    .quota-fill.warn { background: var(--danger); }
+    .drive-command-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+    .drive-toolbar { display: flex; gap: 8px; flex-wrap: wrap; }
     .drive-toolbar button {
-      padding: 7px 14px; border-radius: 9px; font-size: 13px; cursor: pointer;
-      border: 1px solid var(--border); background: var(--surface-soft);
+      min-height: 36px; padding: 8px 13px; border-radius: 9px; font-size: 13px; cursor: pointer;
+      border: 1px solid var(--border); background: var(--surface-soft); color: var(--text);
+      font-weight: 700; display: inline-flex; align-items: center; gap: 7px;
       transition: background .12s, border-color .12s, transform .12s;
     }
     .drive-toolbar button:hover { background: #F8FBFF; border-color: #B8C7DA; transform: translateY(-1px); }
+    .drive-toolbar .primary-action { background: var(--penn-blue); color: #fff; border-color: var(--penn-blue); }
+    .drive-toolbar .primary-action:hover { background: #0A2D72; border-color: #0A2D72; }
+    .btn-symbol { font-size: 15px; line-height: 1; }
+    .upload-progress-card {
+      display: none; margin: 0; padding: 12px 14px; background: #F8FBFF;
+      border: 1px solid #C8D8EA; border-radius: 10px; font-size: 13px; color: var(--text);
+    }
+    .upload-progress-card.active { display: block; }
+    .upload-progress-list { display: grid; gap: 12px; }
+    .upload-progress-head { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+    .upload-progress-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .upload-progress-bar { height: 9px; background: #E2E8F0; border-radius: 999px; overflow: hidden; }
+    .upload-progress-fill { height: 100%; width: 0%; background: #0066CC; transition: width 160ms ease; }
+    .upload-progress-detail { margin-top: 7px; color: var(--muted); }
     .breadcrumb {
-      display: inline-flex; align-items: center; gap: 7px; flex-wrap: wrap;
-      font-size: 13px; color: var(--muted); margin-bottom: 12px;
-      padding: 8px 10px; background: rgba(255,255,255,.72);
-      border: 1px solid var(--border); border-radius: 999px;
+      display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0;
+      font-size: 13px; color: var(--muted);
     }
-    .breadcrumb span { cursor: pointer; color: var(--accent); font-weight: 650; }
-    .breadcrumb span:hover { text-decoration: underline; }
-    .breadcrumb .crumb-sep { color: #A6B4C6; cursor: default; font-weight: 500; }
-    .file-grid { background: var(--surface); border-radius: 14px;
-                 border: 1px solid var(--border); overflow: hidden; box-shadow: var(--shadow-sm); }
-    .file-row.file-head {
-      background: #F8FBFF; color: var(--muted); font-size: 12px;
-      font-weight: 700; letter-spacing: .02em; text-transform: uppercase;
+    .crumb {
+      border: 1px solid var(--border); background: var(--surface); color: var(--accent);
+      border-radius: 999px; padding: 6px 10px; cursor: pointer; font-size: 13px; font-weight: 700;
     }
-    .file-row.file-head:hover { background: #F8FBFF; }
-    .file-row {
-      display: grid; align-items: center;
-      grid-template-columns: 28px minmax(220px, 1fr) 96px 150px 210px;
-      padding: 12px 20px; border-bottom: 1px solid var(--border); gap: 12px;
+    .crumb:hover { background: #EAF3FF; border-color: #B8C7DA; }
+    .crumb-sep { color: #A6B4C6; font-size: 12px; }
+    .drive-table {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+      overflow: hidden; box-shadow: var(--shadow-sm);
+    }
+    .drive-table-header, .drive-row {
+      display: grid; grid-template-columns: minmax(260px,1fr) 130px 110px 220px;
+      gap: 14px; align-items: center;
+    }
+    .drive-table-header {
+      padding: 10px 18px; background: #F8FBFF; color: var(--muted);
+      font-size: 12px; font-weight: 800; letter-spacing: .02em; text-transform: uppercase;
+      border-bottom: 1px solid var(--border);
+    }
+    .drive-row {
+      padding: 12px 18px; border-bottom: 1px solid var(--border); min-height: 64px;
       transition: background .12s;
     }
-    .file-row:hover { background: #F8FBFF; }
-    .file-row:last-child { border-bottom: none; }
+    .drive-row:last-child { border-bottom: none; }
+    .drive-row:hover { background: #FAFCFF; }
+    .drive-name-btn {
+      border: none; background: none; padding: 0; color: var(--text); cursor: pointer;
+      display: flex; align-items: center; gap: 12px; text-align: left; min-width: 0;
+    }
+    .drive-name-btn:hover .drive-item-name { color: var(--accent); text-decoration: underline; }
+    .drive-icon {
+      width: 38px; height: 38px; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center;
+      flex: 0 0 auto; color: var(--success); background: #F0F7F4; border: 1px solid #CFE7D8;
+    }
+    .drive-icon.folder { color: var(--penn-blue); background: #EAF3FF; border-color: #D3E2F2; }
+    .drive-icon svg {
+      width: 19px; height: 19px; stroke: currentColor; fill: none;
+      stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
+    }
+    .drive-name-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+    .drive-item-name { font-size: 14px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .drive-item-path { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .drive-kind, .drive-size { color: #4A5568; font-size: 13px; }
+    .drive-row-actions { display: flex; justify-content: flex-end; gap: 6px; flex-wrap: wrap; }
+    .drive-row-actions button {
+      padding: 6px 9px; font-size: 12px; border-radius: 7px;
+      border: 1px solid var(--border); cursor: pointer; background: var(--surface-soft);
+      color: #2D3748; font-weight: 600;
+      transition: background .12s, border-color .12s;
+    }
+    .drive-row-actions button:hover { background: var(--bg); border-color: #B8C7DA; }
+    .drive-row-actions .danger { color: var(--danger); border-color: rgba(201,54,54,0.45); }
+    .drive-empty {
+      padding: 46px 24px; text-align: center; color: var(--muted);
+      display: flex; flex-direction: column; align-items: center; gap: 12px;
+    }
+    .drive-empty-icon {
+      width: 56px; height: 56px; border-radius: 14px; background: #EAF3FF; color: var(--penn-blue);
+      display: flex; align-items: center; justify-content: center; border: 1px solid #D3E2F2;
+    }
+    .drive-empty-icon svg {
+      width: 28px; height: 28px; stroke: currentColor; fill: none;
+      stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
+    }
     .file-icon {
       width: 28px; height: 28px; border-radius: 9px;
       display: inline-flex; align-items: center; justify-content: center;
@@ -1820,21 +1896,6 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
       width: 14px; height: 14px; stroke: currentColor; fill: none;
       stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
     }
-    .file-name { min-width: 0; font-size: 14px; cursor: pointer;
-                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .file-name:hover { color: var(--accent); text-decoration: underline; }
-    .file-head .file-name { cursor: default; }
-    .file-head .file-name:hover { color: inherit; text-decoration: none; }
-    .file-size { font-size: 12px; color: var(--muted); min-width: 92px; text-align: right; }
-    .file-date { font-size: 12px; color: var(--muted); min-width: 132px; }
-    .file-actions { display: flex; gap: 6px; justify-content: flex-end; }
-    .file-actions button {
-      padding: 4px 9px; font-size: 11px; border-radius: 7px;
-      border: 1px solid var(--border); cursor: pointer; background: var(--surface-soft);
-      transition: background .12s, border-color .12s;
-    }
-    .file-actions button:hover { background: var(--bg); border-color: #B8C7DA; }
-
     /* ---- Notifications ---- */
     .toast {
       position: fixed; bottom: 24px; right: 24px;
@@ -1849,10 +1910,14 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
       :root { --sidebar-w: 170px; }
       .content { padding: 18px; }
       .email-from { width: 120px; }
-      .file-row { grid-template-columns: 24px minmax(120px, 1fr) 76px; }
-      .file-date { display: none; }
-      .file-actions { grid-column: 2 / 4; justify-content: flex-start; flex-wrap: wrap; }
-      .file-head .file-actions { display: none; }
+      .drive-top { grid-template-columns: 1fr; }
+      .drive-command-row { align-items: stretch; }
+      .breadcrumb, .drive-toolbar { width: 100%; }
+      .drive-toolbar button { flex: 1 1 140px; justify-content: center; }
+      .drive-table-header { display: none; }
+      .drive-row { grid-template-columns: 1fr; gap: 10px; align-items: start; }
+      .drive-row-actions { justify-content: flex-start; }
+      .drive-kind, .drive-size { padding-left: 50px; }
       .contact-form-row { grid-template-columns: 1fr; }
       .contact-add-btn { width: 100%; }
     }
@@ -1994,6 +2059,7 @@ let frontendRedirecting = false;
 let lastFrontendNodes = [];
 let pendingRoute = null;
 let authMode = 'login';
+let uploadProgresses = {};
 const frontendDownParam = 'pc_down';
 
 function renderPageNotFound() {
@@ -2195,6 +2261,12 @@ function formatBytes(n) {
   return `${(num / (1024 * 1024 * 1024)).toFixed(2)} GB`;
 }
 
+function formatRate(bytesPerSecond) {
+  const n = Number(bytesPerSecond || 0);
+  if (!Number.isFinite(n) || n <= 0) return 'calculating speed...';
+  return `${formatBytes(n)}/s`;
+}
+
 function driveIconSvg(type) {
   if (type === 'folder') {
     return `<svg viewBox="0 0 24 24" aria-hidden="true">
@@ -2217,6 +2289,23 @@ function driveItemIcon(type) {
 
 function driveInlineFolderIcon() {
   return `<span class="inline-folder-icon">${driveIconSvg('folder')}</span>`;
+}
+
+function plural(n, word) {
+  return `${n} ${word}${n === 1 ? '' : 's'}`;
+}
+
+function driveInlineArg(value) {
+  return encodeURIComponent(String(value || ''));
+}
+
+function driveItemKind(item) {
+  return item && item.type === 'folder' ? 'Folder' : 'File';
+}
+
+function driveDisplaySize(item) {
+  if (item && item.type === 'folder') return 'Folder';
+  return formatBytes(item && item.size ? item.size : 0);
 }
 
 function buildContactOptions() {
@@ -3774,85 +3863,224 @@ async function renderDrive(folderPath = '/', _retry = 0) {
     return;
   }
 
-  const pathParts = folderPath.split('/').filter(Boolean);
-  const breadcrumbItems = [`<span onclick="renderDrive('/')">Root</span>`];
-  pathParts.forEach((part, i) => {
-    const p = '/' + pathParts.slice(0, i + 1).join('/');
-    breadcrumbItems.push('<span class="crumb-sep">/</span>');
-    breadcrumbItems.push(`<span onclick="renderDrive('${escHtml(p)}')">${escHtml(part)}</span>`);
-  });
-  const breadcrumbHtml = breadcrumbItems.join('');
-
   const items = r.items || [];
+  const folders = items.filter(it => it.type === 'folder').length;
+  const files = items.length - folders;
+  const pathParts = folderPath === '/' ? [] : folderPath.split('/').filter(Boolean);
+  const folderLabel = pathParts.length ? pathParts[pathParts.length - 1] : 'Root';
+  const crumbs = [{ label: 'Root', path: '/' }];
+  pathParts.forEach((part, idx) => {
+    crumbs.push({ label: part, path: '/' + pathParts.slice(0, idx + 1).join('/') });
+  });
+  const breadcrumbHtml = crumbs.map((c, i) => {
+    const sep = i === 0 ? '' : '<span class="crumb-sep">/</span>';
+    return `${sep}<button class="crumb" type="button" onclick="renderDrive(decodeURIComponent('${driveInlineArg(c.path)}'))">${escHtml(c.label)}</button>`;
+  }).join('');
+
   const usedPct = quota ? Math.min(100, Math.round((quota.used_bytes / Math.max(1, quota.limit_bytes)) * 100)) : 0;
-  content.innerHTML = `
-    <div class="page-title">Drive</div>
-    <div style="margin-bottom:14px;padding:12px 14px;background:var(--surface);border:1px solid var(--border);border-radius:10px">
-      <div style="display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap;font-size:13px;margin-bottom:8px">
-        <span><b>Storage quota</b> ${quota ? `${formatBytes(quota.used_bytes)} of ${formatBytes(quota.limit_bytes)}` : 'Unavailable'}</span>
-        <span>${quota ? `${formatBytes(quota.remaining_bytes)} remaining` : ''}</span>
+  const quotaLabel = quota
+    ? `${formatBytes(quota.used_bytes)} of ${formatBytes(quota.limit_bytes)} used`
+    : 'Storage unavailable';
+  const remainingLabel = quota ? `${formatBytes(quota.remaining_bytes)} free` : '';
+  const emptyState = `
+    <div class="drive-empty">
+      <div class="drive-empty-icon">${driveIconSvg('folder')}</div>
+      <div>
+        <div style="font-weight:800;color:var(--penn-blue);margin-bottom:4px">This folder is empty</div>
+        <div style="font-size:13px">Upload a file or create a folder to start organizing.</div>
       </div>
-      <div style="height:9px;background:#e2e8f0;border-radius:999px;overflow:hidden"><div style="height:9px;width:${usedPct}%;background:${usedPct > 85 ? '#C53030' : '#0066CC'}"></div></div>
-    </div>
-    <div class="breadcrumb">${breadcrumbHtml}</div>
-    <div class="drive-toolbar">
-      <button onclick="showUpload()">Upload file</button>
-      <button onclick="makeFolder()">New folder</button>
-    </div>
-    <input type="file" id="file-input" style="display:none" onchange="uploadFile(this)">
-    <div class="file-grid">
-      ${items.length === 0
-        ? '<div style="padding:40px;text-align:center;color:var(--muted)">This folder is empty</div>'
-        : `<div class="file-row file-head">
-             <div class="file-icon"></div>
-             <div class="file-name">Name</div>
-             <div class="file-size">Size</div>
-             <div class="file-date">Updated</div>
-             <div class="file-actions" style="visibility:hidden"><button>Actions</button></div>
-           </div>` + items.map(it => `
-          <div class="file-row">
-            ${driveItemIcon(it.type)}
-            <div class="file-name" onclick="${it.type === 'folder' ? `renderDrive('${escHtml(it.path)}')` : `downloadFile('${it.uid}','${escHtml(it.name)}')`}">${escHtml(it.name)}</div>
-            <div class="file-size">${it.type === 'folder' ? '&#8212;' : formatBytes(it.size || 0)}</div>
-            <div class="file-date">${it.updated_at || it.created_at ? escHtml(it.updated_at || it.created_at) : '&mdash;'}</div>
-            <div class="file-actions">
-              <button onclick="renameItem('${escHtml(it.path)}')">Rename</button>
-              <button onclick="moveItem('${escHtml(it.path)}')">Move to</button>
-              <button onclick="deleteItem('${escHtml(it.path)}')">Delete</button>
-            </div>
-          </div>`).join('')}
+      <div class="drive-toolbar">
+        <button class="primary-action" onclick="showUpload()"><span class="btn-symbol">&uarr;</span> Upload file</button>
+        <button onclick="makeFolder()"><span class="btn-symbol">+</span> New folder</button>
+      </div>
     </div>`;
+
+  content.innerHTML = `
+    <div class="drive-shell">
+      <div class="drive-top">
+        <div>
+          <div class="drive-eyebrow">Penn Drive</div>
+          <div class="drive-title">${escHtml(folderLabel)}</div>
+          <div class="drive-subtitle">${plural(folders, 'folder')} and ${plural(files, 'file')} in ${escHtml(folderPath)}</div>
+        </div>
+        <div class="drive-quota">
+          <div class="drive-quota-row">
+            <strong>Storage quota</strong>
+            <span class="drive-quota-meta">${escHtml(remainingLabel)}</span>
+          </div>
+          <div class="drive-quota-row" style="margin-bottom:8px">
+            <span>${escHtml(quotaLabel)}</span>
+            <span class="drive-quota-meta">${usedPct}%</span>
+          </div>
+          <div class="quota-track"><div class="quota-fill ${usedPct > 85 ? 'warn' : ''}" style="width:${usedPct}%"></div></div>
+        </div>
+      </div>
+      <div class="drive-command-row">
+        <div class="breadcrumb">${breadcrumbHtml}</div>
+        <div class="drive-toolbar">
+          <button class="primary-action" onclick="showUpload()"><span class="btn-symbol">&uarr;</span> Upload file</button>
+          <button onclick="makeFolder()"><span class="btn-symbol">+</span> New folder</button>
+        </div>
+      </div>
+      <div id="upload-progress" class="upload-progress-card"><div id="upload-progress-list" class="upload-progress-list"></div></div>
+      <input type="file" id="file-input" style="display:none" multiple onchange="uploadFile(this)">
+      <div class="drive-table">
+      ${items.length === 0
+        ? emptyState
+        : `<div class="drive-table-header">
+             <div>Name</div><div>Type</div><div>Size</div><div style="text-align:right">Actions</div>
+           </div>` + items.map(it => {
+             const pathArg = driveInlineArg(it.path);
+             const uidArg = driveInlineArg(it.uid);
+             const nameArg = driveInlineArg(it.name);
+             const openAction = it.type === 'folder'
+               ? `renderDrive(decodeURIComponent('${pathArg}'))`
+               : `downloadFile(decodeURIComponent('${uidArg}'), decodeURIComponent('${nameArg}'))`;
+             return `
+          <div class="drive-row">
+            <button class="drive-name-btn" type="button" onclick="${openAction}">
+              <span class="drive-icon ${it.type === 'folder' ? 'folder' : 'file'}">${driveIconSvg(it.type)}</span>
+              <span class="drive-name-text">
+                <span class="drive-item-name">${escHtml(it.name)}</span>
+                <span class="drive-item-path">${escHtml(it.path || folderPath)}</span>
+              </span>
+            </button>
+            <div class="drive-kind">${escHtml(driveItemKind(it))}</div>
+            <div class="drive-size">${escHtml(driveDisplaySize(it))}</div>
+            <div class="drive-row-actions">
+              <button onclick="renameItem(decodeURIComponent('${pathArg}'))">Rename</button>
+              <button onclick="moveItem(decodeURIComponent('${pathArg}'))">Move to</button>
+              <button class="danger" onclick="deleteItem(decodeURIComponent('${pathArg}'))">Delete</button>
+            </div>
+          </div>`;
+           }).join('')}
+      </div>
+    </div>`;
+  renderUploadProgressList();
 }
 
 function showUpload() { document.getElementById('file-input').click(); }
 
+function renderUploadProgressList() {
+  const box = document.getElementById('upload-progress');
+  const list = document.getElementById('upload-progress-list');
+  if (!box || !list) return;
+  const entries = Object.values(uploadProgresses);
+  box.classList.toggle('active', entries.length > 0);
+  list.innerHTML = '';
+  entries.forEach(item => {
+    const pct = Math.max(0, Math.min(100, Math.round(item.percent || 0)));
+    const row = document.createElement('div');
+    row.className = 'upload-progress-item';
+    row.innerHTML = `
+      <div class="upload-progress-head">
+        <span class="upload-progress-name"></span>
+        <span class="upload-progress-pct">${pct}%</span>
+      </div>
+      <div class="upload-progress-bar"><div class="upload-progress-fill" style="width:${pct}%"></div></div>
+      <div class="upload-progress-detail"></div>`;
+    row.querySelector('.upload-progress-name').textContent = item.name || 'Uploading file';
+    row.querySelector('.upload-progress-detail').textContent = item.detail || 'Preparing upload...';
+    list.appendChild(row);
+  });
+}
+
+function setUploadProgress(id, {name = '', percent = 0, detail = ''} = {}) {
+  if (!id) return;
+  uploadProgresses[id] = {
+    ...(uploadProgresses[id] || {}),
+    id,
+    name: name || (uploadProgresses[id] && uploadProgresses[id].name) || 'Uploading file',
+    percent,
+    detail
+  };
+  renderUploadProgressList();
+}
+
+function clearUploadProgressSoon(id) {
+  setTimeout(() => {
+    delete uploadProgresses[id];
+    renderUploadProgressList();
+  }, 1800);
+}
+
 async function uploadFile(input) {
-  const file = input.files[0];
-  if (!file) return;
+  const files = Array.from(input.files || []);
+  if (files.length === 0) return;
+  const uploadPath = currentPath;
+  input.value = '';
+  files.forEach(file => uploadSingleFile(file, uploadPath));
+}
+
+async function uploadSingleFile(file, uploadPath) {
   const MAX_FILE_BYTES = 1024 * 1024 * 1024;
+  const uploadId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   if (file.size > MAX_FILE_BYTES) {
     showToast(`Upload blocked: file exceeds 1 GB server limit (${formatBytes(file.size)})`);
-    input.value = '';
     return;
   }
   const quota = await loadQuota(true);
   if (quota && quota.used_bytes + file.size > quota.limit_bytes) {
     showToast(`Upload blocked: quota exceeded by ${formatBytes(quota.used_bytes + file.size - quota.limit_bytes)}`);
-    input.value = '';
     return;
   }
   const fd = new FormData();
   fd.append('file', file);
-  fd.append('path', currentPath);
-  showToast('Uploading... (large files may take a few seconds)');
-  const r = await fetch('/api/upload', { method: 'POST', body: fd });
-  const data = await r.json();
-  showToast(data.ok ? 'Uploaded!' : 'Upload failed: ' + (data.error || ''));
-  if (data.ok) {
-    quotaCache = null;
-    renderDrive(currentPath);
-  }
-  input.value = '';
+  fd.append('path', uploadPath);
+  showToast('Uploading...');
+  const uploadStartedAt = Date.now();
+  let lastUploadRate = 0;
+  setUploadProgress(uploadId, {
+    name: file.name,
+    percent: 0,
+    detail: `Uploading ${formatBytes(file.size)} to the frontend... · calculating speed...`
+  });
+
+  const xhr = new XMLHttpRequest();
+  xhr.open('POST', '/api/upload');
+  xhr.timeout = 0;
+  xhr.upload.onprogress = (ev) => {
+    if (!ev.lengthComputable) {
+      setUploadProgress(uploadId, {name: file.name, percent: 0, detail: 'Uploading...'});
+      return;
+    }
+    const pct = (ev.loaded / ev.total) * 100;
+    const elapsedSeconds = Math.max(0.25, (Date.now() - uploadStartedAt) / 1000);
+    lastUploadRate = ev.loaded / elapsedSeconds;
+    const detail = pct >= 100
+      ? `Upload sent at ${formatRate(lastUploadRate)}. Writing chunks to replicated storage...`
+      : `${formatBytes(ev.loaded)} of ${formatBytes(ev.total)} sent · ${formatRate(lastUploadRate)}`;
+    setUploadProgress(uploadId, {name: file.name, percent: pct, detail});
+  };
+  xhr.onload = () => {
+    let data = {};
+    try { data = JSON.parse(xhr.responseText || '{}'); } catch (_) {}
+    const ok = xhr.status >= 200 && xhr.status < 300 && data.ok;
+    showToast(ok ? 'Uploaded!' : 'Upload failed: ' + (data.error || xhr.statusText || xhr.status));
+    if (ok) {
+      setUploadProgress(uploadId, {
+        name: file.name,
+        percent: 100,
+        detail: `Upload complete${lastUploadRate > 0 ? ` · average ${formatRate(lastUploadRate)}` : ''}.`
+      });
+      quotaCache = null;
+      if (currentView === 'drive') renderDrive(currentPath);
+    } else {
+      setUploadProgress(uploadId, {name: file.name, percent: 100, detail: data.error || 'Upload failed.'});
+    }
+    clearUploadProgressSoon(uploadId);
+  };
+  xhr.onerror = () => {
+    showToast('Upload failed: network error');
+    setUploadProgress(uploadId, {name: file.name, percent: 0, detail: 'Network error during upload.'});
+    clearUploadProgressSoon(uploadId);
+  };
+  xhr.onabort = () => {
+    showToast('Upload cancelled');
+    setUploadProgress(uploadId, {name: file.name, percent: 0, detail: 'Upload cancelled.'});
+    clearUploadProgressSoon(uploadId);
+  };
+  xhr.send(fd);
 }
 
 async function downloadFile(uid, name) {
@@ -5831,7 +6059,7 @@ std::string drive_dir_row(const std::string& uid) { return "drive:dir:" + uid; }
 std::string drive_file_row(const std::string& uid) { return "drive:file:" + uid; }
 std::string drive_user_row(const std::string& user) { return user + ":drive"; }
 
-constexpr size_t kDriveChunkSize = 1024 * 1024;  // 1MB chunks
+constexpr size_t kDriveChunkSize = 4ull * 1024ull * 1024ull;  // fewer KV round trips for large files
 
 std::string drive_file_chunk_col(size_t idx) { return "chunk:" + std::to_string(idx); }
 
@@ -5841,7 +6069,8 @@ std::string join_csv(const std::vector<std::string>& items);
 bool ensure_drive_root(KVClient* kv, const std::string& user, std::string& root_uid);
 
 std::string drive_quota_col() { return "quota_bytes"; }
-constexpr size_t kDefaultDriveQuotaBytes = 50ull * 1024ull * 1024ull;
+constexpr size_t kMaxDriveFileBytes = 1024ull * 1024ull * 1024ull;
+constexpr size_t kDefaultDriveQuotaBytes = 1024ull * 1024ull * 1024ull;
 
 size_t parse_size_t_or(const std::string& s, size_t fallback) {
     if (s.empty()) return fallback;
@@ -6400,6 +6629,9 @@ HttpResponse FEServer::handle_upload(const HttpRequest& req, const std::string& 
     if (!have_file || file_part.filename.empty()) {
         return HttpResponse::json(R"({"ok":false,"error":"missing file"})");
     }
+    if (file_part.data.size() > kMaxDriveFileBytes) {
+        return HttpResponse::json(R"({"ok":false,"error":"file exceeds 1 GB limit"})");
+    }
 
     size_t used_bytes = user_drive_used_bytes(kv_.get(), user);
     size_t limit_bytes = user_drive_quota_bytes(kv_.get(), user);
@@ -6611,9 +6843,7 @@ HttpResponse FEServer::handle_quota_status(const HttpRequest&, const std::string
 HttpResponse FEServer::handle_quota_update(const HttpRequest& req, const std::string& user) {
     auto params = parse_urlencoded(req.body);
     size_t limit_mb = parse_size_t_or(params["limit_mb"], 0);
-    // Hard cap: quota cannot exceed the HTTP body limit (128 MB).
-    // A quota above the HTTP limit is unreachable — the body parser rejects the
-    // request before the quota check runs.
+    // Hard cap: each user gets at most 1 GB of Drive storage.
     constexpr size_t kMaxQuotaMB = 1024;
     if (limit_mb == 0 || limit_mb > kMaxQuotaMB) {
         return HttpResponse::json(R"({"ok":false,"error":"limit must be between 1 and 1024 MB"})");

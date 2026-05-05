@@ -264,7 +264,7 @@ public:
 
 private:
     static constexpr int kDefaultSocketTimeoutMs = 350;
-    static constexpr int kLargeValueSocketTimeoutMs = 5000;
+    static constexpr int kLargeValueSocketTimeoutMs = 30000;
     static constexpr size_t kLargeValueThresholdBytes = 256 * 1024;
 
     std::mutex                      mu_;
