@@ -132,6 +132,11 @@ private:
 
     HttpResponse handle_drive_list(const HttpRequest& req, const std::string& user);
     HttpResponse handle_upload(const HttpRequest& req, const std::string& user);
+    HttpResponse handle_upload_start(const HttpRequest& req, const std::string& user);
+    HttpResponse handle_upload_chunk(const HttpRequest& req, const std::string& user);
+    HttpResponse handle_upload_status(const HttpRequest& req, const std::string& user);
+    HttpResponse handle_upload_finish(const HttpRequest& req, const std::string& user);
+    HttpResponse handle_upload_cancel(const HttpRequest& req, const std::string& user);
     HttpResponse handle_download(const HttpRequest& req, const std::string& user, const std::string& uid);
     HttpResponse handle_rename(const HttpRequest& req, const std::string& user);
     HttpResponse handle_move(const HttpRequest& req, const std::string& user);

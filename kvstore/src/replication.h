@@ -346,6 +346,7 @@ inline bool ReplicationManager::forward_to_all(const std::string& msg) {
                 r.alive = true;
                 replica_acked[i] = true;
                 ++acked;
+                if (acked >= required_remote_acks) break;
             }
         }
         if (acked >= required_remote_acks || attempt + 1 >= kMaxAttempts) break;

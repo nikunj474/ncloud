@@ -1355,6 +1355,26 @@ HttpResponse FEServer::dispatch(const HttpRequest& req) {
         if (user.empty()) return HttpResponse::error(401, "Unauthorized");
         return handle_upload(req, user);
     }
+    if (path == "/api/upload/start" && method == "POST") {
+        if (user.empty()) return HttpResponse::error(401, "Unauthorized");
+        return handle_upload_start(req, user);
+    }
+    if (path == "/api/upload/chunk" && method == "POST") {
+        if (user.empty()) return HttpResponse::error(401, "Unauthorized");
+        return handle_upload_chunk(req, user);
+    }
+    if (path == "/api/upload/status" && method == "GET") {
+        if (user.empty()) return HttpResponse::error(401, "Unauthorized");
+        return handle_upload_status(req, user);
+    }
+    if (path == "/api/upload/finish" && method == "POST") {
+        if (user.empty()) return HttpResponse::error(401, "Unauthorized");
+        return handle_upload_finish(req, user);
+    }
+    if (path == "/api/upload/cancel" && method == "POST") {
+        if (user.empty()) return HttpResponse::error(401, "Unauthorized");
+        return handle_upload_cancel(req, user);
+    }
     if (path == "/api/rename" && method == "POST") {
         if (user.empty()) return HttpResponse::error(401, "Unauthorized");
         return handle_rename(req, user);
@@ -3836,12 +3856,9 @@ async function addCurrentRecipientToContacts() {
 async function renderDrive(folderPath = '/', _retry = 0) {
   currentPath = folderPath;
   const content = document.getElementById('content');
-  let r, quota;
+  let r;
   try {
-    [r, quota] = await Promise.all([
-      fetch('/api/drive?path=' + encodeURIComponent(folderPath)).then(x => x.json()),
-      loadQuota(true)
-    ]);
+    r = await fetch('/api/drive?path=' + encodeURIComponent(folderPath)).then(x => x.json());
   } catch (_) {
     if (_retry < 2) {
       content.innerHTML = '<div class="spinner">Reconnecting to storage...</div>';
@@ -3877,11 +3894,6 @@ async function renderDrive(folderPath = '/', _retry = 0) {
     return `${sep}<button class="crumb" type="button" onclick="renderDrive(decodeURIComponent('${driveInlineArg(c.path)}'))">${escHtml(c.label)}</button>`;
   }).join('');
 
-  const usedPct = quota ? Math.min(100, Math.round((quota.used_bytes / Math.max(1, quota.limit_bytes)) * 100)) : 0;
-  const quotaLabel = quota
-    ? `${formatBytes(quota.used_bytes)} of ${formatBytes(quota.limit_bytes)} used`
-    : 'Storage unavailable';
-  const remainingLabel = quota ? `${formatBytes(quota.remaining_bytes)} free` : '';
   const emptyState = `
     <div class="drive-empty">
       <div class="drive-empty-icon">${driveIconSvg('folder')}</div>
@@ -3906,13 +3918,13 @@ async function renderDrive(folderPath = '/', _retry = 0) {
         <div class="drive-quota">
           <div class="drive-quota-row">
             <strong>Storage quota</strong>
-            <span class="drive-quota-meta">${escHtml(remainingLabel)}</span>
+            <span id="drive-quota-free" class="drive-quota-meta">Loading quota...</span>
           </div>
           <div class="drive-quota-row" style="margin-bottom:8px">
-            <span>${escHtml(quotaLabel)}</span>
-            <span class="drive-quota-meta">${usedPct}%</span>
+            <span id="drive-quota-label">Calculating storage usage...</span>
+            <span id="drive-quota-pct" class="drive-quota-meta">--</span>
           </div>
-          <div class="quota-track"><div class="quota-fill ${usedPct > 85 ? 'warn' : ''}" style="width:${usedPct}%"></div></div>
+          <div class="quota-track"><div id="drive-quota-fill" class="quota-fill" style="width:0%"></div></div>
         </div>
       </div>
       <div class="drive-command-row">
@@ -3956,7 +3968,36 @@ async function renderDrive(folderPath = '/', _retry = 0) {
            }).join('')}
       </div>
     </div>`;
-  renderUploadProgressList();
+  loadQuota(true)
+    .then(q => {
+      if (currentView === 'drive' && currentPath === folderPath) updateDriveQuotaCard(q);
+    })
+    .catch(() => {
+      if (currentView === 'drive' && currentPath === folderPath) updateDriveQuotaCard(null);
+    });
+  hydrateSavedUploadSessions(folderPath);
+}
+
+function updateDriveQuotaCard(quota) {
+  const freeEl = document.getElementById('drive-quota-free');
+  const labelEl = document.getElementById('drive-quota-label');
+  const pctEl = document.getElementById('drive-quota-pct');
+  const fillEl = document.getElementById('drive-quota-fill');
+  if (!freeEl || !labelEl || !pctEl || !fillEl) return;
+  if (!quota) {
+    freeEl.textContent = 'Unavailable';
+    labelEl.textContent = 'Storage unavailable';
+    pctEl.textContent = '--';
+    fillEl.style.width = '0%';
+    fillEl.classList.remove('warn');
+    return;
+  }
+  const usedPct = Math.min(100, Math.round((quota.used_bytes / Math.max(1, quota.limit_bytes)) * 100));
+  freeEl.textContent = `${formatBytes(quota.remaining_bytes)} free`;
+  labelEl.textContent = `${formatBytes(quota.used_bytes)} of ${formatBytes(quota.limit_bytes)} used`;
+  pctEl.textContent = `${usedPct}%`;
+  fillEl.style.width = `${usedPct}%`;
+  fillEl.classList.toggle('warn', usedPct > 85);
 }
 
 function showUpload() { document.getElementById('file-input').click(); }
@@ -3978,21 +4019,32 @@ function renderUploadProgressList() {
         <span class="upload-progress-pct">${pct}%</span>
       </div>
       <div class="upload-progress-bar"><div class="upload-progress-fill" style="width:${pct}%"></div></div>
-      <div class="upload-progress-detail"></div>`;
+      <div class="upload-progress-detail"></div>
+      <div class="upload-progress-actions"></div>`;
     row.querySelector('.upload-progress-name').textContent = item.name || 'Uploading file';
     row.querySelector('.upload-progress-detail').textContent = item.detail || 'Preparing upload...';
+    const actions = row.querySelector('.upload-progress-actions');
+    if (item.resumeKey) {
+      const btn = document.createElement('button');
+      btn.className = 'action-btn';
+      btn.type = 'button';
+      btn.textContent = 'Resume';
+      btn.onclick = () => resumeSavedUpload(item.resumeKey);
+      actions.appendChild(btn);
+    }
     list.appendChild(row);
   });
 }
 
-function setUploadProgress(id, {name = '', percent = 0, detail = ''} = {}) {
+function setUploadProgress(id, {name = '', percent = 0, detail = '', resumeKey = undefined} = {}) {
   if (!id) return;
   uploadProgresses[id] = {
     ...(uploadProgresses[id] || {}),
     id,
     name: name || (uploadProgresses[id] && uploadProgresses[id].name) || 'Uploading file',
     percent,
-    detail
+    detail,
+    resumeKey: resumeKey === undefined ? (uploadProgresses[id] && uploadProgresses[id].resumeKey) : resumeKey
   };
   renderUploadProgressList();
 }
@@ -4004,6 +4056,89 @@ function clearUploadProgressSoon(id) {
   }, 1800);
 }
 
+function savedUploadEntries() {
+  const prefix = 'penncloud:upload:';
+  const entries = [];
+  for (let i = 0; i < localStorage.length; ++i) {
+    const key = localStorage.key(i);
+    if (!key || !key.startsWith(prefix)) continue;
+    try {
+      const value = JSON.parse(localStorage.getItem(key) || '{}');
+      entries.push({key, value});
+    } catch (_) {}
+  }
+  return entries;
+}
+
+async function hydrateSavedUploadSessions(folderPath) {
+  const entries = savedUploadEntries().filter(({value}) =>
+    value && value.user === currentUser && value.path === folderPath && value.upload_id);
+  if (entries.length === 0) {
+    renderUploadProgressList();
+    return;
+  }
+  for (const {key, value} of entries) {
+    try {
+      const r = await fetch('/api/upload/status?id=' + encodeURIComponent(value.upload_id), {cache: 'no-store'});
+      const data = await r.json();
+      if (!data.ok || data.status === 'completed' || data.status === 'cancelled') {
+        localStorage.removeItem(key);
+        delete uploadProgresses[value.upload_id];
+        continue;
+      }
+      const totalSize = Number(data.total_size || value.size || 0);
+      const chunkSize = Number(data.chunk_size || value.chunk_size || (10 * 1024 * 1024));
+      const received = Array.isArray(data.received) ? data.received.map(Number).filter(Number.isFinite) : [];
+      const completedBytes = received.reduce((sum, idx) => {
+        if (idx < 0) return sum;
+        return sum + Math.max(0, Math.min(chunkSize, totalSize - idx * chunkSize));
+      }, 0);
+      const percent = totalSize ? (completedBytes / totalSize) * 100 : 0;
+      setUploadProgress(value.upload_id, {
+        name: value.filename || 'Paused upload',
+        percent,
+        detail: `Paused after refresh: ${formatBytes(completedBytes)} of ${formatBytes(totalSize)} stored.`,
+        resumeKey: key
+      });
+    } catch (_) {
+      setUploadProgress(value.upload_id, {
+        name: value.filename || 'Paused upload',
+        percent: 0,
+        detail: 'Paused upload saved locally.',
+        resumeKey: key
+      });
+    }
+  }
+  renderUploadProgressList();
+}
+
+function resumeSavedUpload(storageKey) {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(storageKey) || '{}'); } catch (_) {}
+  if (!saved || !saved.upload_id) {
+    showToast('Could not find saved upload session.');
+    return;
+  }
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.style.display = 'none';
+  input.onchange = () => {
+    const file = input.files && input.files[0];
+    input.remove();
+    if (!file) return;
+    const sameFile = file.name === saved.filename &&
+      file.size === Number(saved.size || 0) &&
+      Number(file.lastModified || 0) === Number(saved.lastModified || 0);
+    if (!sameFile) {
+      showToast('Please choose the exact same file to resume this upload.');
+      return;
+    }
+    uploadSingleFile(file, saved.path || currentPath, {progressId: saved.upload_id});
+  };
+  document.body.appendChild(input);
+  input.click();
+}
+
 async function uploadFile(input) {
   const files = Array.from(input.files || []);
   if (files.length === 0) return;
@@ -4012,9 +4147,48 @@ async function uploadFile(input) {
   files.forEach(file => uploadSingleFile(file, uploadPath));
 }
 
-async function uploadSingleFile(file, uploadPath) {
+function uploadFingerprint(file, uploadPath) {
+  return `${currentUser}|${uploadPath}|${file.name}|${file.size}|${file.lastModified || 0}`;
+}
+
+function uploadStorageKey(fingerprint) {
+  return 'penncloud:upload:' + encodeURIComponent(fingerprint);
+}
+
+async function postUrlEncoded(url, params) {
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+    body: new URLSearchParams(params).toString()
+  });
+  return r.json();
+}
+
+function uploadChunkRequest(uploadId, index, blob, fileName, onProgress) {
+  return new Promise((resolve, reject) => {
+    const fd = new FormData();
+    fd.append('upload_id', uploadId);
+    fd.append('index', String(index));
+    fd.append('chunk', blob, `${fileName}.part${index}`);
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/upload/chunk');
+    xhr.timeout = 0;
+    xhr.upload.onprogress = onProgress;
+    xhr.onload = () => {
+      let data = {};
+      try { data = JSON.parse(xhr.responseText || '{}'); } catch (_) {}
+      if (xhr.status >= 200 && xhr.status < 300 && data.ok) resolve(data);
+      else reject(new Error(data.error || xhr.statusText || `HTTP ${xhr.status}`));
+    };
+    xhr.onerror = () => reject(new Error('network error'));
+    xhr.onabort = () => reject(new Error('upload cancelled'));
+    xhr.send(fd);
+  });
+}
+
+async function uploadSingleFile(file, uploadPath, options = {}) {
   const MAX_FILE_BYTES = 1024 * 1024 * 1024;
-  const uploadId = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  let uploadId = options.progressId || `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   if (file.size > MAX_FILE_BYTES) {
     showToast(`Upload blocked: file exceeds 1 GB server limit (${formatBytes(file.size)})`);
     return;
@@ -4024,63 +4198,137 @@ async function uploadSingleFile(file, uploadPath) {
     showToast(`Upload blocked: quota exceeded by ${formatBytes(quota.used_bytes + file.size - quota.limit_bytes)}`);
     return;
   }
-  const fd = new FormData();
-  fd.append('file', file);
-  fd.append('path', uploadPath);
   showToast('Uploading...');
   const uploadStartedAt = Date.now();
   let lastUploadRate = 0;
+  const fingerprint = uploadFingerprint(file, uploadPath);
+  const storageKey = uploadStorageKey(fingerprint);
   setUploadProgress(uploadId, {
     name: file.name,
     percent: 0,
-    detail: `Uploading ${formatBytes(file.size)} to the frontend... · calculating speed...`
+    detail: `Starting upload session for ${formatBytes(file.size)}...`
   });
-
-  const xhr = new XMLHttpRequest();
-  xhr.open('POST', '/api/upload');
-  xhr.timeout = 0;
-  xhr.upload.onprogress = (ev) => {
-    if (!ev.lengthComputable) {
-      setUploadProgress(uploadId, {name: file.name, percent: 0, detail: 'Uploading...'});
-      return;
+  try {
+    const start = await postUrlEncoded('/api/upload/start', {
+      filename: file.name,
+      path: uploadPath,
+      total_size: String(file.size),
+      fingerprint
+    });
+    if (!start.ok) throw new Error(start.error || 'failed to start upload');
+    const serverUploadId = start.upload_id;
+    if (serverUploadId && serverUploadId !== uploadId) {
+      uploadProgresses[serverUploadId] = {
+        ...(uploadProgresses[uploadId] || {}),
+        id: serverUploadId,
+        resumeKey: undefined
+      };
+      delete uploadProgresses[uploadId];
+      uploadId = serverUploadId;
+      renderUploadProgressList();
     }
-    const pct = (ev.loaded / ev.total) * 100;
-    const elapsedSeconds = Math.max(0.25, (Date.now() - uploadStartedAt) / 1000);
-    lastUploadRate = ev.loaded / elapsedSeconds;
-    const detail = pct >= 100
-      ? `Upload sent at ${formatRate(lastUploadRate)}. Writing chunks to replicated storage...`
-      : `${formatBytes(ev.loaded)} of ${formatBytes(ev.total)} sent · ${formatRate(lastUploadRate)}`;
-    setUploadProgress(uploadId, {name: file.name, percent: pct, detail});
-  };
-  xhr.onload = () => {
-    let data = {};
-    try { data = JSON.parse(xhr.responseText || '{}'); } catch (_) {}
-    const ok = xhr.status >= 200 && xhr.status < 300 && data.ok;
-    showToast(ok ? 'Uploaded!' : 'Upload failed: ' + (data.error || xhr.statusText || xhr.status));
-    if (ok) {
+    localStorage.setItem(storageKey, JSON.stringify({
+      upload_id: serverUploadId,
+      user: currentUser,
+      path: uploadPath,
+      filename: file.name,
+      size: file.size,
+      lastModified: file.lastModified || 0,
+      fingerprint,
+      chunk_size: start.chunk_size,
+      total_chunks: start.total_chunks
+    }));
+
+    const chunkSize = Number(start.chunk_size || (10 * 1024 * 1024));
+    const totalChunks = Number(start.total_chunks || Math.ceil(file.size / chunkSize));
+    const received = new Set((start.received || []).map(x => Number(x)).filter(x => Number.isFinite(x)));
+    let completedBytes = 0;
+    const chunkBytes = (idx) => Math.min(chunkSize, file.size - idx * chunkSize);
+    for (const idx of received) {
+      if (idx >= 0 && idx < totalChunks) completedBytes += chunkBytes(idx);
+    }
+    const inFlightLoaded = {};
+    const updateProgress = (phase) => {
+      const inFlightBytes = Object.values(inFlightLoaded).reduce((a, b) => a + Number(b || 0), 0);
+      const sent = Math.min(file.size, completedBytes + inFlightBytes);
+      const elapsedSeconds = Math.max(0.25, (Date.now() - uploadStartedAt) / 1000);
+      lastUploadRate = sent / elapsedSeconds;
+      const pct = file.size ? (sent / file.size) * 100 : 100;
       setUploadProgress(uploadId, {
         name: file.name,
-        percent: 100,
-        detail: `Upload complete${lastUploadRate > 0 ? ` · average ${formatRate(lastUploadRate)}` : ''}.`
+        percent: pct,
+        detail: `${phase}: ${formatBytes(sent)} of ${formatBytes(file.size)} · ${formatRate(lastUploadRate)}`,
+        resumeKey: ''
       });
-      quotaCache = null;
-      if (currentView === 'drive') renderDrive(currentPath);
-    } else {
-      setUploadProgress(uploadId, {name: file.name, percent: 100, detail: data.error || 'Upload failed.'});
-    }
+    };
+    updateProgress(received.size ? 'Resuming upload' : 'Uploading chunks');
+
+    let nextIndex = 0;
+    const concurrency = 1;
+    await new Promise((resolve, reject) => {
+      let active = 0;
+      let failed = false;
+      const launch = () => {
+        if (failed) return;
+        while (active < concurrency) {
+          while (nextIndex < totalChunks && received.has(nextIndex)) nextIndex++;
+          if (nextIndex >= totalChunks) {
+            if (active === 0) resolve();
+            return;
+          }
+          const idx = nextIndex++;
+          const startByte = idx * chunkSize;
+          const blob = file.slice(startByte, startByte + chunkBytes(idx));
+          active++;
+          uploadChunkRequest(serverUploadId, idx, blob, file.name, (ev) => {
+            if (ev.lengthComputable) {
+              inFlightLoaded[idx] = ev.loaded;
+              updateProgress('Uploading chunks');
+            }
+          }).then(() => {
+            delete inFlightLoaded[idx];
+            received.add(idx);
+            completedBytes += chunkBytes(idx);
+            updateProgress('Uploading chunks');
+            active--;
+            launch();
+          }).catch(err => {
+            failed = true;
+            reject(err);
+          });
+        }
+      };
+      launch();
+    });
+
+    setUploadProgress(uploadId, {
+      name: file.name,
+      percent: 100,
+      detail: `Upload sent at ${formatRate(lastUploadRate)}. Finalizing in replicated storage...`,
+      resumeKey: ''
+    });
+    const done = await postUrlEncoded('/api/upload/finish', {upload_id: serverUploadId});
+    if (!done.ok) throw new Error(done.error || 'failed to finish upload');
+    localStorage.removeItem(storageKey);
+    showToast('Uploaded!');
+    setUploadProgress(uploadId, {
+      name: file.name,
+      percent: 100,
+      detail: `Upload complete · average ${formatRate(lastUploadRate)}.`,
+      resumeKey: ''
+    });
+    quotaCache = null;
+    if (currentView === 'drive') renderDrive(currentPath);
     clearUploadProgressSoon(uploadId);
-  };
-  xhr.onerror = () => {
-    showToast('Upload failed: network error');
-    setUploadProgress(uploadId, {name: file.name, percent: 0, detail: 'Network error during upload.'});
-    clearUploadProgressSoon(uploadId);
-  };
-  xhr.onabort = () => {
-    showToast('Upload cancelled');
-    setUploadProgress(uploadId, {name: file.name, percent: 0, detail: 'Upload cancelled.'});
-    clearUploadProgressSoon(uploadId);
-  };
-  xhr.send(fd);
+  } catch (err) {
+    showToast('Upload failed: ' + (err && err.message ? err.message : err));
+    setUploadProgress(uploadId, {
+      name: file.name,
+      percent: uploadProgresses[uploadId] ? uploadProgresses[uploadId].percent : 0,
+      detail: `Upload paused/failed: ${err && err.message ? err.message : err}.`,
+      resumeKey: localStorage.getItem(storageKey) ? storageKey : ''
+    });
+  }
 }
 
 async function downloadFile(uid, name) {
@@ -6058,10 +6306,13 @@ std::string drive_obj_row(const std::string& uid) { return "drive:obj:" + uid; }
 std::string drive_dir_row(const std::string& uid) { return "drive:dir:" + uid; }
 std::string drive_file_row(const std::string& uid) { return "drive:file:" + uid; }
 std::string drive_user_row(const std::string& user) { return user + ":drive"; }
+std::string drive_upload_row(const std::string& upload_id) { return "drive:upload:" + upload_id; }
+std::string drive_upload_lookup_row(const std::string& user) { return user + ":drive:upload_lookup"; }
 
-constexpr size_t kDriveChunkSize = 4ull * 1024ull * 1024ull;  // fewer KV round trips for large files
+constexpr size_t kDriveChunkSize = 10ull * 1024ull * 1024ull;  // 10MB demo path fits in one KV write
 
 std::string drive_file_chunk_col(size_t idx) { return "chunk:" + std::to_string(idx); }
+std::string upload_received_col(size_t idx) { return "received:" + std::to_string(idx); }
 
 std::string get_file_bytes(KVClient* kv, const std::string& uid);
 std::vector<std::string> split_csv(const std::string& s);
@@ -6069,12 +6320,79 @@ std::string join_csv(const std::vector<std::string>& items);
 bool ensure_drive_root(KVClient* kv, const std::string& user, std::string& root_uid);
 
 std::string drive_quota_col() { return "quota_bytes"; }
+std::string drive_used_col() { return "used_bytes"; }
 constexpr size_t kMaxDriveFileBytes = 1024ull * 1024ull * 1024ull;
 constexpr size_t kDefaultDriveQuotaBytes = 1024ull * 1024ull * 1024ull;
+
+long long elapsed_ms_since(std::chrono::steady_clock::time_point start) {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now() - start).count();
+}
 
 size_t parse_size_t_or(const std::string& s, size_t fallback) {
     if (s.empty()) return fallback;
     try { return static_cast<size_t>(std::stoull(s)); } catch (...) { return fallback; }
+}
+
+std::string upload_lookup_col(const std::string& fingerprint) {
+    return "fp:" + fingerprint;
+}
+
+std::string json_index_array(const std::vector<std::string>& indexes) {
+    std::string out = "[";
+    bool first = true;
+    for (const auto& idx : indexes) {
+        if (idx.empty()) continue;
+        if (!first) out += ",";
+        first = false;
+        out += idx;
+    }
+    out += "]";
+    return out;
+}
+
+std::vector<std::string> upload_received_indexes(KVClient* kv, const std::string& row, size_t total_chunks) {
+    std::unordered_set<size_t> seen;
+    for (const auto& tok : split_csv(kv->get_str(row, "received"))) {
+        size_t idx = parse_size_t_or(tok, total_chunks);
+        if (idx < total_chunks) seen.insert(idx);
+    }
+    for (size_t idx = 0; idx < total_chunks; ++idx) {
+        if (!kv->get_str(row, upload_received_col(idx)).empty()) seen.insert(idx);
+    }
+    std::vector<size_t> ordered(seen.begin(), seen.end());
+    std::sort(ordered.begin(), ordered.end());
+    std::vector<std::string> out;
+    out.reserve(ordered.size());
+    for (size_t idx : ordered) out.push_back(std::to_string(idx));
+    return out;
+}
+
+bool upload_received_all(KVClient* kv, const std::string& row, size_t total_chunks) {
+    std::unordered_set<size_t> seen;
+    for (const auto& tok : upload_received_indexes(kv, row, total_chunks)) {
+        size_t idx = parse_size_t_or(tok, total_chunks);
+        if (idx < total_chunks) seen.insert(idx);
+    }
+    return seen.size() == total_chunks;
+}
+
+std::string upload_status_json(KVClient* kv, const std::string& upload_id) {
+    const std::string row = drive_upload_row(upload_id);
+    std::string status = kv->get_str(row, "status");
+    if (status.empty()) status = "uploading";
+    std::string total_size = kv->get_str(row, "total_size");
+    std::string chunk_size = kv->get_str(row, "chunk_size");
+    std::string total_chunks = kv->get_str(row, "total_chunks");
+    std::string file_uid = kv->get_str(row, "file_uid");
+    size_t chunks_n = parse_size_t_or(total_chunks, 0);
+    return std::string("{\"ok\":true,\"upload_id\":") + json_str(upload_id) +
+           ",\"status\":" + json_str(status) +
+           ",\"file_uid\":" + json_str(file_uid) +
+           ",\"total_size\":" + (total_size.empty() ? "0" : total_size) +
+           ",\"chunk_size\":" + (chunk_size.empty() ? "0" : chunk_size) +
+           ",\"total_chunks\":" + (total_chunks.empty() ? "0" : total_chunks) +
+           ",\"received\":" + json_index_array(upload_received_indexes(kv, row, chunks_n)) + "}";
 }
 
 size_t user_drive_quota_bytes(KVClient* kv, const std::string& user) {
@@ -6106,9 +6424,40 @@ size_t subtree_file_bytes(KVClient* kv, const std::string& uid) {
 }
 
 size_t user_drive_used_bytes(KVClient* kv, const std::string& user) {
+    const std::string row = drive_user_row(user);
+    std::string cached = kv->get_str(row, drive_used_col());
+    if (!cached.empty()) return parse_size_t_or(cached, 0);
+
     std::string root_uid;
     if (!ensure_drive_root(kv, user, root_uid)) return 0;
-    return subtree_file_bytes(kv, root_uid);
+    size_t scanned = subtree_file_bytes(kv, root_uid);
+    kv->put(row, drive_used_col(), std::to_string(scanned));
+    return scanned;
+}
+
+bool adjust_user_drive_used_bytes(KVClient* kv, const std::string& user, long long delta) {
+    if (delta == 0) return true;
+    const std::string row = drive_user_row(user);
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        std::string old_raw = kv->get_str(row, drive_used_col());
+        if (old_raw.empty()) {
+            user_drive_used_bytes(kv, user);
+            old_raw = kv->get_str(row, drive_used_col());
+        }
+        size_t old_value = parse_size_t_or(old_raw, 0);
+        size_t next_value = old_value;
+        if (delta > 0) {
+            const size_t add = static_cast<size_t>(delta);
+            next_value = old_value > static_cast<size_t>(-1) - add ? static_cast<size_t>(-1) : old_value + add;
+        } else {
+            const size_t sub = static_cast<size_t>(-delta);
+            next_value = sub >= old_value ? 0 : old_value - sub;
+        }
+        std::string next_raw = std::to_string(next_value);
+        if (old_raw == next_raw || kv->cput(row, drive_used_col(), old_raw, next_raw)) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return false;
 }
 
 size_t drive_chunk_count_for_size(size_t nbytes) {
@@ -6357,25 +6706,6 @@ bool child_name_exists(KVClient* kv, const std::string& dir_uid, const std::stri
     return false;
 }
 
-std::string build_path(KVClient* kv, const std::string& uid) {
-    if (uid.empty()) return "/";
-    std::vector<std::string> names;
-    std::string cur = uid;
-    while (!cur.empty()) {
-        std::string name = kv->get_str(drive_obj_row(cur), "name");
-        std::string parent = kv->get_str(drive_obj_row(cur), "parent");
-        if (parent.empty()) break;
-        names.push_back(name);
-        cur = parent;
-    }
-    std::string path = "/";
-    for (auto it = names.rbegin(); it != names.rend(); ++it) {
-        if (path.size() > 1) path += "/";
-        path += *it;
-    }
-    return path;
-}
-
 bool collect_subtree_inner(KVClient* kv, const std::string& uid, std::vector<std::string>& out,
                            std::unordered_set<std::string>& seen, size_t depth) {
     if (uid.empty() || depth > 4096 || !seen.insert(uid).second) return true;
@@ -6407,21 +6737,37 @@ bool is_descendant_of(KVClient* kv, const std::string& possible_descendant, cons
     return false;
 }
 
-std::string json_drive_item(KVClient* kv, const std::string& uid) {
-    std::string type = kv->get_str(drive_obj_row(uid), "type");
-    std::string name = kv->get_str(drive_obj_row(uid), "name");
-    std::string path = build_path(kv, uid);
-    std::string size = kv->get_str(drive_obj_row(uid), "size");
-    std::string created_at = kv->get_str(drive_obj_row(uid), "created_at");
-    std::string updated_at = kv->get_str(drive_obj_row(uid), "updated_at");
+struct DriveListItem {
+    std::string uid;
+    std::string type;
+    std::string name;
+    std::string path;
+    std::string size;
+    std::string created_at;
+    std::string updated_at;
+};
+
+DriveListItem read_drive_list_item(KVClient* kv, const std::string& uid, const std::string& folder_path) {
+    DriveListItem item;
+    item.uid = uid;
+    item.type = kv->get_str(drive_obj_row(uid), "type");
+    item.name = kv->get_str(drive_obj_row(uid), "name");
+    item.path = join_path(folder_path, item.name);
+    item.size = kv->get_str(drive_obj_row(uid), "size");
+    item.created_at = kv->get_str(drive_obj_row(uid), "created_at");
+    item.updated_at = kv->get_str(drive_obj_row(uid), "updated_at");
+    return item;
+}
+
+std::string json_drive_item(const DriveListItem& item) {
     std::string json = "{";
-    json += "\"uid\":" + json_str(uid);
-    json += ",\"name\":" + json_str(name);
-    json += ",\"type\":" + json_str(type);
-    json += ",\"path\":" + json_str(path);
-    if (type == "file" && !size.empty()) json += ",\"size\":" + json_str(size);
-    if (!created_at.empty()) json += ",\"created_at\":" + json_str(created_at);
-    if (!updated_at.empty()) json += ",\"updated_at\":" + json_str(updated_at);
+    json += "\"uid\":" + json_str(item.uid);
+    json += ",\"name\":" + json_str(item.name);
+    json += ",\"type\":" + json_str(item.type);
+    json += ",\"path\":" + json_str(item.path);
+    if (item.type == "file" && !item.size.empty()) json += ",\"size\":" + json_str(item.size);
+    if (!item.created_at.empty()) json += ",\"created_at\":" + json_str(item.created_at);
+    if (!item.updated_at.empty()) json += ",\"updated_at\":" + json_str(item.updated_at);
     json += "}";
     return json;
 }
@@ -6595,30 +6941,37 @@ HttpResponse FEServer::handle_drive_list(const HttpRequest& req, const std::stri
 
     std::string children = kv_->get_str(drive_dir_row(folder_uid), "children");
     std::vector<std::string> ids = split_csv(children);
-    std::sort(ids.begin(), ids.end(), [&](const std::string& a, const std::string& b) {
-        std::string ta = kv_->get_str(drive_obj_row(a), "type");
-        std::string tb = kv_->get_str(drive_obj_row(b), "type");
-        if (ta != tb) return ta == "folder";
-        return kv_->get_str(drive_obj_row(a), "name") < kv_->get_str(drive_obj_row(b), "name");
+    std::vector<DriveListItem> items;
+    items.reserve(ids.size());
+    for (const auto& uid : ids) {
+        DriveListItem item = read_drive_list_item(kv_.get(), uid, folder_path);
+        if (!item.type.empty() && !item.name.empty()) items.push_back(item);
+    }
+    std::sort(items.begin(), items.end(), [](const DriveListItem& a, const DriveListItem& b) {
+        if (a.type != b.type) return a.type == "folder";
+        return a.name < b.name;
     });
 
     std::string json = "[";
     bool first = true;
-    for (const auto& uid : ids) {
+    for (const auto& item : items) {
         if (!first) json += ',';
         first = false;
-        json += json_drive_item(kv_.get(), uid);
+        json += json_drive_item(item);
     }
     json += "]";
     return HttpResponse::json("{\"ok\":true,\"items\":" + json + "}");
 }
 
 HttpResponse FEServer::handle_upload(const HttpRequest& req, const std::string& user) {
+    auto started = std::chrono::steady_clock::now();
     if (!req.is_multipart()) {
         return HttpResponse::json(R"({"ok":false,"error":"expected multipart upload"})");
     }
 
+    auto parse_started = std::chrono::steady_clock::now();
     auto parts = parse_multipart(req.body, req.header("content-type"));
+    long long parse_ms = elapsed_ms_since(parse_started);
     std::string parent_path = "/";
     MultipartPart file_part;
     bool have_file = false;
@@ -6655,6 +7008,7 @@ HttpResponse FEServer::handle_upload(const HttpRequest& req, const std::string& 
     std::string uid = drive_new_uid();
     std::string now = chat_timestamp_now();
     std::string fail_reason;
+    auto kv_started = std::chrono::steady_clock::now();
     if (!kv_->put(drive_obj_row(uid), "type", "file")) fail_reason = "failed to store file type";
     else if (!kv_->put(drive_obj_row(uid), "name", file_part.filename)) fail_reason = "failed to store file name";
     else if (!kv_->put(drive_obj_row(uid), "parent", parent_uid)) fail_reason = "failed to store parent folder";
@@ -6664,6 +7018,7 @@ HttpResponse FEServer::handle_upload(const HttpRequest& req, const std::string& 
     else if (!kv_->put(drive_obj_row(uid), "updated_at", now)) fail_reason = "failed to store file timestamp";
     else if (!put_file_chunks(kv_.get(), uid, file_part.data)) fail_reason = "failed to store file data";
     else if (!append_child(kv_.get(), parent_uid, uid)) fail_reason = "failed to update folder listing";
+    long long kv_ms = elapsed_ms_since(kv_started);
 
     if (!fail_reason.empty()) {
         kv_->del(drive_obj_row(uid), "type");
@@ -6678,7 +7033,230 @@ HttpResponse FEServer::handle_upload(const HttpRequest& req, const std::string& 
     }
 
     std::string path = join_path(parent_path, file_part.filename);
+    if (!adjust_user_drive_used_bytes(kv_.get(), user, static_cast<long long>(file_part.data.size()))) {
+        std::cerr << "[drive] failed to update cached quota usage for " << user << "\n";
+    }
+    std::cerr << "[drive] legacy upload user=" << user
+              << " file=" << file_part.filename
+              << " bytes=" << file_part.data.size()
+              << " parse_ms=" << parse_ms
+              << " kv_ms=" << kv_ms
+              << " total_ms=" << elapsed_ms_since(started) << "\n";
     return HttpResponse::json("{\"ok\":true,\"uid\":" + json_str(uid) + ",\"path\":" + json_str(path) + "}");
+}
+
+HttpResponse FEServer::handle_upload_start(const HttpRequest& req, const std::string& user) {
+    auto params = parse_urlencoded(req.body);
+    std::string filename = params["filename"];
+    std::string parent_path = params["path"];
+    std::string fingerprint = params["fingerprint"];
+    size_t total_size = parse_size_t_or(params["total_size"], 0);
+    if (parent_path.empty()) parent_path = "/";
+    if (!valid_component(filename) || total_size == 0 || total_size > kMaxDriveFileBytes) {
+        return HttpResponse::json(R"({"ok":false,"error":"invalid upload request"})");
+    }
+    if (fingerprint.size() > 256) {
+        return HttpResponse::json(R"({"ok":false,"error":"invalid upload fingerprint"})");
+    }
+
+    if (!fingerprint.empty()) {
+        std::string existing_id = kv_->get_str(drive_upload_lookup_row(user), upload_lookup_col(fingerprint));
+        if (!existing_id.empty()) {
+            std::string row = drive_upload_row(existing_id);
+            std::string status = kv_->get_str(row, "status");
+            if (kv_->get_str(row, "owner") == user &&
+                kv_->get_str(row, "filename") == filename &&
+                kv_->get_str(row, "path") == parent_path &&
+                parse_size_t_or(kv_->get_str(row, "total_size"), 0) == total_size &&
+                status != "completed" && status != "cancelled") {
+                return HttpResponse::json(upload_status_json(kv_.get(), existing_id));
+            }
+        }
+    }
+
+    size_t used_bytes = user_drive_used_bytes(kv_.get(), user);
+    size_t limit_bytes = user_drive_quota_bytes(kv_.get(), user);
+    if (used_bytes + total_size > limit_bytes) {
+        size_t over = used_bytes + total_size - limit_bytes;
+        return HttpResponse::json(std::string("{\"ok\":false,\"error\":\"quota exceeded by ") +
+                                  std::to_string(over) + " bytes\"}");
+    }
+
+    std::string parent_uid, type;
+    if (!resolve_path(kv_.get(), user, parent_path, parent_uid, &type) || type != "folder") {
+        return HttpResponse::json(R"({"ok":false,"error":"target folder not found"})");
+    }
+    if (child_name_exists(kv_.get(), parent_uid, filename)) {
+        return HttpResponse::json(R"({"ok":false,"error":"name already exists"})");
+    }
+
+    std::string upload_id = drive_new_uid();
+    std::string file_uid = drive_new_uid();
+    size_t total_chunks = drive_chunk_count_for_size(total_size);
+    std::string row = drive_upload_row(upload_id);
+    std::string now = chat_timestamp_now();
+    bool ok = kv_->put(row, "owner", user) &&
+              kv_->put(row, "file_uid", file_uid) &&
+              kv_->put(row, "filename", filename) &&
+              kv_->put(row, "path", parent_path) &&
+              kv_->put(row, "parent_uid", parent_uid) &&
+              kv_->put(row, "total_size", std::to_string(total_size)) &&
+              kv_->put(row, "chunk_size", std::to_string(kDriveChunkSize)) &&
+              kv_->put(row, "total_chunks", std::to_string(total_chunks)) &&
+              kv_->put(row, "received", "") &&
+              kv_->put(row, "status", "uploading") &&
+              kv_->put(row, "created_at", now) &&
+              kv_->put(row, "updated_at", now);
+    if (ok && !fingerprint.empty()) {
+        ok = kv_->put(row, "fingerprint", fingerprint) &&
+             kv_->put(drive_upload_lookup_row(user), upload_lookup_col(fingerprint), upload_id);
+    }
+    if (!ok) return HttpResponse::json(R"({"ok":false,"error":"failed to create upload session"})");
+
+    std::cerr << "[drive] upload start user=" << user
+              << " upload_id=" << upload_id
+              << " file=" << filename
+              << " bytes=" << total_size
+              << " chunks=" << total_chunks << "\n";
+    return HttpResponse::json(upload_status_json(kv_.get(), upload_id));
+}
+
+HttpResponse FEServer::handle_upload_chunk(const HttpRequest& req, const std::string& user) {
+    auto started = std::chrono::steady_clock::now();
+    if (!req.is_multipart()) {
+        return HttpResponse::json(R"({"ok":false,"error":"expected multipart chunk"})");
+    }
+    auto parts = parse_multipart(req.body, req.header("content-type"));
+    std::string upload_id;
+    size_t index = static_cast<size_t>(-1);
+    MultipartPart chunk_part;
+    bool have_chunk = false;
+    for (const auto& part : parts) {
+        if (part.name == "upload_id") upload_id = part.data;
+        else if (part.name == "index") index = parse_size_t_or(part.data, static_cast<size_t>(-1));
+        else if (part.name == "chunk") { chunk_part = part; have_chunk = true; }
+    }
+    if (upload_id.empty() || !have_chunk || index == static_cast<size_t>(-1)) {
+        return HttpResponse::json(R"({"ok":false,"error":"invalid chunk request"})");
+    }
+    std::string row = drive_upload_row(upload_id);
+    if (kv_->get_str(row, "owner") != user || kv_->get_str(row, "status") == "completed") {
+        return HttpResponse::json(R"({"ok":false,"error":"upload session not found"})");
+    }
+    size_t total_chunks = parse_size_t_or(kv_->get_str(row, "total_chunks"), 0);
+    size_t total_size = parse_size_t_or(kv_->get_str(row, "total_size"), 0);
+    std::string file_uid = kv_->get_str(row, "file_uid");
+    if (file_uid.empty() || index >= total_chunks || total_chunks == 0) {
+        return HttpResponse::json(R"({"ok":false,"error":"invalid upload session"})");
+    }
+    size_t expected_max = kDriveChunkSize;
+    if (index + 1 == total_chunks) {
+        size_t rem = total_size % kDriveChunkSize;
+        expected_max = rem == 0 ? kDriveChunkSize : rem;
+    }
+    if (chunk_part.data.empty() || chunk_part.data.size() > expected_max) {
+        return HttpResponse::json(R"({"ok":false,"error":"invalid chunk size"})");
+    }
+
+    auto kv_started = std::chrono::steady_clock::now();
+    if (!kv_->put(drive_file_row(file_uid), drive_file_chunk_col(index), chunk_part.data)) {
+        return HttpResponse::json(R"({"ok":false,"error":"failed to store chunk"})");
+    }
+    long long kv_ms = elapsed_ms_since(kv_started);
+    if (!kv_->put(row, upload_received_col(index), "1")) {
+        return HttpResponse::json(R"({"ok":false,"error":"failed to update upload session"})");
+    }
+    kv_->put(row, "updated_at", chat_timestamp_now());
+    std::cerr << "[drive] upload chunk user=" << user
+              << " upload_id=" << upload_id
+              << " index=" << index
+              << " bytes=" << chunk_part.data.size()
+              << " kv_ms=" << kv_ms
+              << " total_ms=" << elapsed_ms_since(started) << "\n";
+    return HttpResponse::json(upload_status_json(kv_.get(), upload_id));
+}
+
+HttpResponse FEServer::handle_upload_status(const HttpRequest& req, const std::string& user) {
+    std::string upload_id = req.param("id");
+    if (upload_id.empty() || kv_->get_str(drive_upload_row(upload_id), "owner") != user) {
+        return HttpResponse::json(R"({"ok":false,"error":"upload session not found"})");
+    }
+    return HttpResponse::json(upload_status_json(kv_.get(), upload_id));
+}
+
+HttpResponse FEServer::handle_upload_finish(const HttpRequest& req, const std::string& user) {
+    auto started = std::chrono::steady_clock::now();
+    auto params = parse_urlencoded(req.body);
+    std::string upload_id = params["upload_id"];
+    std::string row = drive_upload_row(upload_id);
+    if (upload_id.empty() || kv_->get_str(row, "owner") != user) {
+        return HttpResponse::json(R"({"ok":false,"error":"upload session not found"})");
+    }
+    if (kv_->get_str(row, "status") == "completed") {
+        std::string file_uid = kv_->get_str(row, "file_uid");
+        return HttpResponse::json("{\"ok\":true,\"uid\":" + json_str(file_uid) + "}");
+    }
+    size_t total_chunks = parse_size_t_or(kv_->get_str(row, "total_chunks"), 0);
+    if (!upload_received_all(kv_.get(), row, total_chunks)) {
+        return HttpResponse::json(R"({"ok":false,"error":"upload is missing chunks"})");
+    }
+
+    std::string file_uid = kv_->get_str(row, "file_uid");
+    std::string filename = kv_->get_str(row, "filename");
+    std::string parent_path = kv_->get_str(row, "path");
+    std::string parent_uid = kv_->get_str(row, "parent_uid");
+    size_t total_size = parse_size_t_or(kv_->get_str(row, "total_size"), 0);
+    if (file_uid.empty() || filename.empty() || parent_uid.empty()) {
+        return HttpResponse::json(R"({"ok":false,"error":"invalid upload session"})");
+    }
+    if (child_name_exists(kv_.get(), parent_uid, filename)) {
+        return HttpResponse::json(R"({"ok":false,"error":"name already exists"})");
+    }
+
+    auto meta_started = std::chrono::steady_clock::now();
+    std::string now = chat_timestamp_now();
+    std::string fail_reason;
+    if (!kv_->put(drive_file_row(file_uid), "chunks", std::to_string(total_chunks))) fail_reason = "failed to store chunk count";
+    else if (!kv_->put(drive_obj_row(file_uid), "type", "file")) fail_reason = "failed to store file type";
+    else if (!kv_->put(drive_obj_row(file_uid), "name", filename)) fail_reason = "failed to store file name";
+    else if (!kv_->put(drive_obj_row(file_uid), "parent", parent_uid)) fail_reason = "failed to store parent folder";
+    else if (!kv_->put(drive_obj_row(file_uid), "owner", user)) fail_reason = "failed to store file owner";
+    else if (!kv_->put(drive_obj_row(file_uid), "size", std::to_string(total_size))) fail_reason = "failed to store file size";
+    else if (!kv_->put(drive_obj_row(file_uid), "created_at", now)) fail_reason = "failed to store file timestamp";
+    else if (!kv_->put(drive_obj_row(file_uid), "updated_at", now)) fail_reason = "failed to store file timestamp";
+    else if (!append_child(kv_.get(), parent_uid, file_uid)) fail_reason = "failed to update folder listing";
+    else if (!kv_->put(row, "status", "completed")) fail_reason = "failed to complete upload";
+    long long meta_ms = elapsed_ms_since(meta_started);
+    if (!fail_reason.empty()) {
+        return HttpResponse::json("{\"ok\":false,\"error\":" + json_str(fail_reason) + "}");
+    }
+    std::string path = join_path(parent_path, filename);
+    if (!adjust_user_drive_used_bytes(kv_.get(), user, static_cast<long long>(total_size))) {
+        std::cerr << "[drive] failed to update cached quota usage for " << user << "\n";
+    }
+    std::cerr << "[drive] upload finish user=" << user
+              << " upload_id=" << upload_id
+              << " file=" << filename
+              << " bytes=" << total_size
+              << " chunks=" << total_chunks
+              << " meta_ms=" << meta_ms
+              << " total_ms=" << elapsed_ms_since(started) << "\n";
+    return HttpResponse::json("{\"ok\":true,\"uid\":" + json_str(file_uid) + ",\"path\":" + json_str(path) + "}");
+}
+
+HttpResponse FEServer::handle_upload_cancel(const HttpRequest& req, const std::string& user) {
+    auto params = parse_urlencoded(req.body);
+    std::string upload_id = params["upload_id"];
+    std::string row = drive_upload_row(upload_id);
+    if (upload_id.empty() || kv_->get_str(row, "owner") != user) {
+        return HttpResponse::json(R"({"ok":false,"error":"upload session not found"})");
+    }
+    std::string file_uid = kv_->get_str(row, "file_uid");
+    if (!file_uid.empty()) delete_file_bytes(kv_.get(), file_uid);
+    kv_->put(row, "status", "cancelled");
+    std::string fingerprint = kv_->get_str(row, "fingerprint");
+    if (!fingerprint.empty()) kv_->del(drive_upload_lookup_row(user), upload_lookup_col(fingerprint));
+    return HttpResponse::json(R"({"ok":true})");
 }
 
 HttpResponse FEServer::handle_download(const HttpRequest&, const std::string& user,
@@ -6805,6 +7383,7 @@ HttpResponse FEServer::handle_delete_path(const HttpRequest& req, const std::str
         return HttpResponse::json(R"({"ok":false,"error":"path not found"})");
     }
 
+    size_t removed_bytes = subtree_file_bytes(kv_.get(), uid);
     std::string parent_uid = kv_->get_str(drive_obj_row(uid), "parent");
     if (!remove_child(kv_.get(), parent_uid, uid, true)) {
         return HttpResponse::json(R"({"ok":false,"error":"delete failed"})");
@@ -6827,6 +7406,9 @@ HttpResponse FEServer::handle_delete_path(const HttpRequest& req, const std::str
         } else {
             delete_file_bytes(kv_.get(), obj);
         }
+    }
+    if (!adjust_user_drive_used_bytes(kv_.get(), user, -static_cast<long long>(removed_bytes))) {
+        std::cerr << "[drive] failed to update cached quota usage after delete for " << user << "\n";
     }
     return HttpResponse::json(R"({"ok":true})");
 }
