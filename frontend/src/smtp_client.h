@@ -14,11 +14,13 @@
 #include <arpa/inet.h>
 #include <arpa/nameser.h>
 #include <cerrno>
+#include <csignal>
 #include <fcntl.h>
 #include <netdb.h>
 #include <resolv.h>
 #include <sys/select.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #include <algorithm>
@@ -240,12 +242,233 @@ inline std::string dot_stuff_data(const std::string& msg) {
     return out;
 }
 
-inline SMTPExternalResult smtp_send_via_relay(const std::string& /*from_addr*/,
-                                              const std::string& /*to_addr*/,
-                                              const std::string& /*subject*/,
-                                              const std::string& /*body*/) {
+inline std::string base64_encode(const std::string& in) {
+    static const char* tbl = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    std::string out;
+    out.reserve(((in.size() + 2) / 3) * 4);
+    for (size_t i = 0; i < in.size(); i += 3) {
+        unsigned int v = static_cast<unsigned char>(in[i]) << 16;
+        bool have2 = i + 1 < in.size();
+        bool have3 = i + 2 < in.size();
+        if (have2) v |= static_cast<unsigned char>(in[i + 1]) << 8;
+        if (have3) v |= static_cast<unsigned char>(in[i + 2]);
+        out.push_back(tbl[(v >> 18) & 0x3F]);
+        out.push_back(tbl[(v >> 12) & 0x3F]);
+        out.push_back(have2 ? tbl[(v >> 6) & 0x3F] : '=');
+        out.push_back(have3 ? tbl[v & 0x3F] : '=');
+    }
+    return out;
+}
+
+struct RelayProcess {
+    pid_t pid = -1;
+    int in_fd = -1;
+    int out_fd = -1;
+};
+
+inline void close_fd_if_open(int& fd) {
+    if (fd >= 0) {
+        ::close(fd);
+        fd = -1;
+    }
+}
+
+inline void stop_relay_process(RelayProcess& p) {
+    close_fd_if_open(p.in_fd);
+    close_fd_if_open(p.out_fd);
+    if (p.pid > 0) {
+        int status = 0;
+        if (::waitpid(p.pid, &status, WNOHANG) == 0) {
+            ::kill(p.pid, SIGTERM);
+            ::waitpid(p.pid, &status, 0);
+        }
+        p.pid = -1;
+    }
+}
+
+inline bool start_openssl_smtp(const std::string& host, int port, RelayProcess& p, std::string& err) {
+    int to_child[2] = {-1, -1};
+    int from_child[2] = {-1, -1};
+    if (::pipe(to_child) != 0 || ::pipe(from_child) != 0) {
+        err = "failed to create relay pipes";
+        if (to_child[0] >= 0) ::close(to_child[0]);
+        if (to_child[1] >= 0) ::close(to_child[1]);
+        if (from_child[0] >= 0) ::close(from_child[0]);
+        if (from_child[1] >= 0) ::close(from_child[1]);
+        return false;
+    }
+
+    pid_t pid = ::fork();
+    if (pid < 0) {
+        err = "failed to fork openssl relay helper";
+        ::close(to_child[0]); ::close(to_child[1]);
+        ::close(from_child[0]); ::close(from_child[1]);
+        return false;
+    }
+    if (pid == 0) {
+        ::dup2(to_child[0], STDIN_FILENO);
+        ::dup2(from_child[1], STDOUT_FILENO);
+        int devnull = ::open("/dev/null", O_WRONLY);
+        if (devnull >= 0) ::dup2(devnull, STDERR_FILENO);
+        ::close(to_child[0]); ::close(to_child[1]);
+        ::close(from_child[0]); ::close(from_child[1]);
+        if (devnull >= 0) ::close(devnull);
+        std::string connect = host + ":" + std::to_string(port);
+        ::execlp("openssl", "openssl", "s_client", "-quiet", "-starttls", "smtp",
+                 "-connect", connect.c_str(), static_cast<char*>(nullptr));
+        _exit(127);
+    }
+
+    ::close(to_child[0]);
+    ::close(from_child[1]);
+    p.pid = pid;
+    p.in_fd = to_child[1];
+    p.out_fd = from_child[0];
+    return true;
+}
+
+inline bool write_all_fd(int fd, const std::string& s) {
+    size_t off = 0;
+    while (off < s.size()) {
+        ssize_t n = ::write(fd, s.data() + off, s.size() - off);
+        if (n <= 0) return false;
+        off += static_cast<size_t>(n);
+    }
+    return true;
+}
+
+inline bool read_line_fd(int fd, std::string& line, int timeout_ms) {
+    line.clear();
+    while (true) {
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        FD_SET(fd, &rfds);
+        timeval tv{};
+        tv.tv_sec = timeout_ms / 1000;
+        tv.tv_usec = (timeout_ms % 1000) * 1000;
+        int rc = ::select(fd + 1, &rfds, nullptr, nullptr, &tv);
+        if (rc <= 0) return false;
+        char c = 0;
+        ssize_t n = ::read(fd, &c, 1);
+        if (n <= 0) return false;
+        if (c == '\n') {
+            if (!line.empty() && line.back() == '\r') line.pop_back();
+            return true;
+        }
+        line.push_back(c);
+        if (line.size() > 16384) return false;
+    }
+}
+
+inline bool read_relay_reply(int fd, int& code_out, std::string& full_out, int timeout_ms = 12000) {
+    full_out.clear();
+    bool first = true;
+    int code = -1;
+    std::string line;
+    while (true) {
+        if (!read_line_fd(fd, line, timeout_ms)) return false;
+        if (!full_out.empty()) full_out += "\n";
+        full_out += line;
+        if (line.size() < 3 ||
+            !std::isdigit(static_cast<unsigned char>(line[0])) ||
+            !std::isdigit(static_cast<unsigned char>(line[1])) ||
+            !std::isdigit(static_cast<unsigned char>(line[2]))) {
+            continue;
+        }
+        int cur = (line[0] - '0') * 100 + (line[1] - '0') * 10 + (line[2] - '0');
+        if (first) {
+            code = cur;
+            first = false;
+        }
+        if (line.size() >= 4 && line[3] == '-') continue;
+        code_out = code;
+        return true;
+    }
+}
+
+inline bool relay_cmd(RelayProcess& p, const std::string& cmd, int expect, std::string& err) {
+    if (!write_all_fd(p.in_fd, cmd + "\r\n")) {
+        err = "failed to write SMTP relay command";
+        return false;
+    }
+    int code = 0;
+    std::string reply;
+    if (!read_relay_reply(p.out_fd, code, reply)) {
+        err = "SMTP relay did not respond";
+        return false;
+    }
+    if (code != expect) {
+        err = "SMTP relay rejected command with " + std::to_string(code) + ": " + reply;
+        return false;
+    }
+    return true;
+}
+
+inline SMTPExternalResult smtp_send_via_relay(const std::string& from_addr,
+                                              const std::string& to_addr,
+                                              const std::string& subject,
+                                              const std::string& body) {
     SMTPExternalResult res;
-    res.error = "SMTP relay mode is disabled in the course build; use direct MX delivery";
+    const char* host_c = env_or_null("SMTP_RELAY_HOST");
+    const char* port_c = env_or_null("SMTP_RELAY_PORT");
+    const char* user_c = env_or_null("SMTP_RELAY_USER");
+    const char* pass_c = env_or_null("SMTP_RELAY_PASS");
+    if (!host_c || !user_c || !pass_c) {
+        res.error = "SMTP relay is missing SMTP_RELAY_HOST/USER/PASS";
+        return res;
+    }
+    int port = 587;
+    try {
+        if (port_c) port = std::stoi(port_c);
+    } catch (...) {
+        port = 587;
+    }
+
+    const std::string relay_from = env_or_null("SMTP_RELAY_FROM") ? env_or_null("SMTP_RELAY_FROM") : user_c;
+    const std::string reply_to = env_or_null("SMTP_REPLY_TO") ? env_or_null("SMTP_REPLY_TO") : from_addr;
+    const std::string display = relay_display_name_for(from_addr);
+    const std::string msg = build_message(relay_from, to_addr, subject, body, reply_to, display, from_addr);
+
+    RelayProcess proc;
+    std::string err;
+    if (!start_openssl_smtp(host_c, port, proc, err)) {
+        res.error = err;
+        return res;
+    }
+
+    auto fail = [&](const std::string& e) {
+        stop_relay_process(proc);
+        res.error = e;
+        return res;
+    };
+
+    int code = 0;
+    std::string reply;
+    // openssl s_client -starttls smtp consumes the cleartext greeting and
+    // STARTTLS response internally. Once TLS is established, the next SMTP
+    // step is our EHLO; do not wait for another 220 greeting here.
+    if (!relay_cmd(proc, "EHLO penncloud.local", 250, err)) return fail(err);
+
+    std::string auth_plain;
+    auth_plain.push_back('\0');
+    auth_plain += user_c;
+    auth_plain.push_back('\0');
+    auth_plain += pass_c;
+    if (!relay_cmd(proc, "AUTH PLAIN " + base64_encode(auth_plain), 235, err)) return fail(err);
+    if (!relay_cmd(proc, "MAIL FROM:<" + relay_from + ">", 250, err)) return fail(err);
+    if (!write_all_fd(proc.in_fd, "RCPT TO:<" + to_addr + ">\r\n")) return fail("failed to write RCPT TO");
+    if (!read_relay_reply(proc.out_fd, code, reply)) return fail("SMTP relay did not respond to RCPT TO");
+    if (code != 250 && code != 251) {
+        return fail("SMTP relay rejected recipient with " + std::to_string(code) + ": " + reply);
+    }
+    if (!relay_cmd(proc, "DATA", 354, err)) return fail(err);
+    if (!write_all_fd(proc.in_fd, dot_stuff_data(msg) + "\r\n.\r\n")) return fail("failed to write message data");
+    if (!read_relay_reply(proc.out_fd, code, reply) || code != 250) {
+        return fail("SMTP relay rejected message data with " + std::to_string(code) + ": " + reply);
+    }
+    (void)relay_cmd(proc, "QUIT", 221, err);
+    stop_relay_process(proc);
+    res.ok = true;
     return res;
 }
 
@@ -561,7 +784,7 @@ inline SMTPExternalResult smtp_send_external(const std::string& from_addr,
                                              const std::string& body) {
     const char* mode = smtp_client_detail::env_or_null("SMTP_MODE");
     const char* direct_domains = smtp_client_detail::env_or_null("SMTP_DIRECT_DOMAINS");
-    std::string mode_s = mode ? mode : "direct";
+    std::string mode_s = smtp_client_detail::lower_copy(smtp_client_detail::trim(mode ? mode : "direct"));
 
     if (smtp_client_detail::domain_matches_direct_list(
             smtp_client_detail::recipient_domain_for(to_addr), direct_domains)) {
@@ -580,9 +803,7 @@ inline SMTPExternalResult smtp_send_external(const std::string& from_addr,
     }
 
     if (mode_s == "relay") {
-        std::cerr << "[smtp] SMTP_MODE=relay requested, but this course build has no TLS SMTP relay client; "
-                  << "falling back to direct MX delivery\n";
-        return smtp_client_detail::smtp_send_direct(from_addr, to_addr, subject, body);
+        return smtp_client_detail::smtp_send_via_relay(from_addr, to_addr, subject, body);
     }
     return smtp_client_detail::smtp_send_direct(from_addr, to_addr, subject, body);
 }

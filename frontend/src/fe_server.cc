@@ -2087,6 +2087,9 @@ async function backendStorageAvailable() {
   const timeout = setTimeout(() => controller.abort(), 700);
   try {
     const r = await fetch('/api/admin/status', { cache: 'no-store', signal: controller.signal });
+    // Public deployments protect admin status with ADMIN_TOKEN. A 403 here
+    // means "health endpoint is private", not that user-facing storage is down.
+    if (r.status === 403) return true;
     if (!r.ok) return await markFrontendHealthFailure();
     const data = await r.json();
     frontendHealthFailures = 0;
