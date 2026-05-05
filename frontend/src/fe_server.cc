@@ -1472,26 +1472,63 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
       transition: background .12s, border-color .12s, transform .12s;
     }
     .drive-toolbar button:hover { background: #F8FBFF; border-color: #B8C7DA; transform: translateY(-1px); }
-    .breadcrumb { font-size: 13px; color: var(--muted); margin-bottom: 12px; }
-    .breadcrumb span { cursor: pointer; color: var(--accent); }
+    .breadcrumb {
+      display: inline-flex; align-items: center; gap: 7px; flex-wrap: wrap;
+      font-size: 13px; color: var(--muted); margin-bottom: 12px;
+      padding: 8px 10px; background: rgba(255,255,255,.72);
+      border: 1px solid var(--border); border-radius: 999px;
+    }
+    .breadcrumb span { cursor: pointer; color: var(--accent); font-weight: 650; }
     .breadcrumb span:hover { text-decoration: underline; }
-    .file-grid { background: var(--surface); border-radius: 10px;
+    .breadcrumb .crumb-sep { color: #A6B4C6; cursor: default; font-weight: 500; }
+    .file-grid { background: var(--surface); border-radius: 14px;
                  border: 1px solid var(--border); overflow: hidden; box-shadow: var(--shadow-sm); }
+    .file-row.file-head {
+      background: #F8FBFF; color: var(--muted); font-size: 12px;
+      font-weight: 700; letter-spacing: .02em; text-transform: uppercase;
+    }
+    .file-row.file-head:hover { background: #F8FBFF; }
     .file-row {
-      display: flex; align-items: center; padding: 12px 20px;
-      border-bottom: 1px solid var(--border); gap: 12px;
+      display: grid; align-items: center;
+      grid-template-columns: 28px minmax(220px, 1fr) 96px 150px 210px;
+      padding: 12px 20px; border-bottom: 1px solid var(--border); gap: 12px;
       transition: background .12s;
     }
     .file-row:hover { background: #F8FBFF; }
     .file-row:last-child { border-bottom: none; }
-    .file-icon { font-size: 18px; width: 24px; text-align: center; }
-    .file-name { flex: 1; font-size: 14px; cursor: pointer; }
+    .file-icon {
+      width: 28px; height: 28px; border-radius: 9px;
+      display: inline-flex; align-items: center; justify-content: center;
+      color: var(--accent); background: var(--accent-soft);
+    }
+    .file-icon.file { color: #52647A; background: #F4F7FB; }
+    .file-icon.folder { color: var(--penn-blue); background: #EAF3FF; }
+    .file-icon svg {
+      width: 17px; height: 17px; stroke: currentColor; fill: none;
+      stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
+    }
+    .file-head .file-icon { background: transparent; }
+    .inline-folder-icon {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 22px; height: 22px; border-radius: 7px;
+      color: var(--penn-blue); background: var(--accent-soft); vertical-align: middle;
+      margin-right: 8px;
+    }
+    .inline-folder-icon svg {
+      width: 14px; height: 14px; stroke: currentColor; fill: none;
+      stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
+    }
+    .file-name { min-width: 0; font-size: 14px; cursor: pointer;
+                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .file-name:hover { color: var(--accent); text-decoration: underline; }
-    .file-size { font-size: 12px; color: var(--muted); min-width: 80px; }
-    .file-actions { display: flex; gap: 6px; }
+    .file-head .file-name { cursor: default; }
+    .file-head .file-name:hover { color: inherit; text-decoration: none; }
+    .file-size { font-size: 12px; color: var(--muted); min-width: 92px; text-align: right; }
+    .file-date { font-size: 12px; color: var(--muted); min-width: 132px; }
+    .file-actions { display: flex; gap: 6px; justify-content: flex-end; }
     .file-actions button {
-      padding: 3px 8px; font-size: 11px; border-radius: 5px;
-      border: 1px solid var(--border); cursor: pointer; background: var(--surface);
+      padding: 4px 9px; font-size: 11px; border-radius: 7px;
+      border: 1px solid var(--border); cursor: pointer; background: var(--surface-soft);
       transition: background .12s, border-color .12s;
     }
     .file-actions button:hover { background: var(--bg); border-color: #B8C7DA; }
@@ -1510,7 +1547,10 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
       :root { --sidebar-w: 170px; }
       .content { padding: 18px; }
       .email-from { width: 120px; }
-      .file-actions { flex-wrap: wrap; justify-content: flex-end; }
+      .file-row { grid-template-columns: 24px minmax(120px, 1fr) 76px; }
+      .file-date { display: none; }
+      .file-actions { grid-column: 2 / 4; justify-content: flex-start; flex-wrap: wrap; }
+      .file-head .file-actions { display: none; }
     }
   </style>
 </head>
@@ -1795,6 +1835,30 @@ function formatBytes(n) {
   if (num < 1024 * 1024) return `${(num / 1024).toFixed(1)} KB`;
   if (num < 1024 * 1024 * 1024) return `${(num / (1024 * 1024)).toFixed(1)} MB`;
   return `${(num / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
+function driveIconSvg(type) {
+  if (type === 'folder') {
+    return `<svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M3.5 7.5h6.1l1.7 2h9.2v7.6a2.4 2.4 0 0 1-2.4 2.4H5.9a2.4 2.4 0 0 1-2.4-2.4V7.5Z"></path>
+      <path d="M3.5 7.5V6.9a2.4 2.4 0 0 1 2.4-2.4h3.2l2 2.3"></path>
+    </svg>`;
+  }
+  return `<svg viewBox="0 0 24 24" aria-hidden="true">
+    <path d="M7 3.8h6.8L18 8v12.2H7V3.8Z"></path>
+    <path d="M13.8 3.8V8H18"></path>
+    <path d="M9.8 12.2h5.4"></path>
+    <path d="M9.8 15.4h4.2"></path>
+  </svg>`;
+}
+
+function driveItemIcon(type) {
+  const cls = type === 'folder' ? 'folder' : 'file';
+  return `<div class="file-icon ${cls}">${driveIconSvg(type)}</div>`;
+}
+
+function driveInlineFolderIcon() {
+  return `<span class="inline-folder-icon">${driveIconSvg('folder')}</span>`;
 }
 
 function buildContactOptions() {
@@ -3248,11 +3312,14 @@ async function renderDrive(folderPath = '/') {
     return;
   }
 
-  const crumbs = folderPath === '/' ? ['/'] : ['/', ...folderPath.slice(1).split('/')];
-  const breadcrumbHtml = crumbs.map((c, i) => {
-    const p = '/' + crumbs.slice(1, i + 1).join('/');
-    return `<span onclick="renderDrive('${escHtml(p)}')">${escHtml(c)}</span>`;
-  }).join(' / ');
+  const pathParts = folderPath.split('/').filter(Boolean);
+  const breadcrumbItems = [`<span onclick="renderDrive('/')">Root</span>`];
+  pathParts.forEach((part, i) => {
+    const p = '/' + pathParts.slice(0, i + 1).join('/');
+    breadcrumbItems.push('<span class="crumb-sep">/</span>');
+    breadcrumbItems.push(`<span onclick="renderDrive('${escHtml(p)}')">${escHtml(part)}</span>`);
+  });
+  const breadcrumbHtml = breadcrumbItems.join('');
 
   const items = r.items || [];
   const usedPct = quota ? Math.min(100, Math.round((quota.used_bytes / Math.max(1, quota.limit_bytes)) * 100)) : 0;
@@ -3274,11 +3341,18 @@ async function renderDrive(folderPath = '/') {
     <div class="file-grid">
       ${items.length === 0
         ? '<div style="padding:40px;text-align:center;color:var(--muted)">This folder is empty</div>'
-        : items.map(it => `
+        : `<div class="file-row file-head">
+             <div class="file-icon"></div>
+             <div class="file-name">Name</div>
+             <div class="file-size">Size</div>
+             <div class="file-date">Updated</div>
+             <div class="file-actions" style="visibility:hidden"><button>Actions</button></div>
+           </div>` + items.map(it => `
           <div class="file-row">
-            <div class="file-icon">${it.type === 'folder' ? '&#128193;' : '&#128196;'}</div>
+            ${driveItemIcon(it.type)}
             <div class="file-name" onclick="${it.type === 'folder' ? `renderDrive('${escHtml(it.path)}')` : `downloadFile('${it.uid}','${escHtml(it.name)}')`}">${escHtml(it.name)}</div>
-            <div class="file-size">${it.size || ''}</div>
+            <div class="file-size">${it.type === 'folder' ? '&#8212;' : formatBytes(it.size || 0)}</div>
+            <div class="file-date">${it.updated_at || it.created_at ? escHtml(it.updated_at || it.created_at) : '&mdash;'}</div>
             <div class="file-actions">
               <button onclick="renameItem('${escHtml(it.path)}')">Rename</button>
               <button onclick="moveItem('${escHtml(it.path)}')">Move to</button>
@@ -3347,7 +3421,7 @@ async function moveItem(srcPath) {
 
   const parentBtnHtml = (parentPath && parentPath !== srcPath)
     ? `<button data-dst="${escHtml(parentPath)}" class="move-quick-btn" style="text-align:left;padding:10px 14px;border:1px solid var(--border);border-radius:8px;background:var(--bg);cursor:pointer;width:100%;font-size:14px">
-         📁 Parent folder&nbsp;<span style="font-size:12px;color:var(--muted)">${escHtml(parentPath)}</span>
+         ${driveInlineFolderIcon()}Parent folder&nbsp;<span style="font-size:12px;color:var(--muted)">${escHtml(parentPath)}</span>
        </button>`
     : '';
 
@@ -3357,7 +3431,7 @@ async function moveItem(srcPath) {
       <div style="font-size:13px;color:var(--muted);margin-bottom:18px">Choose a destination folder</div>
       <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:18px">
         <button data-dst="/" class="move-quick-btn" style="text-align:left;padding:10px 14px;border:1px solid var(--border);border-radius:8px;background:var(--bg);cursor:pointer;width:100%;font-size:14px">
-          📁 Root folder&nbsp;<span style="font-size:12px;color:var(--muted)">/</span>
+          ${driveInlineFolderIcon()}Root folder&nbsp;<span style="font-size:12px;color:var(--muted)">/</span>
         </button>
         ${parentBtnHtml}
       </div>
@@ -4950,12 +5024,16 @@ std::string json_drive_item(KVClient* kv, const std::string& uid) {
     std::string name = kv->get_str(drive_obj_row(uid), "name");
     std::string path = build_path(kv, uid);
     std::string size = kv->get_str(drive_obj_row(uid), "size");
+    std::string created_at = kv->get_str(drive_obj_row(uid), "created_at");
+    std::string updated_at = kv->get_str(drive_obj_row(uid), "updated_at");
     std::string json = "{";
     json += "\"uid\":" + json_str(uid);
     json += ",\"name\":" + json_str(name);
     json += ",\"type\":" + json_str(type);
     json += ",\"path\":" + json_str(path);
     if (type == "file" && !size.empty()) json += ",\"size\":" + json_str(size);
+    if (!created_at.empty()) json += ",\"created_at\":" + json_str(created_at);
+    if (!updated_at.empty()) json += ",\"updated_at\":" + json_str(updated_at);
     json += "}";
     return json;
 }
@@ -5184,23 +5262,28 @@ HttpResponse FEServer::handle_upload(const HttpRequest& req, const std::string& 
     }
 
     std::string uid = drive_new_uid();
-    bool ok =
-        kv_->put(drive_obj_row(uid), "type", "file") &&
-        kv_->put(drive_obj_row(uid), "name", file_part.filename) &&
-        kv_->put(drive_obj_row(uid), "parent", parent_uid) &&
-        kv_->put(drive_obj_row(uid), "owner", user) &&
-        kv_->put(drive_obj_row(uid), "size", std::to_string(file_part.data.size())) &&
-        put_file_chunks(kv_.get(), uid, file_part.data) &&
-        append_child(kv_.get(), parent_uid, uid);
+    std::string now = chat_timestamp_now();
+    std::string fail_reason;
+    if (!kv_->put(drive_obj_row(uid), "type", "file")) fail_reason = "failed to store file type";
+    else if (!kv_->put(drive_obj_row(uid), "name", file_part.filename)) fail_reason = "failed to store file name";
+    else if (!kv_->put(drive_obj_row(uid), "parent", parent_uid)) fail_reason = "failed to store parent folder";
+    else if (!kv_->put(drive_obj_row(uid), "owner", user)) fail_reason = "failed to store file owner";
+    else if (!kv_->put(drive_obj_row(uid), "size", std::to_string(file_part.data.size()))) fail_reason = "failed to store file size";
+    else if (!kv_->put(drive_obj_row(uid), "created_at", now)) fail_reason = "failed to store file timestamp";
+    else if (!kv_->put(drive_obj_row(uid), "updated_at", now)) fail_reason = "failed to store file timestamp";
+    else if (!put_file_chunks(kv_.get(), uid, file_part.data)) fail_reason = "failed to store file data";
+    else if (!append_child(kv_.get(), parent_uid, uid)) fail_reason = "failed to update folder listing";
 
-    if (!ok) {
+    if (!fail_reason.empty()) {
         kv_->del(drive_obj_row(uid), "type");
         kv_->del(drive_obj_row(uid), "name");
         kv_->del(drive_obj_row(uid), "parent");
         kv_->del(drive_obj_row(uid), "owner");
         kv_->del(drive_obj_row(uid), "size");
+        kv_->del(drive_obj_row(uid), "created_at");
+        kv_->del(drive_obj_row(uid), "updated_at");
         delete_file_bytes(kv_.get(), uid);
-        return HttpResponse::json(R"({"ok":false,"error":"upload failed"})");
+        return HttpResponse::json("{\"ok\":false,\"error\":" + json_str(fail_reason) + "}");
     }
 
     std::string path = join_path(parent_path, file_part.filename);
@@ -5236,6 +5319,7 @@ HttpResponse FEServer::handle_rename(const HttpRequest& req, const std::string& 
         return HttpResponse::json(R"({"ok":false,"error":"name already exists"})");
     }
     kv_->put(drive_obj_row(uid), "name", new_name);
+    kv_->put(drive_obj_row(uid), "updated_at", chat_timestamp_now());
     return HttpResponse::json("{\"ok\":true,\"path\":" + json_str(join_path(parent_path(path), new_name)) + "}");
 }
 
@@ -5275,6 +5359,7 @@ HttpResponse FEServer::handle_move(const HttpRequest& req, const std::string& us
         remove_child(kv_.get(), dst_uid, uid);
         return HttpResponse::json(R"({"ok":false,"error":"move failed"})");
     }
+    kv_->put(drive_obj_row(uid), "updated_at", chat_timestamp_now());
     return HttpResponse::json("{\"ok\":true,\"path\":" + json_str(join_path(dst_path, name)) + "}");
 }
 
@@ -5296,10 +5381,13 @@ HttpResponse FEServer::handle_mkdir(const HttpRequest& req, const std::string& u
     }
 
     std::string uid = drive_new_uid();
+    std::string now = chat_timestamp_now();
     if (!kv_->put(drive_obj_row(uid), "type", "folder") ||
         !kv_->put(drive_obj_row(uid), "name", name) ||
         !kv_->put(drive_obj_row(uid), "parent", parent_uid) ||
         !kv_->put(drive_obj_row(uid), "owner", user) ||
+        !kv_->put(drive_obj_row(uid), "created_at", now) ||
+        !kv_->put(drive_obj_row(uid), "updated_at", now) ||
         !kv_->put(drive_dir_row(uid), "children", "") ||
         !append_child(kv_.get(), parent_uid, uid)) {
         return HttpResponse::json(R"({"ok":false,"error":"mkdir failed"})");
@@ -5334,6 +5422,8 @@ HttpResponse FEServer::handle_delete_path(const HttpRequest& req, const std::str
         kv_->del(drive_obj_row(obj), "parent");
         kv_->del(drive_obj_row(obj), "owner");
         kv_->del(drive_obj_row(obj), "size");
+        kv_->del(drive_obj_row(obj), "created_at");
+        kv_->del(drive_obj_row(obj), "updated_at");
         if (obj_type == "folder") {
             kv_->del(drive_dir_row(obj), "children");
         } else {
