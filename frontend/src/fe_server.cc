@@ -1402,6 +1402,9 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>PennCloud</title>
+  <link rel="icon" type="image/png" href="/static/logo.png">
+  <link rel="shortcut icon" type="image/png" href="/static/logo.png">
+  <link rel="apple-touch-icon" href="/static/logo.png">
   <style>
     /* ---- Reset + base ---- */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -1720,6 +1723,37 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
       border-color: var(--accent);
       box-shadow: var(--ring);
     }
+    .contact-form-row {
+      display: grid; grid-template-columns: minmax(150px, 1fr) minmax(220px, 1.2fr) auto;
+      gap: 10px; align-items: start; margin-bottom: 14px;
+    }
+    .contact-form-row input {
+      height: 40px; margin-bottom: 0;
+    }
+    .contact-add-btn {
+      width: auto; height: 40px; padding: 0 20px; align-self: start;
+    }
+    .contact-row {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 16px; padding: 10px 0; border-bottom: 1px solid rgba(214,224,236,.65);
+    }
+    .contact-row:last-child { border-bottom: none; }
+    .contact-main { min-width: 0; flex: 1; }
+    .contact-name {
+      font-size: 14px; font-weight: 650; color: var(--text);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .contact-email {
+      margin-top: 2px; font-size: 12px; color: var(--muted);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .contact-actions { flex-shrink: 0; }
+    .contact-actions button {
+      padding: 4px 9px; font-size: 11px; border-radius: 7px;
+      border: 1px solid var(--border); cursor: pointer; background: var(--surface-soft);
+      transition: background .12s, border-color .12s;
+    }
+    .contact-actions button:hover { background: var(--bg); border-color: #B8C7DA; }
 
     /* ---- Drive ---- */
     .drive-toolbar { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
@@ -1808,6 +1842,8 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
       .file-date { display: none; }
       .file-actions { grid-column: 2 / 4; justify-content: flex-start; flex-wrap: wrap; }
       .file-head .file-actions { display: none; }
+      .contact-form-row { grid-template-columns: 1fr; }
+      .contact-add-btn { width: 100%; }
     }
   </style>
 </head>
@@ -1827,7 +1863,7 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
     </div>
     <div class="form-group">
       <label>Username</label>
-      <input id="username-in" type="text" placeholder="e.g. nikunj" autocomplete="username">
+      <input id="username-in" type="text" placeholder="Your username" autocomplete="username">
       <div id="username-help" class="field-help signup-only" style="display:none">Use lowercase letters, numbers, dash, or underscore. Start with a letter.</div>
     </div>
     <div class="form-group">
@@ -2663,7 +2699,7 @@ async function renderCompose(params = {}) {
   document.getElementById('content').innerHTML = `
     <div class="page-title">Compose</div>
     <div class="compose-form">
-      <input id="to-in" list="contacts-list" type="text" placeholder="To (e.g. rohit or rohit@gmail.com)" value="${escHtml(composeDraft.reply_to || '')}">
+      <input id="to-in" list="contacts-list" type="text" placeholder="To (username or user@example.com)" value="${escHtml(composeDraft.reply_to || '')}">
       <datalist id="contacts-list">${buildContactOptions()}</datalist>
       <div style="font-size:12px;color:var(--muted);margin-top:-6px;margin-bottom:10px">Address book suggestions are available as you type.</div>
       <input id="subject-in" type="text" placeholder="Subject" value="${escHtml(composeDraft.subject || '')}">
@@ -3547,7 +3583,7 @@ async function renderCompose(params = {}) {
   document.getElementById('content').innerHTML = `
     <div class="page-title">Compose</div>
     <div class="compose-form">
-      <input id="to-in" list="contacts-list" type="text" placeholder="To (e.g. rohit or rohit@gmail.com)" value="${escHtml(composeDraft.reply_to || '')}">
+      <input id="to-in" list="contacts-list" type="text" placeholder="To (username or user@example.com)" value="${escHtml(composeDraft.reply_to || '')}">
       <datalist id="contacts-list">${buildContactOptions()}</datalist>
       <div style="font-size:12px;color:var(--muted);margin-top:-6px;margin-bottom:10px">Address book suggestions are available as you type.</div>
       <input id="subject-in" type="text" placeholder="Subject" value="${escHtml(composeDraft.subject || '')}">
@@ -3986,16 +4022,19 @@ async function renderSettings() {
       </div>
       <div class="compose-form" style="max-width:none">
         <h3 style="margin-bottom:16px;font-size:15px">Address book</h3>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
-          <input id="contact-name" type="text" placeholder="Name" style="flex:1;min-width:120px">
-          <input id="contact-email" type="text" placeholder="Email or penncloud username" style="flex:1;min-width:160px">
-          <button class="btn btn-primary" style="width:auto;padding:9px 18px" onclick="addContact()">Add</button>
+        <div class="contact-form-row">
+          <input id="contact-name" type="text" placeholder="Name">
+          <input id="contact-email" type="text" placeholder="Email or PennCloud username">
+          <button class="btn btn-primary contact-add-btn" onclick="addContact()">Add</button>
         </div>
         <div id="contacts-list-box">
           ${(contactsCache || []).length === 0 ? '<div style="font-size:13px;color:var(--muted)">No contacts yet.</div>' : contactsCache.map(c => `
-            <div class="file-row" style="padding:10px 0;border:none">
-              <div class="file-name" style="cursor:default;text-decoration:none">${escHtml(c.name)}<div style="font-size:12px;color:var(--muted)">${escHtml(c.email)}</div></div>
-              <div class="file-actions"><button onclick="deleteContact('${escHtml(c.email)}')">Delete</button></div>
+            <div class="contact-row">
+              <div class="contact-main">
+                <div class="contact-name" title="${escHtml(c.name)}">${escHtml(c.name)}</div>
+                <div class="contact-email" title="${escHtml(c.email)}">${escHtml(c.email)}</div>
+              </div>
+              <div class="contact-actions"><button onclick="deleteContact('${escHtml(c.email)}')">Delete</button></div>
             </div>`).join('')}
         </div>
         <div id="contacts-msg" class="error-msg"></div>
