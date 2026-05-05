@@ -11,6 +11,10 @@
 #   bash start_browser_demo.sh
 #   MODE=multi-tablet bash start_browser_demo.sh
 #
+# Optional:
+#   PRESERVE_DATA=1 keeps the current DATA_ROOT instead of wiping demo KV data.
+#   DATA_ROOT=/path/to/kv-data chooses the multi-tablet KV data directory.
+#
 # When done: bash stop_browser_demo.sh
 set -e
 
@@ -48,7 +52,14 @@ pkill -KILL -f kvserver 2>/dev/null || true
 pkill -KILL -f '/coordinator/coordinator' 2>/dev/null || true
 pkill -KILL -f "smtp_server --port $SMTP_PORT" 2>/dev/null || true
 sleep 1
-rm -rf /tmp/pc_abc_cluster /tmp/pc_multi_tablet_demo
+if [ "${PRESERVE_DATA:-0}" = "1" ]; then
+    echo "[demo] preserving existing KV data (PRESERVE_DATA=1)"
+else
+    rm -rf /tmp/pc_abc_cluster /tmp/pc_multi_tablet_demo
+    if [ -n "${DATA_ROOT:-}" ]; then
+        rm -rf "$DATA_ROOT"
+    fi
+fi
 
 echo "[demo] building current sources..."
 make -C kvstore clean all
