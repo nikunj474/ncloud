@@ -15,6 +15,7 @@ set -euo pipefail
 #   APP_CIDR            default 0.0.0.0/0 for browser demo ports
 #   INCLUDE_SMTP_ENV    set to 1 to upload local .smtp.env to EC2
 #   ADMIN_TOKEN         admin token for /admin; random hex if omitted
+#   DNS_NAME            optional DNS name to print, e.g. liudawei.cis5550.net
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STATE_DIR="$ROOT_DIR/.aws-deploy"
@@ -126,6 +127,7 @@ authorize_ingress() {
 }
 
 authorize_ingress tcp 22 "$SSH_CIDR" "SSH"
+authorize_ingress tcp 80 "$APP_CIDR" "PennCloud HTTP"
 authorize_ingress tcp 8090 "$APP_CIDR" "PennCloud fe1"
 authorize_ingress tcp 8091 "$APP_CIDR" "PennCloud fe2"
 authorize_ingress tcp 8092 "$APP_CIDR" "PennCloud fe3"
@@ -235,7 +237,7 @@ sudo chown -R ec2-user:ec2-user /opt/penncloud
 sudo docker rm -f penncloud-demo >/dev/null 2>&1 || true
 sudo docker run -d --name penncloud-demo \
   -e ADMIN_TOKEN="$ADMIN_TOKEN" \
-  -p 8090:8090 -p 8091:8091 -p 8092:8092 -p 2525:2525 -p 8088:8088 \
+  -p 80:8090 -p 8090:8090 -p 8091:8091 -p 8092:8092 -p 2525:2525 -p 8088:8088 \
   -v /opt/penncloud:/home/cis5050/workspace/sp26-cis5050-T05 \
   -w /home/cis5050/workspace/sp26-cis5050-T05 \
   cis5050/docker-env:gRPC sleep infinity
@@ -244,7 +246,8 @@ REMOTE
 
 echo "[deploy] checking public endpoint..."
 for _ in $(seq 1 20); do
-  if curl -fsS "http://$PUBLIC_IP_EC2:8090/" >/dev/null; then
+  if curl -fsS "http://$PUBLIC_IP_EC2/" >/dev/null &&
+     curl -fsS "http://$PUBLIC_IP_EC2:8090/" >/dev/null; then
     break
   fi
   sleep 3
@@ -263,8 +266,15 @@ EOF_STATE
 
 echo
 echo "PennCloud is deployed."
-echo "Main app:  http://$PUBLIC_IP_EC2:8090/"
-echo "Admin:     http://$PUBLIC_IP_EC2:8090/admin?admin_token=$ADMIN_TOKEN"
+echo "Main app:  http://$PUBLIC_IP_EC2/"
+if [ -n "${DNS_NAME:-}" ]; then
+  echo "DNS app:   http://$DNS_NAME/"
+fi
+echo "FE1 direct: http://$PUBLIC_IP_EC2:8090/"
+echo "Admin:     http://$PUBLIC_IP_EC2/admin?admin_token=$ADMIN_TOKEN"
+if [ -n "${DNS_NAME:-}" ]; then
+  echo "DNS admin: http://$DNS_NAME/admin?admin_token=$ADMIN_TOKEN"
+fi
 echo "FE2 admin: http://$PUBLIC_IP_EC2:8091/admin?admin_token=$ADMIN_TOKEN"
 echo "FE3 admin: http://$PUBLIC_IP_EC2:8092/admin?admin_token=$ADMIN_TOKEN"
 echo "SMTP:      $PUBLIC_IP_EC2:2525"
