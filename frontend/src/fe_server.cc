@@ -4247,17 +4247,21 @@ async function uploadSingleFile(file, uploadPath, options = {}) {
     for (const idx of received) {
       if (idx >= 0 && idx < totalChunks) completedBytes += chunkBytes(idx);
     }
+    const resumedBytes = completedBytes;
     const inFlightLoaded = {};
     const updateProgress = (phase) => {
       const inFlightBytes = Object.values(inFlightLoaded).reduce((a, b) => a + Number(b || 0), 0);
       const sent = Math.min(file.size, completedBytes + inFlightBytes);
       const elapsedSeconds = Math.max(0.25, (Date.now() - uploadStartedAt) / 1000);
-      lastUploadRate = sent / elapsedSeconds;
+      const uploadedThisSession = Math.max(0, completedBytes - resumedBytes) + inFlightBytes;
+      lastUploadRate = uploadedThisSession / elapsedSeconds;
       const pct = file.size ? (sent / file.size) * 100 : 100;
+      const resumedLabel = resumedBytes > 0 ? ` (${formatBytes(resumedBytes)} resumed)` : '';
+      const rateLabel = uploadedThisSession > 0 ? formatRate(lastUploadRate) : 'calculating speed...';
       setUploadProgress(uploadId, {
         name: file.name,
         percent: pct,
-        detail: `${phase}: ${formatBytes(sent)} of ${formatBytes(file.size)} · ${formatRate(lastUploadRate)}`,
+        detail: `${phase}: ${formatBytes(sent)} of ${formatBytes(file.size)}${resumedLabel} · ${rateLabel}`,
         resumeKey: ''
       });
     };

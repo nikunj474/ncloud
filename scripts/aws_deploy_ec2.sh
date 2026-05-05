@@ -338,6 +338,15 @@ set -euo pipefail
 sudo dnf install -y docker nginx
 sudo systemctl enable --now docker
 sudo usermod -aG docker ec2-user || true
+if [ ! -f /swapfile ]; then
+  sudo fallocate -l 2G /swapfile
+  sudo chmod 600 /swapfile
+  sudo mkswap /swapfile
+fi
+sudo swapon /swapfile 2>/dev/null || true
+if ! grep -q '^/swapfile ' /etc/fstab; then
+  echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab >/dev/null
+fi
 sudo rm -rf /opt/penncloud
 sudo mkdir -p /opt/penncloud
 if [ "${PERSIST_DATA:-0}" = "1" ]; then
