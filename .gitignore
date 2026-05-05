@@ -1,4 +1,22 @@
-.env
+# Build artifacts
+kvstore/build/
+kvstore/kvserver
+frontend/build/
+frontend/feserver
+coordinator/coordinator
+
+# Runtime data
+data/
+*.wal
+*.ckpt
+*.ckpt.tmp
 .smtp.env
+.env
 *.log
+
+# Editor files
+.vscode/
+*.swp
+*.swo
+*~
 .DS_Store
