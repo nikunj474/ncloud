@@ -338,8 +338,11 @@ set -euo pipefail
 sudo dnf install -y docker nginx
 sudo systemctl enable --now docker
 sudo usermod -aG docker ec2-user || true
-if [ ! -f /swapfile ]; then
-  sudo fallocate -l 2G /swapfile
+SWAP_BYTES="$(stat -c%s /swapfile 2>/dev/null || echo 0)"
+if [ "$SWAP_BYTES" -lt 6442450944 ]; then
+  sudo swapoff /swapfile 2>/dev/null || true
+  sudo rm -f /swapfile
+  sudo fallocate -l 6G /swapfile
   sudo chmod 600 /swapfile
   sudo mkswap /swapfile
 fi

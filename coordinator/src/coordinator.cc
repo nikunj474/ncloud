@@ -41,7 +41,8 @@ struct TabletGroup {
     std::string name;
     std::string row_start;
     std::string row_end;
-    std::vector<std::string> node_ids;  // node_ids[0] is primary
+    std::vector<std::string> node_ids;  // config placement order; node_ids[0] is configured primary
+    std::string active_primary_id;      // runtime failover primary, defaults to node_ids[0]
 };
 
 static std::string json_str_coord(const std::string& s) {
@@ -140,6 +141,7 @@ void Coordinator::load_config(const std::string& path) {
         nodes_[n.id] = n;
         TabletGroup tg;
         tg.name = "tablet0"; tg.row_start = ""; tg.row_end = ""; tg.node_ids = {"node1"};
+        tg.active_primary_id = "node1";
         tablets_.push_back(tg);
         return;
     }
@@ -166,6 +168,7 @@ void Coordinator::load_config(const std::string& path) {
             if (tg.row_end == "-" || tg.row_end == "*") tg.row_end.clear();
             std::string nid;
             while (ss >> nid) tg.node_ids.push_back(nid);
+            if (!tg.node_ids.empty()) tg.active_primary_id = tg.node_ids[0];
             tablets_.push_back(tg);
             std::cout << "[coord] tablet " << tg.name << " [" << tg.row_start << ", " << tg.row_end
                       << ") on " << tg.node_ids.size() << " nodes\n";
@@ -177,10 +180,13 @@ void Coordinator::load_config(const std::string& path) {
 void Coordinator::initialize_roles_from_tablets() {
     for (auto& [id, node] : nodes_) node.role = NodeRole::UNKNOWN;
     for (const auto& tg : tablets_) {
+        const std::string primary_id = tg.active_primary_id.empty()
+            ? (tg.node_ids.empty() ? std::string() : tg.node_ids[0])
+            : tg.active_primary_id;
         for (size_t i = 0; i < tg.node_ids.size(); ++i) {
             auto it = nodes_.find(tg.node_ids[i]);
             if (it == nodes_.end()) continue;
-            it->second.role = (i == 0) ? NodeRole::PRIMARY : NodeRole::SECONDARY;
+            it->second.role = (tg.node_ids[i] == primary_id) ? NodeRole::PRIMARY : NodeRole::SECONDARY;
         }
     }
 }
@@ -241,7 +247,8 @@ void Coordinator::configure_initial_tablet_roles() {
         // 1) Promote designated primaries.
         for (const auto& tg : tgs) {
             if (tg.node_ids.empty()) continue;
-            auto it = nodes_snapshot.find(tg.node_ids[0]);
+            const std::string primary_id = tg.active_primary_id.empty() ? tg.node_ids[0] : tg.active_primary_id;
+            auto it = nodes_snapshot.find(primary_id);
             if (it == nodes_snapshot.end() || !it->second.alive) { all_ok = false; continue; }
             StorageNode primary = it->second;
             if (!promote_node(primary, tg.name)) all_ok = false;
@@ -249,11 +256,13 @@ void Coordinator::configure_initial_tablet_roles() {
         // 2) Sync secondaries and register them under the primary.
         for (const auto& tg : tgs) {
             if (tg.node_ids.empty()) continue;
-            auto pit = nodes_snapshot.find(tg.node_ids[0]);
+            const std::string primary_id = tg.active_primary_id.empty() ? tg.node_ids[0] : tg.active_primary_id;
+            auto pit = nodes_snapshot.find(primary_id);
             if (pit == nodes_snapshot.end() || !pit->second.alive) { all_ok = false; continue; }
             StorageNode primary = pit->second;
-            for (size_t i = 1; i < tg.node_ids.size(); ++i) {
-                auto it = nodes_snapshot.find(tg.node_ids[i]);
+            for (const auto& node_id : tg.node_ids) {
+                if (node_id == primary_id) continue;
+                auto it = nodes_snapshot.find(node_id);
                 if (it == nodes_snapshot.end() || !it->second.alive) { all_ok = false; continue; }
                 StorageNode follower = it->second;
                 if (!demote_and_sync_node(follower, primary, tg.name)) { all_ok = false; continue; }
@@ -485,7 +494,9 @@ void Coordinator::handle_node_failure(const std::string& dead_id) {
         if (dead_it == nodes_.end()) return;
 
         for (const auto& tg : tablets_) {
-            if (tg.node_ids.empty() || tg.node_ids[0] != dead_id) continue;
+            if (tg.node_ids.empty()) continue;
+            const std::string primary_id = tg.active_primary_id.empty() ? tg.node_ids[0] : tg.active_primary_id;
+            if (primary_id != dead_id) continue;
 
             std::cout << "[coord] tablet " << tg.name << " primary " << dead_id << " is down, electing...\n";
             std::string best_id;
@@ -493,7 +504,8 @@ void Coordinator::handle_node_failure(const std::string& dead_id) {
             size_t best_idx = 0;
             std::vector<StorageNode> followers;
 
-            for (size_t i = 1; i < tg.node_ids.size(); ++i) {
+            for (size_t i = 0; i < tg.node_ids.size(); ++i) {
+                if (tg.node_ids[i] == dead_id) continue;
                 auto it = nodes_.find(tg.node_ids[i]);
                 if (it == nodes_.end() || !it->second.alive) continue;
                 if (best_id.empty() || it->second.lsn >= best_lsn) {
@@ -510,8 +522,9 @@ void Coordinator::handle_node_failure(const std::string& dead_id) {
             auto pit = nodes_.find(best_id);
             if (pit == nodes_.end()) continue;
 
-            for (size_t i = 1; i < tg.node_ids.size(); ++i) {
+            for (size_t i = 0; i < tg.node_ids.size(); ++i) {
                 if (i == best_idx) continue;
+                if (tg.node_ids[i] == dead_id) continue;
                 auto it = nodes_.find(tg.node_ids[i]);
                 if (it == nodes_.end() || !it->second.alive) continue;
                 followers.push_back(it->second);
@@ -560,9 +573,7 @@ void Coordinator::handle_node_failure(const std::string& dead_id) {
 
             for (auto& tg : tablets_) {
                 if (tg.name != plan.tablet_name) continue;
-                auto pos = std::find(tg.node_ids.begin(), tg.node_ids.end(), plan.new_primary.id);
-                if (pos == tg.node_ids.end()) break;
-                std::swap(tg.node_ids[0], *pos);
+                tg.active_primary_id = plan.new_primary.id;
                 break;
             }
 
@@ -603,11 +614,16 @@ void Coordinator::handle_node_recovery(const std::string& live_id) {
         for (const auto& tg : tablets_) {
             auto pos = std::find(tg.node_ids.begin(), tg.node_ids.end(), live_id);
             if (pos == tg.node_ids.end()) continue;
+            const std::string configured_primary_id = tg.node_ids.empty() ? std::string() : tg.node_ids[0];
+            const std::string active_primary_id = tg.active_primary_id.empty()
+                ? configured_primary_id
+                : tg.active_primary_id;
 
-            if (!tg.node_ids.empty() && tg.node_ids[0] == live_id) {
+            if (live_id == configured_primary_id || live_id == active_primary_id) {
                 std::vector<StorageNode> followers;
-                for (size_t i = 1; i < tg.node_ids.size(); ++i) {
-                    auto fit = nodes_.find(tg.node_ids[i]);
+                for (const auto& node_id : tg.node_ids) {
+                    if (node_id == live_id) continue;
+                    auto fit = nodes_.find(node_id);
                     if (fit != nodes_.end() && fit->second.alive) followers.push_back(fit->second);
                 }
                 plans.push_back(RecoveryPlan{tg.name, live_it->second, {}, followers, true, false, ""});
@@ -615,7 +631,7 @@ void Coordinator::handle_node_recovery(const std::string& live_id) {
             }
 
             if (tg.node_ids.empty()) continue;
-            auto pit = nodes_.find(tg.node_ids[0]);
+            auto pit = nodes_.find(active_primary_id);
             if (pit == nodes_.end() || !pit->second.alive) {
                 std::cerr << "[coord] recovering node " << live_id
                           << " for " << tg.name
@@ -626,7 +642,7 @@ void Coordinator::handle_node_recovery(const std::string& live_id) {
                     auto fit = nodes_.find(id);
                     if (fit != nodes_.end() && fit->second.alive) followers.push_back(fit->second);
                 }
-                plans.push_back(RecoveryPlan{tg.name, live_it->second, {}, followers, true, true, tg.node_ids[0]});
+                plans.push_back(RecoveryPlan{tg.name, live_it->second, {}, followers, true, true, active_primary_id});
                 continue;
             }
 
@@ -666,8 +682,13 @@ void Coordinator::handle_node_recovery(const std::string& live_id) {
             if (plan.swap_to_primary) {
                 for (auto& tg : tablets_) {
                     if (tg.name != plan.tablet_name) continue;
-                    auto pos = std::find(tg.node_ids.begin(), tg.node_ids.end(), live_id);
-                    if (pos != tg.node_ids.end()) std::swap(tg.node_ids[0], *pos);
+                    tg.active_primary_id = live_id;
+                    break;
+                }
+            } else {
+                for (auto& tg : tablets_) {
+                    if (tg.name != plan.tablet_name) continue;
+                    if (!tg.node_ids.empty() && tg.node_ids[0] == live_id) tg.active_primary_id = live_id;
                     break;
                 }
             }
@@ -746,12 +767,22 @@ std::string Coordinator::handle_lookup(const std::string& row) {
 
     {
         std::shared_lock<std::shared_mutex> nlk(nodes_mu_);
-        for (size_t i = 0; i < tg_copy.node_ids.size(); ++i) {
-            auto it = nodes_.find(tg_copy.node_ids[i]);
+        const std::string primary_id = tg_copy.active_primary_id.empty()
+            ? (tg_copy.node_ids.empty() ? std::string() : tg_copy.node_ids[0])
+            : tg_copy.active_primary_id;
+        if (!primary_id.empty()) {
+            auto pit = nodes_.find(primary_id);
+            if (pit != nodes_.end() && pit->second.alive) {
+                const StorageNode& n = pit->second;
+                return "+OK " + n.host + " " + std::to_string(n.port) + " primary\r\n";
+            }
+        }
+        for (const auto& node_id : tg_copy.node_ids) {
+            if (node_id == primary_id) continue;
+            auto it = nodes_.find(node_id);
             if (it == nodes_.end() || !it->second.alive) continue;
             const StorageNode& n = it->second;
-            return "+OK " + n.host + " " + std::to_string(n.port) + " " +
-                   (i == 0 ? "primary" : "secondary") + "\r\n";
+            return "+OK " + n.host + " " + std::to_string(n.port) + " secondary\r\n";
         }
     }
     return "-ERR all replicas down\r\n";
@@ -769,23 +800,23 @@ std::string Coordinator::handle_read_lookup(const std::string& row) {
             if (after_start && before_end) { tg = &t; break; }
         }
         if (!tg) return "-ERR no tablet for row\r\n";
-        candidate_ids = tg->node_ids;
+        const std::string primary_id = tg->active_primary_id.empty()
+            ? (tg->node_ids.empty() ? std::string() : tg->node_ids[0])
+            : tg->active_primary_id;
+        for (const auto& node_id : tg->node_ids) {
+            if (node_id != primary_id) candidate_ids.push_back(node_id);
+        }
+        if (!primary_id.empty()) candidate_ids.push_back(primary_id);
     }
 
     {
         std::shared_lock<std::shared_mutex> nlk(nodes_mu_);
-        for (size_t i = 1; i < candidate_ids.size(); ++i) {
+        for (size_t i = 0; i < candidate_ids.size(); ++i) {
             auto it = nodes_.find(candidate_ids[i]);
             if (it == nodes_.end() || !it->second.alive) continue;
             const StorageNode& n = it->second;
-            return "+OK " + n.host + " " + std::to_string(n.port) + " secondary\r\n";
-        }
-        if (!candidate_ids.empty()) {
-            auto it = nodes_.find(candidate_ids[0]);
-            if (it != nodes_.end() && it->second.alive) {
-                const StorageNode& n = it->second;
-                return "+OK " + n.host + " " + std::to_string(n.port) + " primary\r\n";
-            }
+            const bool is_last = (i + 1 == candidate_ids.size());
+            return "+OK " + n.host + " " + std::to_string(n.port) + " " + (is_last ? "primary" : "secondary") + "\r\n";
         }
     }
     return "-ERR all replicas down\r\n";
@@ -810,6 +841,9 @@ std::string Coordinator::handle_tablets() {
         js << "\"replicas\":[";
 
         bool first_replica = true;
+        const std::string primary_id = tg.active_primary_id.empty()
+            ? (tg.node_ids.empty() ? std::string() : tg.node_ids[0])
+            : tg.active_primary_id;
         for (size_t i = 0; i < tg.node_ids.size(); ++i) {
             auto it = nodes_.find(tg.node_ids[i]);
             if (it == nodes_.end()) continue;
@@ -824,7 +858,7 @@ std::string Coordinator::handle_tablets() {
             js << "\"port\":" << n.port << ",";
             js << "\"repl_port\":" << n.repl_port << ",";
             js << "\"alive\":" << (n.alive ? "true" : "false") << ",";
-            js << "\"role\":\"" << (i == 0 ? "primary" : "secondary") << "\"";
+            js << "\"role\":\"" << (n.id == primary_id ? "primary" : "secondary") << "\"";
             js << "}";
         }
 

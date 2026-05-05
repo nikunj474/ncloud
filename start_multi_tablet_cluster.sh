@@ -42,7 +42,7 @@ wait_ready() {
   local host="$3"
   local port="$4"
   local log_file="$5"
-  local attempts="${6:-40}"
+  local attempts="${6:-80}"
 
   for ((i = 1; i <= attempts; ++i)); do
     if ! kill -0 "$pid" 2>/dev/null; then

@@ -139,12 +139,12 @@ static std::string now_str() {
     auto t = std::time(nullptr);
     std::tm tm{};
 #if defined(_WIN32)
-    localtime_s(&tm, &t);
+    gmtime_s(&tm, &t);
 #else
-    localtime_r(&t, &tm);
+    gmtime_r(&t, &tm);
 #endif
     char buf[64];
-    std::strftime(buf, sizeof(buf), "%b %d, %Y %H:%M", &tm);
+    std::strftime(buf, sizeof(buf), "%b %d, %Y %H:%M UTC", &tm);
     return buf;
 }
 

@@ -777,8 +777,13 @@ static void apply_backend_port_probe_admin(std::string& backend_json, const FESe
     AdminClusterSpec cluster = configured_cluster_spec_admin(cfg);
     for (const auto& kv : cluster.backends) {
         const auto& n = kv.second;
-        bool alive = tcp_probe_admin("127.0.0.1", n.kv_port, 60);
-        replace_json_bool_field_admin(backend_json, n.id, "alive", alive);
+        // Coordinator heartbeat is the source of truth. A short opportunistic
+        // port probe can correct stale false negatives, but should not turn a
+        // coordinator-reported live node into DOWN just because the EC2 box is
+        // briefly slow or swapping.
+        if (tcp_probe_admin("127.0.0.1", n.kv_port, 300)) {
+            replace_json_bool_field_admin(backend_json, n.id, "alive", true);
+        }
     }
 }
 
@@ -1841,7 +1846,7 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
       overflow: hidden; box-shadow: var(--shadow-sm);
     }
     .drive-table-header, .drive-row {
-      display: grid; grid-template-columns: minmax(260px,1fr) 130px 110px 220px;
+      display: grid; grid-template-columns: minmax(240px,1fr) 110px 100px 160px 220px;
       gap: 14px; align-items: center;
     }
     .drive-table-header {
@@ -1872,7 +1877,8 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
     .drive-name-text { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
     .drive-item-name { font-size: 14px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .drive-item-path { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .drive-kind, .drive-size { color: #4A5568; font-size: 13px; }
+    .drive-kind, .drive-size, .drive-changed { color: #4A5568; font-size: 13px; }
+    .drive-changed { color: var(--muted); }
     .drive-row-actions { display: flex; justify-content: flex-end; gap: 6px; flex-wrap: wrap; }
     .drive-row-actions button {
       padding: 6px 9px; font-size: 12px; border-radius: 7px;
@@ -1937,7 +1943,7 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
       .drive-table-header { display: none; }
       .drive-row { grid-template-columns: 1fr; gap: 10px; align-items: start; }
       .drive-row-actions { justify-content: flex-start; }
-      .drive-kind, .drive-size { padding-left: 50px; }
+      .drive-kind, .drive-size, .drive-changed { padding-left: 50px; }
       .contact-form-row { grid-template-columns: 1fr; }
       .contact-add-btn { width: 100%; }
     }
@@ -3940,11 +3946,12 @@ async function renderDrive(folderPath = '/', _retry = 0) {
       ${items.length === 0
         ? emptyState
         : `<div class="drive-table-header">
-             <div>Name</div><div>Type</div><div>Size</div><div style="text-align:right">Actions</div>
+             <div>Name</div><div>Type</div><div>Size</div><div>Last changed</div><div style="text-align:right">Actions</div>
            </div>` + items.map(it => {
              const pathArg = driveInlineArg(it.path);
              const uidArg = driveInlineArg(it.uid);
              const nameArg = driveInlineArg(it.name);
+             const changedAt = it.updated_at || it.created_at || '—';
              const openAction = it.type === 'folder'
                ? `renderDrive(decodeURIComponent('${pathArg}'))`
                : `downloadFile(decodeURIComponent('${uidArg}'), decodeURIComponent('${nameArg}'))`;
@@ -3959,6 +3966,7 @@ async function renderDrive(folderPath = '/', _retry = 0) {
             </button>
             <div class="drive-kind">${escHtml(driveItemKind(it))}</div>
             <div class="drive-size">${escHtml(driveDisplaySize(it))}</div>
+            <div class="drive-changed">${escHtml(changedAt)}</div>
             <div class="drive-row-actions">
               <button onclick="renameItem(decodeURIComponent('${pathArg}'))">Rename</button>
               <button onclick="moveItem(decodeURIComponent('${pathArg}'))">Move to</button>
@@ -5549,6 +5557,9 @@ function esc(s) {
 function aliveCell(v) {
   return v ? '<span class="alive">UP</span>' : '<span class="down">DOWN</span>';
 }
+function byNodeId(a, b) {
+  return String((a && a.id) || '').localeCompare(String((b && b.id) || ''), undefined, {numeric:true});
+}
 let adminPublicHost = '';
 function publicHostForAdmin() {
   return adminPublicHost || window.location.hostname || 'localhost';
@@ -5560,8 +5571,8 @@ function internalDisplayHost(n) {
   return (n && n.host && n.host !== '127.0.0.1') ? n.host : 'internal';
 }
 function updateAdminSummary(data) {
-  const backends = data.backend_nodes || [];
-  const frontends = data.frontend_nodes || [];
+  const backends = [...(data.backend_nodes || [])].sort(byNodeId);
+  const frontends = [...(data.frontend_nodes || [])].sort(byNodeId);
   const tablets = data.tablets || [];
   const backendUp = backends.filter(n => n && n.alive).length;
   const frontendUp = frontends.filter(n => n && n.alive).length;
@@ -5578,7 +5589,7 @@ function updateAdminSummary(data) {
 function renderBackend(nodes) {
   const tbody = document.querySelector('#backend-table tbody');
   tbody.innerHTML = '';
-  for (const n of nodes) {
+  for (const n of [...(nodes || [])].sort(byNodeId)) {
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>${esc(n.id)}</td>
@@ -5589,8 +5600,8 @@ function renderBackend(nodes) {
       <td>${esc(n.lsn)}</td>
       <td>${esc(n.missed)}</td>
       <td>
-        <button onclick="adminControl('backend','kill','${esc(n.id)}')">Kill</button>
-        <button onclick="adminControl('backend','restart','${esc(n.id)}')">Restart</button>
+        <button data-kind="backend" data-action="kill" data-target="${esc(n.id)}">Kill</button>
+        <button data-kind="backend" data-action="restart" data-target="${esc(n.id)}">Restart</button>
       </td>
     `;
     tbody.appendChild(tr);
@@ -5599,7 +5610,7 @@ function renderBackend(nodes) {
 function renderFrontend(nodes) {
   const tbody = document.querySelector('#frontend-table tbody');
   tbody.innerHTML = '';
-  for (const n of nodes) {
+  for (const n of [...(nodes || [])].sort(byNodeId)) {
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>${esc(n.id)}</td>
@@ -5607,8 +5618,8 @@ function renderFrontend(nodes) {
       <td>${esc(n.port)}</td>
       <td>${aliveCell(!!n.alive)}</td>
       <td>
-        <button onclick="adminFrontendKill('${esc(n.id)}')">Kill</button>
-        <button onclick="adminControl('frontend','restart','${esc(n.id)}')">Restart</button>
+        <button data-kind="frontend" data-action="kill" data-target="${esc(n.id)}">Kill</button>
+        <button data-kind="frontend" data-action="restart" data-target="${esc(n.id)}">Restart</button>
       </td>
     `;
     tbody.appendChild(tr);
@@ -5820,12 +5831,16 @@ function rawNext() {
 }
 
 async function adminControl(kind, action, target) {
+  adminActionInFlight = true;
   if (kind === 'frontend' && action === 'kill') {
     adminFrontendKill(target);
     return;
   }
   const status = document.getElementById('status');
   status.textContent = `Sending ${action} to ${target}...`;
+  document.querySelectorAll('#backend-table button, #frontend-table button').forEach(btn => {
+    btn.disabled = true;
+  });
   try {
     const headers = adminTokenHeaders({'Content-Type': 'application/json'});
     const r = await fetch('/api/admin/control', {
@@ -5890,11 +5905,17 @@ async function adminControl(kind, action, target) {
       return;
     }
     status.textContent = 'admin control failed: ' + (e && e.message ? e.message : e);
+  } finally {
+    adminActionInFlight = false;
+    document.querySelectorAll('#backend-table button, #frontend-table button').forEach(btn => {
+      btn.disabled = false;
+    });
   }
 }
 
 let adminStatusFailures = 0;
 let adminStatusInFlight = false;
+let adminActionInFlight = false;
 let adminStatusMutedUntil = 0;
 let adminPollTimer = null;
 let adminFrontendNodes = [];
@@ -5984,6 +6005,7 @@ function redirectToPeerFrontend(stoppingTarget) {
 
 async function refreshStatus() {
   if (Date.now() < adminStatusMutedUntil) return;
+  if (adminActionInFlight) return;
   if (adminStatusInFlight) return;
   adminStatusInFlight = true;
   const status = document.getElementById('status');
@@ -5998,8 +6020,8 @@ async function refreshStatus() {
     const data = await r.json();
     adminStatusFailures = 0;
     adminPublicHost = data.public_host || '';
-    adminFrontendNodes = data.frontend_nodes || [];
-    const backendNodes = data.backend_nodes || [];
+    adminFrontendNodes = [...(data.frontend_nodes || [])].sort(byNodeId);
+    const backendNodes = [...(data.backend_nodes || [])].sort(byNodeId);
     updateAdminSummary(data);
     renderBackend(backendNodes);
     renderFrontend(data.frontend_nodes || []);
@@ -6021,6 +6043,12 @@ async function refreshStatus() {
 }
 refreshStatus();
 adminPollTimer = setInterval(refreshStatus, 2000);
+document.addEventListener('click', function(e) {
+  const btn = e.target && e.target.closest ? e.target.closest('button[data-kind][data-action][data-target]') : null;
+  if (!btn) return;
+  e.preventDefault();
+  adminControl(btn.dataset.kind, btn.dataset.action, btn.dataset.target);
+});
 </script>
 </body>
 </html>
@@ -6291,12 +6319,12 @@ std::string chat_timestamp_now() {
     std::time_t t = std::chrono::system_clock::to_time_t(now);
     std::tm tm{};
 #ifdef _WIN32
-    localtime_s(&tm, &t);
+    gmtime_s(&tm, &t);
 #else
-    localtime_r(&t, &tm);
+    gmtime_r(&t, &tm);
 #endif
     char buf[64];
-    std::strftime(buf, sizeof(buf), "%b %d, %Y %H:%M", &tm);
+    std::strftime(buf, sizeof(buf), "%b %d, %Y %H:%M UTC", &tm);
     return buf;
 }
 

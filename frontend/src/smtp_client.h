@@ -133,12 +133,12 @@ inline std::string rfc2822_date_now() {
     std::time_t t = std::time(nullptr);
     std::tm tm{};
 #if defined(_WIN32)
-    localtime_s(&tm, &t);
+    gmtime_s(&tm, &t);
 #else
-    localtime_r(&t, &tm);
+    gmtime_r(&t, &tm);
 #endif
     char buf[128];
-    std::strftime(buf, sizeof(buf), "%a, %d %b %Y %H:%M:%S %z", &tm);
+    std::strftime(buf, sizeof(buf), "%a, %d %b %Y %H:%M:%S +0000", &tm);
     return buf;
 }
 
