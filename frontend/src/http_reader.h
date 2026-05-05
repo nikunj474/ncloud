@@ -168,8 +168,15 @@ inline bool read_http_request(int fd, HttpRequest& req) {
     //  Body 
     std::string transfer_enc = req.header("transfer-encoding");
     for (char& c : transfer_enc) c = static_cast<char>(std::tolower(c));
+    std::string expect = req.header("expect");
+    for (char& c : expect) c = static_cast<char>(std::tolower(c));
+    const bool wants_continue = expect.find("100-continue") != std::string::npos;
 
     if (transfer_enc.find("chunked") != std::string::npos) {
+        if (wants_continue) {
+            static const std::string kContinue = "HTTP/1.1 100 Continue\r\n\r\n";
+            if (!http_write_all(fd, kContinue)) return false;
+        }
         if (!read_chunked_body(fd, req.body)) return false;
     } else {
         std::string cl_str = req.header("content-length");
@@ -187,6 +194,10 @@ inline bool read_http_request(int fd, HttpRequest& req) {
                     "{\"ok\":false,\"error\":\"file exceeds 1 GB limit\"}";
                 http_write_all(fd, k413);
                 return false;
+            }
+            if (wants_continue && content_length > 0) {
+                static const std::string kContinue = "HTTP/1.1 100 Continue\r\n\r\n";
+                if (!http_write_all(fd, kContinue)) return false;
             }
             if (!http_read_exact(fd, req.body, content_length)) return false;
         }

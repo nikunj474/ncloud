@@ -260,8 +260,8 @@ inline int ReplicationManager::connect_host_port(const std::string& host, int po
     if (fd < 0) return -1;
 
     struct timeval tv{};
-    tv.tv_sec = 0;
-    tv.tv_usec = cfg_.ack_timeout_ms * 1000;
+    tv.tv_sec = cfg_.ack_timeout_ms / 1000;
+    tv.tv_usec = (cfg_.ack_timeout_ms % 1000) * 1000;
     ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 

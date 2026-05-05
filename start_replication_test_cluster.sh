@@ -16,10 +16,37 @@ SECONDARY_DATA="$DATA_ROOT/node2"
 PRIMARY_LOG="$ROOT_DIR/node1.log"
 SECONDARY_LOG="$ROOT_DIR/node2.log"
 PID_DIR="$DATA_ROOT/pids"
-mkdir -p "$PRIMARY_DATA" "$SECONDARY_DATA" "$PID_DIR"
+
+send_repl_cmd() {
+  local port="$1"
+  local cmd="$2"
+  python3 - "$port" "$cmd" <<'PY'
+import socket
+import sys
+import time
+
+port = int(sys.argv[1])
+cmd = sys.argv[2].encode() + b"\r\n"
+
+for _ in range(50):
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=1) as s:
+            s.sendall(cmd)
+            data = s.recv(1024)
+        if data.startswith(b"+OK"):
+            raise SystemExit(0)
+        raise SystemExit(f"replication command failed: {data!r}")
+    except OSError:
+        time.sleep(0.1)
+
+raise SystemExit("replication command failed: server not ready")
+PY
+}
 
 pkill -f "kvstore/kvserver --port ${PRIMARY_CLIENT_PORT}" 2>/dev/null || true
 pkill -f "kvstore/kvserver --port ${SECONDARY_CLIENT_PORT}" 2>/dev/null || true
+rm -rf "$DATA_ROOT"
+mkdir -p "$PRIMARY_DATA" "$SECONDARY_DATA" "$PID_DIR"
 rm -f "$PRIMARY_LOG" "$SECONDARY_LOG"
 
 echo "[cluster] starting secondary on client:${SECONDARY_CLIENT_PORT} repl:${SECONDARY_REPL_PORT}"
@@ -46,6 +73,9 @@ echo "[cluster] starting primary on client:${PRIMARY_CLIENT_PORT} repl:${PRIMARY
 echo $! > "$PID_DIR/node1.pid"
 
 sleep 1
+
+echo "[cluster] promoting ${TABLET_NAME} on node1"
+send_repl_cmd "$PRIMARY_REPL_PORT" "BECOME_PRIMARY $TABLET_NAME"
 
 echo "[cluster] cluster started"
 echo "  primary client port:   ${PRIMARY_CLIENT_PORT}"

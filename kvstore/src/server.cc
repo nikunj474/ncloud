@@ -115,6 +115,11 @@ KVServer::KVServer(const Config& cfg)
             rcfg.repl_port = cfg_.repl_port;
             hosted.repl = std::make_unique<ReplicationManager>(rcfg, *hosted.tablet);
             hosted.repl->demote_to_secondary(); // coordinator will promote exact tablet primaries
+            for (const auto& replica : cfg_.replicas) {
+                hosted.repl->add_replica(std::get<0>(replica),
+                                         std::get<1>(replica),
+                                         std::get<2>(replica));
+            }
         }
 
         hosted_.push_back(std::move(hosted));
@@ -253,8 +258,10 @@ void KVServer::run() {
 }
 
 void KVServer::stop() {
+    bool expected = true;
+    if (!running_.compare_exchange_strong(expected, false)) return;
+
     std::cout << "[kvserver] graceful shutdown triggered\n" << std::flush;
-    running_ = false;
     if (listen_fd_ >= 0) {
         ::shutdown(listen_fd_, SHUT_RDWR);
         ::close(listen_fd_);
