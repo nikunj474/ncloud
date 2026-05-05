@@ -32,6 +32,7 @@ struct StorageNode {
     bool        alive  = true;
     bool        was_down = false; // true only after a real failure transition
     uint64_t    lsn    = 0;
+    int         process_id = 0;
     int         missed = 0;
     std::chrono::steady_clock::time_point last_seen;
 };
@@ -42,6 +43,38 @@ struct TabletGroup {
     std::string row_end;
     std::vector<std::string> node_ids;  // node_ids[0] is primary
 };
+
+static std::string json_str_coord(const std::string& s) {
+    std::string out = "\"";
+    static const char hex[] = "0123456789abcdef";
+    for (unsigned char c : s) {
+        if (c == '"') out += "\\\"";
+        else if (c == '\\') out += "\\\\";
+        else if (c == '\n') out += "\\n";
+        else if (c == '\r') out += "\\r";
+        else if (c == '\t') out += "\\t";
+        else if (c < 0x20) {
+            out += "\\u00";
+            out += hex[c >> 4];
+            out += hex[c & 0x0F];
+        } else {
+            out += static_cast<char>(c);
+        }
+    }
+    out += "\"";
+    return out;
+}
+
+static bool coord_read_exact(int fd, std::string& out, size_t n) {
+    out.assign(n, '\0');
+    size_t got = 0;
+    while (got < n) {
+        ssize_t r = ::recv(fd, &out[got], n - got, 0);
+        if (r <= 0) return false;
+        got += static_cast<size_t>(r);
+    }
+    return true;
+}
 
 class Coordinator {
 public:
@@ -72,7 +105,7 @@ private:
 
     void load_config(const std::string& path);
     void heartbeat_loop();
-    bool ping_node(StorageNode& node);
+    bool ping_node(StorageNode& node, bool* process_restarted = nullptr);
     void handle_node_failure(const std::string& dead_id);
     void handle_node_recovery(const std::string& live_id);
     bool promote_node(StorageNode& node, const std::string& tablet_name);
@@ -129,6 +162,8 @@ void Coordinator::load_config(const std::string& path) {
         } else if (type == "tablet") {
             TabletGroup tg;
             ss >> tg.name >> tg.row_start >> tg.row_end;
+            if (tg.row_start == "-" || tg.row_start == "*") tg.row_start.clear();
+            if (tg.row_end == "-" || tg.row_end == "*") tg.row_end.clear();
             std::string nid;
             while (ss >> nid) tg.node_ids.push_back(nid);
             tablets_.push_back(tg);
@@ -241,21 +276,45 @@ void Coordinator::heartbeat_loop() {
         std::this_thread::sleep_for(std::chrono::milliseconds(cfg_.hb_interval_ms));
         std::vector<std::string> newly_dead;
         std::vector<std::string> newly_live;
+
+        std::vector<StorageNode> snapshot;
         {
-            std::unique_lock<std::shared_mutex> lk(nodes_mu_);
-            for (auto& [id, node] : nodes_) {
-                bool eligible_recovery = node.was_down;
-                bool just_failed = ping_node(node);
-                if (just_failed) newly_dead.push_back(id);
-                if (eligible_recovery && node.alive && !node.was_down) newly_live.push_back(id);
+            std::shared_lock<std::shared_mutex> lk(nodes_mu_);
+            snapshot.reserve(nodes_.size());
+            for (const auto& [id, node] : nodes_) {
+                snapshot.push_back(node);
             }
         }
+
+        for (auto node : snapshot) {
+            bool eligible_recovery = node.was_down;
+            bool process_restarted = false;
+            bool just_failed = ping_node(node, &process_restarted);
+            bool just_recovered = eligible_recovery && node.alive && !node.was_down;
+
+            {
+                std::unique_lock<std::shared_mutex> lk(nodes_mu_);
+                auto it = nodes_.find(node.id);
+                if (it == nodes_.end()) continue;
+                it->second.missed = node.missed;
+                it->second.alive = node.alive;
+                it->second.was_down = node.was_down;
+                it->second.lsn = node.lsn;
+                it->second.process_id = node.process_id;
+                it->second.last_seen = node.last_seen;
+            }
+
+            if (just_failed) newly_dead.push_back(node.id);
+            if (just_recovered || process_restarted) newly_live.push_back(node.id);
+        }
+
         for (const auto& id : newly_dead) handle_node_failure(id);
         for (const auto& id : newly_live) handle_node_recovery(id);
     }
 }
 
-bool Coordinator::ping_node(StorageNode& node) {
+bool Coordinator::ping_node(StorageNode& node, bool* process_restarted) {
+    if (process_restarted) *process_restarted = false;
     int fd = connect_node_kv(node);
     if (fd < 0) {
         ++node.missed;
@@ -285,6 +344,21 @@ bool Coordinator::ping_node(StorageNode& node) {
         if (lpos != std::string::npos) {
             try { node.lsn = std::stoull(resp.substr(lpos + 4)); } catch (...) {}
         }
+        auto ppos = resp.find("PID=");
+        if (ppos != std::string::npos) {
+            int pid = 0;
+            try { pid = std::stoi(resp.substr(ppos + 4)); } catch (...) { pid = 0; }
+            if (pid > 0) {
+                if (process_restarted && was_alive && !recovering &&
+                    node.process_id > 0 && node.process_id != pid) {
+                    *process_restarted = true;
+                    std::cout << "[coord] node " << node.id
+                              << " process restarted (pid " << node.process_id
+                              << " -> " << pid << "), reapplying tablet roles\n";
+                }
+                node.process_id = pid;
+            }
+        }
         if (!was_alive && recovering) {
             node.was_down = false;
             std::cout << "[coord] node " << node.id << " recovered\n";
@@ -305,25 +379,28 @@ bool Coordinator::ping_node(StorageNode& node) {
 }
 
 bool Coordinator::promote_node(StorageNode& node, const std::string& tablet_name) {
-    int fd = connect_node_repl(node);
-    if (fd < 0) {
-        std::cerr << "[coord] failed to connect to repl port for node " << node.id << "\n";
-        return false;
-    }
     std::string cmd = "BECOME_PRIMARY " + tablet_name + "\r\n";
-    if (::send(fd, cmd.data(), cmd.size(), MSG_NOSIGNAL) < 0) {
+    for (int attempt = 1; attempt <= 3; ++attempt) {
+        int fd = connect_node_repl(node);
+        if (fd < 0) {
+            std::cerr << "[coord] failed to connect to repl port for node " << node.id
+                      << " (attempt " << attempt << "/3)\n";
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            continue;
+        }
+        bool sent = (::send(fd, cmd.data(), cmd.size(), MSG_NOSIGNAL) >= 0);
+        std::string resp;
+        bool ok = sent && read_line(fd, resp) && resp.rfind("+OK", 0) == 0;
         ::close(fd);
-        return false;
+        if (ok) {
+            std::cout << "[coord] promoted " << node.id << " as new primary for " << tablet_name << "\n";
+            return true;
+        }
+        std::cerr << "[coord] promotion failed for " << node.id << " on tablet " << tablet_name
+                  << " (attempt " << attempt << "/3, resp='" << resp << "')\n";
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
     }
-    std::string resp;
-    bool ok = read_line(fd, resp) && resp.rfind("+OK", 0) == 0;
-    ::close(fd);
-    if (!ok) {
-        std::cerr << "[coord] promotion failed for " << node.id << " on tablet " << tablet_name << "\n";
-        return false;
-    }
-    std::cout << "[coord] promoted " << node.id << " as new primary for " << tablet_name << "\n";
-    return true;
+    return false;
 }
 
 bool Coordinator::demote_and_sync_node(StorageNode& node, const StorageNode& primary, const std::string& tablet_name) {
@@ -509,7 +586,10 @@ void Coordinator::handle_node_recovery(const std::string& live_id) {
         std::string tablet_name;
         StorageNode live;
         StorageNode primary;
+        std::vector<StorageNode> followers;
         bool recover_as_primary = false;
+        bool swap_to_primary = false;
+        std::string old_primary_id;
     };
 
     std::vector<RecoveryPlan> plans;
@@ -525,61 +605,71 @@ void Coordinator::handle_node_recovery(const std::string& live_id) {
             if (pos == tg.node_ids.end()) continue;
 
             if (!tg.node_ids.empty() && tg.node_ids[0] == live_id) {
-                plans.push_back(RecoveryPlan{tg.name, live_it->second, {}, true});
+                std::vector<StorageNode> followers;
+                for (size_t i = 1; i < tg.node_ids.size(); ++i) {
+                    auto fit = nodes_.find(tg.node_ids[i]);
+                    if (fit != nodes_.end() && fit->second.alive) followers.push_back(fit->second);
+                }
+                plans.push_back(RecoveryPlan{tg.name, live_it->second, {}, followers, true, false, ""});
                 continue;
             }
 
             if (tg.node_ids.empty()) continue;
             auto pit = nodes_.find(tg.node_ids[0]);
             if (pit == nodes_.end() || !pit->second.alive) {
-                // No live primary in this tablet group. Promote the recovering
-                // node instead of refusing recovery; otherwise "all dead, then
-                // restart first node" leaves it stuck in UNKNOWN forever and
-                // the system never becomes available again (checklist 10).
-                std::cout << "[coord] no live primary for " << tg.name
-                          << "; promoting recovering node " << live_id << "\n";
-                plans.push_back(RecoveryPlan{tg.name, live_it->second, {}, true});
+                std::cerr << "[coord] recovering node " << live_id
+                          << " for " << tg.name
+                          << ": no live primary; promoting recovered node\n";
+                std::vector<StorageNode> followers;
+                for (const auto& id : tg.node_ids) {
+                    if (id == live_id) continue;
+                    auto fit = nodes_.find(id);
+                    if (fit != nodes_.end() && fit->second.alive) followers.push_back(fit->second);
+                }
+                plans.push_back(RecoveryPlan{tg.name, live_it->second, {}, followers, true, true, tg.node_ids[0]});
                 continue;
             }
 
-            plans.push_back(RecoveryPlan{tg.name, live_it->second, pit->second, false});
+            plans.push_back(RecoveryPlan{tg.name, live_it->second, pit->second, {}, false, false, ""});
         }
     }
 
     for (const auto& plan : plans) {
-        if (plan.recover_as_primary) {
-            std::cout << "[coord] primary node " << live_id
-                      << " recovered for " << plan.tablet_name
-                      << " -- sending promote RPC\\n";
+            if (plan.recover_as_primary) {
+                std::cout << "[coord] primary node " << live_id
+                          << " recovered for " << plan.tablet_name
+                          << " -- sending promote RPC\n";
 
             StorageNode live_copy = plan.live;
             if (!promote_node(live_copy, plan.tablet_name)) {
                 std::cerr << "[coord] failed to re-promote recovered primary "
-                          << live_id << " for " << plan.tablet_name << "\\n";
+                          << live_id << " for " << plan.tablet_name << "\n";
                 continue;
+            }
+
+            for (const auto& follower : plan.followers) {
+                StorageNode follower_copy = follower;
+                if (!demote_and_sync_node(follower_copy, live_copy, plan.tablet_name)) {
+                    std::cerr << "[coord] failed to sync follower " << follower.id
+                              << " after primary restart for " << plan.tablet_name << "\n";
+                    continue;
+                }
+                if (!add_replica_to_primary(live_copy, follower_copy, plan.tablet_name)) {
+                    std::cerr << "[coord] failed to re-add follower " << follower.id
+                              << " after primary restart for " << plan.tablet_name << "\n";
+                }
             }
 
             std::unique_lock<std::shared_mutex> nlk(nodes_mu_);
             std::unique_lock<std::shared_mutex> tlk(tablets_mu_);
 
-            // Move the recovering node into the primary slot of its tablet
-            // group so subsequent recoveries find a live primary at index 0.
-            // Demote whatever id was previously sitting in the primary slot
-            // (it was either the same node, or a stale entry from when the
-            // group had no live primary).
-            for (auto& tg : tablets_) {
-                if (tg.name != plan.tablet_name) continue;
-                auto pos = std::find(tg.node_ids.begin(), tg.node_ids.end(), live_id);
-                if (pos == tg.node_ids.end()) break;
-                std::string prior_primary_id = tg.node_ids[0];
-                std::swap(tg.node_ids[0], *pos);
-                if (prior_primary_id != live_id) {
-                    auto prior_it = nodes_.find(prior_primary_id);
-                    if (prior_it != nodes_.end() && prior_it->second.role == NodeRole::PRIMARY) {
-                        prior_it->second.role = NodeRole::UNKNOWN;
-                    }
+            if (plan.swap_to_primary) {
+                for (auto& tg : tablets_) {
+                    if (tg.name != plan.tablet_name) continue;
+                    auto pos = std::find(tg.node_ids.begin(), tg.node_ids.end(), live_id);
+                    if (pos != tg.node_ids.end()) std::swap(tg.node_ids[0], *pos);
+                    break;
                 }
-                break;
             }
 
             auto it = nodes_.find(live_id);
@@ -587,12 +677,22 @@ void Coordinator::handle_node_recovery(const std::string& live_id) {
                 it->second.role = NodeRole::PRIMARY;
                 it->second.alive = true;
             }
+            for (const auto& follower : plan.followers) {
+                auto fit = nodes_.find(follower.id);
+                if (fit != nodes_.end()) fit->second.role = NodeRole::SECONDARY;
+            }
+            if (!plan.old_primary_id.empty() && plan.old_primary_id != live_id) {
+                auto old_it = nodes_.find(plan.old_primary_id);
+                if (old_it != nodes_.end() && !old_it->second.alive) {
+                    old_it->second.role = NodeRole::UNKNOWN;
+                }
+            }
             continue;
         }
 
         std::cout << "[coord] recovering node " << live_id
                   << " as secondary for " << plan.tablet_name
-                  << " from primary " << plan.primary.id << "\\n";
+                  << " from primary " << plan.primary.id << "\n";
 
         StorageNode live_copy = plan.live;
         StorageNode primary_copy = plan.primary;
@@ -600,14 +700,14 @@ void Coordinator::handle_node_recovery(const std::string& live_id) {
         if (!demote_and_sync_node(live_copy, primary_copy, plan.tablet_name)) {
             std::cerr << "[coord] failed to sync recovered node " << live_id
                       << " from primary " << plan.primary.id
-                      << " for " << plan.tablet_name << "\\n";
+                      << " for " << plan.tablet_name << "\n";
             continue;
         }
 
         if (!add_replica_to_primary(primary_copy, live_copy, plan.tablet_name)) {
             std::cerr << "[coord] failed to add recovered replica " << live_id
                       << " to primary " << plan.primary.id
-                      << " for " << plan.tablet_name << "\\n";
+                      << " for " << plan.tablet_name << "\n";
             continue;
         }
 
@@ -704,9 +804,9 @@ std::string Coordinator::handle_tablets() {
         first_tablet = false;
 
         js << "{";
-        js << "\"name\":\"" << tg.name << "\",";
-        js << "\"row_start\":\"" << tg.row_start << "\",";
-        js << "\"row_end\":\"" << tg.row_end << "\",";
+        js << "\"name\":" << json_str_coord(tg.name) << ",";
+        js << "\"row_start\":" << json_str_coord(tg.row_start) << ",";
+        js << "\"row_end\":" << json_str_coord(tg.row_end) << ",";
         js << "\"replicas\":[";
 
         bool first_replica = true;
@@ -719,8 +819,8 @@ std::string Coordinator::handle_tablets() {
             first_replica = false;
 
             js << "{";
-            js << "\"id\":\"" << n.id << "\",";
-            js << "\"host\":\"" << n.host << "\",";
+            js << "\"id\":" << json_str_coord(n.id) << ",";
+            js << "\"host\":" << json_str_coord(n.host) << ",";
             js << "\"port\":" << n.port << ",";
             js << "\"repl_port\":" << n.repl_port << ",";
             js << "\"alive\":" << (n.alive ? "true" : "false") << ",";
@@ -745,8 +845,8 @@ std::string Coordinator::handle_status() {
     for (const auto& [id, n] : nodes_) {
         if (!first) js << ",";
         first = false;
-        js << "{\"id\":\"" << id << "\"," 
-           << "\"host\":\"" << n.host << "\"," 
+        js << "{\"id\":" << json_str_coord(id) << ","
+           << "\"host\":" << json_str_coord(n.host) << ","
            << "\"port\":" << n.port << ","
            << "\"repl_port\":" << n.repl_port << ","
            << "\"alive\":" << (n.alive ? "true" : "false") << ","
@@ -790,17 +890,15 @@ void Coordinator::handle_client(int fd) {
         if (op == "LOOKUP") {
             uint32_t rowlen = 0;
             ss >> rowlen;
-            std::string row(rowlen, '\0');
-            ssize_t r = ::recv(fd, &row[0], rowlen, MSG_WAITALL);
-            if (r != static_cast<ssize_t>(rowlen)) break;
+            std::string row;
+            if (!coord_read_exact(fd, row, rowlen)) break;
             std::string resp = handle_lookup(row);
             ::send(fd, resp.data(), resp.size(), MSG_NOSIGNAL);
         } else if (op == "READLOOKUP") {
             uint32_t rowlen = 0;
             ss >> rowlen;
-            std::string row(rowlen, '\0');
-            ssize_t r = ::recv(fd, &row[0], rowlen, MSG_WAITALL);
-            if (r != static_cast<ssize_t>(rowlen)) break;
+            std::string row;
+            if (!coord_read_exact(fd, row, rowlen)) break;
             std::string resp = handle_read_lookup(row);
             ::send(fd, resp.data(), resp.size(), MSG_NOSIGNAL);
         } else if (op == "STATUS" || op == "NODES") {
@@ -854,7 +952,7 @@ bool Coordinator::read_line(int fd, std::string& line) {
             return true;
         }
         line += c;
-        if (line.size() > 1024) return false;
+        if (line.size() > 8192) return false;
     }
 }
 

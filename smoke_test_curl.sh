@@ -1,7 +1,6 @@
 #!/bin/bash
 # PennCloud smoke test (curl version, no Python dependency)
-# Adapted for WIP_3/WIP_3 routes (folder=sent param, mkdir/move endpoints,
-# /api/admin/status). Run from WIP_3/WIP_3/ after building kvstore + frontend.
+# Adapted for the flattened WIP_3 layout and current routes.
 # Usage: bash smoke_test_curl.sh
 set -e
 

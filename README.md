@@ -47,7 +47,7 @@ Open browser at `http://127.0.0.1:8080`
 ## Testing
 
 ```bash
-# Builds/runs a local KV + frontend pair and checks:
+# Builds/runs a local KV + frontend pair using only bash + curl and checks:
 # - SPA shell
 # - HTTP/1.1 keep-alive
 # - malformed chunked request rejection
@@ -57,15 +57,8 @@ Open browser at `http://127.0.0.1:8080`
 # - drive upload/download/rename/delete
 bash smoke_test.sh
 
-# Demo 3 data preparation against an already-running frontend.
-# Full mode creates two accounts, nested folders, 10 uploaded files
-# ranging from 10 MB to DEMO3_MAX_MB, and pre-populated emails.
-# If ffmpeg is unavailable, provide a real sample video:
-#   DEMO3_VIDEO_PATH=/path/to/sample.mp4 python3 demo3_prepare.py
-python3 demo3_prepare.py --base http://127.0.0.1:8080
-
-# Fast endpoint check with small files only; not Demo 3 compliant.
-python3 demo3_prepare.py --quick --base http://127.0.0.1:8080
+# 10 MB binary upload/download correctness and timing.
+bash test_10mb.sh
 
 # Replication surface tests
 ./start_replication_test_cluster.sh
@@ -87,7 +80,7 @@ python3 multi_group_integrated_test.py
 ./stop_multi_group_cluster.sh
 ```
 
-Inbound SMTP receives local mail on port `2525`. External relay from the inbound SMTP server is disabled by default to avoid an open relay; set `SMTP_ALLOW_INBOUND_RELAY=1` only for a controlled demo. Frontend outbound SMTP still uses `SMTP_MODE=direct` or `SMTP_MODE=relay` from `smtp.env.example`.
+Inbound SMTP receives local mail on port `2525`. External relay from the inbound SMTP server is disabled by default to avoid an open relay; set `SMTP_ALLOW_INBOUND_RELAY=1` only for a controlled demo. The course build does not depend on libcurl or any external TLS library; outbound external mail uses direct MX delivery (`SMTP_MODE=direct`). If `SMTP_MODE=relay` is present in an old local `.smtp.env`, the no-libcurl build falls back to direct MX delivery.
 
 ## Directory Structure
 

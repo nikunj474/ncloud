@@ -21,7 +21,7 @@ pkill -f '/coordinator/coordinator' 2>/dev/null || true
 pkill -f 'kvstore/kvserver --port 5500' 2>/dev/null || true
 pkill -f 'kvstore/kvserver --port 5501' 2>/dev/null || true
 pkill -f 'kvstore/kvserver --port 5502' 2>/dev/null || true
-lsof -tiTCP:${COORD_PORT} -sTCP:LISTEN | xargs kill -9 2>/dev/null || true
+pkill -f "/coordinator/coordinator --port ${COORD_PORT}" 2>/dev/null || true
 
 rm -f coordinator.log node1.log node2.log node3.log
 
@@ -32,7 +32,7 @@ node node2 127.0.0.1 ${NODE2_CLIENT_PORT} ${NODE2_REPL_PORT}
 node node3 127.0.0.1 ${NODE3_CLIENT_PORT} ${NODE3_REPL_PORT}
 
 # tablet <tablet_id> <row_start> <row_end> <replica1> <replica2> ...
-tablet ${TABLET_NAME} a zzzzz node1 node2 node3
+tablet ${TABLET_NAME} - - node1 node2 node3
 CFGEOF
 
 echo "[abc] starting secondary node2"

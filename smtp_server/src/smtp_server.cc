@@ -18,6 +18,7 @@
 #include <string>
 #include <thread>
 #include <vector>
+#include <algorithm>
 #include <cstdlib>
 
 static std::atomic<bool> g_running{true};
@@ -65,6 +66,47 @@ static std::string lower_copy(std::string s) {
     return s;
 }
 
+static std::string penncloud_mail_domain() {
+    const char* env = std::getenv("PENNCLOUD_MAIL_DOMAIN");
+    std::string domain = env && *env ? env : "penncloud.local";
+    domain = lower_copy(domain);
+    if (domain.empty() || domain.find('@') != std::string::npos ||
+        domain.find('/') != std::string::npos ||
+        domain.find('\r') != std::string::npos ||
+        domain.find('\n') != std::string::npos) {
+        return "penncloud.local";
+    }
+    return domain;
+}
+
+static bool is_local_penncloud_domain(const std::string& domain_raw) {
+    std::string domain = lower_copy(domain_raw);
+    return domain == "penncloud" ||
+           domain == "penncloud.com" ||
+           domain == "penncloud.local" ||
+           domain == penncloud_mail_domain();
+}
+
+static std::vector<std::string> split_csv(const std::string& s) {
+    std::vector<std::string> out;
+    if (s.empty()) return out;
+    std::istringstream ss(s);
+    std::string tok;
+    while (std::getline(ss, tok, ',')) {
+        if (!tok.empty()) out.push_back(tok);
+    }
+    return out;
+}
+
+static std::string join_csv(const std::vector<std::string>& items) {
+    std::string out;
+    for (size_t i = 0; i < items.size(); ++i) {
+        if (i) out += ',';
+        out += items[i];
+    }
+    return out;
+}
+
 static bool starts_with_ci(const std::string& s, const std::string& pfx) {
     if (s.size() < pfx.size()) return false;
     return lower_copy(s.substr(0, pfx.size())) == lower_copy(pfx);
@@ -95,20 +137,33 @@ static std::string new_uid() {
 
 static std::string now_str() {
     auto t = std::time(nullptr);
+    std::tm tm{};
+#if defined(_WIN32)
+    localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
     char buf[64];
-    std::strftime(buf, sizeof(buf), "%b %d, %Y %H:%M", std::localtime(&t));
+    std::strftime(buf, sizeof(buf), "%b %d, %Y %H:%M", &tm);
     return buf;
 }
 
 static std::string esc_json(const std::string& s) {
     std::string out;
-    for (char c : s) {
+    static const char hex[] = "0123456789abcdef";
+    for (unsigned char c : s) {
         if (c == '"') out += "\\\"";
         else if (c == '\\') out += "\\\\";
         else if (c == '\n') out += "\\n";
         else if (c == '\r') out += "\\r";
         else if (c == '\t') out += "\\t";
-        else out += c;
+        else if (c < 0x20) {
+            out += "\\u00";
+            out += hex[c >> 4];
+            out += hex[c & 0x0F];
+        } else {
+            out += static_cast<char>(c);
+        }
     }
     return out;
 }
@@ -132,7 +187,7 @@ static std::string extract_local_user(const std::string& addr) {
     if (at == std::string::npos) return trim(addr);
     std::string local = addr.substr(0, at);
     std::string domain = lower_copy(addr.substr(at + 1));
-    if (domain != "penncloud.com" && domain != "penncloud") return "";
+    if (!is_local_penncloud_domain(domain)) return "";
     return trim(local);
 }
 
@@ -140,7 +195,7 @@ static bool is_external_recipient(const std::string& addr) {
     auto at = addr.find('@');
     if (at == std::string::npos || at == 0 || at + 1 >= addr.size()) return false;
     std::string domain = lower_copy(addr.substr(at + 1));
-    return domain != "penncloud.com" && domain != "penncloud";
+    return !is_local_penncloud_domain(domain);
 }
 
 static bool inbound_relay_enabled() {
@@ -185,11 +240,16 @@ public:
         int port = 2525;
         std::string kv_host = "127.0.0.1";
         int kv_port = 5000;
+        std::string coord_host = "127.0.0.1";
+        int coord_port = 0;
         int threads = 16;
     };
 
     explicit SMTPServer(const Config& cfg)
-        : cfg_(cfg), kv_(cfg.kv_host, cfg.kv_port) {}
+        : cfg_(cfg),
+          kv_(cfg.coord_port > 0
+                  ? KVClient(cfg.kv_host, cfg.kv_port, cfg.coord_host, cfg.coord_port)
+                  : KVClient(cfg.kv_host, cfg.kv_port)) {}
 
     void run() {
         ::signal(SIGINT, sig_handler);
@@ -199,7 +259,10 @@ public:
         listen_fd_ = create_listen_socket();
         std::cout << "=== PennCloud SMTP Server ===\n"
                   << "  port:    " << cfg_.port << "\n"
-                  << "  kv:      " << cfg_.kv_host << ":" << cfg_.kv_port << "\n\n";
+                  << "  kv:      " << cfg_.kv_host << ":" << cfg_.kv_port << "\n"
+                  << "  coord:   "
+                  << (cfg_.coord_port > 0 ? cfg_.coord_host + ":" + std::to_string(cfg_.coord_port) : "disabled")
+                  << "\n\n";
 
         while (g_running) {
             sockaddr_in addr{};
@@ -269,8 +332,9 @@ private:
         if (recipient.empty()) return false;
 
         // Optional existence check.
-        std::string pwd = kv_.get_str(recipient, "pwd");
-        if (pwd.empty()) return false;
+        std::string pwd;
+        KVReadStatus st = kv_.get_status(recipient, "pwd", pwd);
+        if (st != KVReadStatus::Found) return false;
 
         std::string subject, body;
         parse_subject_and_body(raw_data, subject, body);
@@ -285,31 +349,52 @@ private:
         if (!kv_.put(row, "msg:" + uid, meta)) return false;
         if (!kv_.put(row, "body:" + uid, body)) return false;
 
+        bool indexed = false;
+        const std::string folder_col = "folder:inbox";
+        std::string final_index;
         for (int attempt = 0; attempt < 5; ++attempt) {
-            std::string old_index = kv_.get_str(row, "folder:inbox");
-            if (old_index.empty()) old_index = kv_.get_str(row, "inbox");
-            if (old_index.empty()) old_index = kv_.get_str(row, "index");
-            std::string new_index = uid + (old_index.empty() ? "" : "," + old_index);
+            std::string old_index;
+            KVReadStatus st = kv_.get_status(row, folder_col, old_index);
+            if (st == KVReadStatus::Unavailable) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                continue;
+            }
+            if (st == KVReadStatus::NotFound) {
+                old_index = kv_.get_str(row, "index");
+                if (old_index.empty()) old_index = kv_.get_str(row, "inbox");
+            }
 
-            if (old_index.empty()) {
-                if (kv_.put(row, "folder:inbox", new_index)) {
-                    kv_.put(row, "inbox", new_index);
-                    kv_.put(row, "index", new_index);
+            auto ids = split_csv(old_index);
+            ids.erase(std::remove(ids.begin(), ids.end(), uid), ids.end());
+            ids.insert(ids.begin(), uid);
+            std::string new_index = join_csv(ids);
+
+            if (st == KVReadStatus::Found) {
+                if (new_index == old_index || kv_.cput(row, folder_col, old_index, new_index)) {
+                    final_index = new_index;
+                    indexed = true;
                     break;
                 }
             } else {
-                if (kv_.cput(row, "folder:inbox", old_index, new_index) ||
-                    kv_.cput(row, "inbox", old_index, new_index) ||
-                    kv_.cput(row, "index", old_index, new_index)) {
-                    kv_.put(row, "folder:inbox", new_index);
-                    kv_.put(row, "inbox", new_index);
-                    kv_.put(row, "index", new_index);
+                if (kv_.put(row, folder_col, new_index)) {
+                    final_index = new_index;
+                    indexed = true;
                     break;
                 }
-                std::this_thread::sleep_for(std::chrono::milliseconds(5));
             }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
 
+        if (!indexed) {
+            kv_.del(row, "msg:" + uid);
+            kv_.del(row, "body:" + uid);
+            return false;
+        }
+
+        if (!final_index.empty()) {
+            kv_.put(row, "inbox", final_index);
+            kv_.put(row, "index", final_index);
+        }
         kv_.put("notify:" + recipient, "latest", "uid:" + uid);
         return true;
     }
@@ -404,8 +489,13 @@ private:
                     continue;
                 }
                 if (!user.empty()) {
-                    std::string pwd = kv_.get_str(user, "pwd");
-                    if (pwd.empty()) {
+                    std::string pwd;
+                    KVReadStatus st = kv_.get_status(user, "pwd", pwd);
+                    if (st == KVReadStatus::Unavailable) {
+                        write_all_fd(fd, "451 Local storage temporarily unavailable\r\n");
+                        continue;
+                    }
+                    if (st == KVReadStatus::NotFound) {
                         write_all_fd(fd, "550 No such local user\r\n");
                         continue;
                     }
@@ -449,6 +539,10 @@ int main(int argc, char* argv[]) {
             cfg.kv_host = argv[++i];
         } else if (a == "--kv-port" && i + 1 < argc) {
             cfg.kv_port = std::stoi(argv[++i]);
+        } else if (a == "--coord-host" && i + 1 < argc) {
+            cfg.coord_host = argv[++i];
+        } else if (a == "--coord-port" && i + 1 < argc) {
+            cfg.coord_port = std::stoi(argv[++i]);
         }
     }
 

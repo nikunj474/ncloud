@@ -73,7 +73,7 @@ inline bool write_all(int fd, const std::string& s) {
 }
 
 // ---------------------------------------------------------------------------
-// Read one \r\n-terminated header line from fd (max 256 bytes)
+// Read one \r\n-terminated header line from fd (max 8KB)
 // ---------------------------------------------------------------------------
 inline bool read_line(int fd, std::string& line) {
     line.clear();
@@ -88,7 +88,7 @@ inline bool read_line(int fd, std::string& line) {
             return true;
         }
         line += c;
-        if (line.size() > 256) return false;  // malformed
+        if (line.size() > 8192) return false;  // malformed
     }
 }
 
@@ -171,7 +171,21 @@ inline KVResponse read_response(int fd) {
         resp.ok = true;
         // check for "+OK <vallen>" (GET response)
         if (line.size() > 4) {
-            size_t vallen = std::stoul(line.substr(4));
+            size_t vallen = 0;
+            try {
+                size_t pos = 0;
+                std::string len_s = line.substr(4);
+                vallen = std::stoul(len_s, &pos);
+                if (pos != len_s.size()) {
+                    resp.ok = false;
+                    resp.error = "bad value length";
+                    return resp;
+                }
+            } catch (...) {
+                resp.ok = false;
+                resp.error = "bad value length";
+                return resp;
+            }
             if (!read_exact(fd, resp.value, vallen)) {
                 resp.ok    = false;
                 resp.error = "truncated value";

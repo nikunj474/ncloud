@@ -62,7 +62,7 @@ def stop_cluster():
     subprocess.run("pkill -f 'kvstore/kvserver --port 5500' 2>/dev/null || true", shell=True, check=False)
     subprocess.run("pkill -f 'kvstore/kvserver --port 5501' 2>/dev/null || true", shell=True, check=False)
     subprocess.run("pkill -f 'kvstore/kvserver --port 5502' 2>/dev/null || true", shell=True, check=False)
-    subprocess.run(f"lsof -tiTCP:{COORD_PORT} -sTCP:LISTEN | xargs kill -9 2>/dev/null || true", shell=True, check=False)
+    subprocess.run(f"pkill -f '/coordinator/coordinator --port {COORD_PORT}' 2>/dev/null || true", shell=True, check=False)
     time.sleep(1.5)
 
 

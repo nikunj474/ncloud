@@ -3,6 +3,7 @@
 // Usage:
 //   ./feserver [--port 8080] [--kv-host 127.0.0.1] [--kv-port 5000]
 //              [--threads 32] [--id fe1] [--redirect-to http://host:port]
+//              [--page-not-found-stub]
 
 
 #include "fe_server.h"
@@ -31,6 +32,7 @@ static FEServer::Config parse_args(int argc, char* argv[]) {
         else if (a == "--coord-host" && i+1 < argc) cfg.coord_host = argv[++i];
         else if (a == "--coord-port" && i+1 < argc) cfg.coord_port = std::stoi(argv[++i]);
         else if (a == "--redirect-to"&& i+1 < argc) cfg.redirect_to= argv[++i];
+        else if (a == "--page-not-found-stub") cfg.page_not_found_stub = true;
     }
     return cfg;
 }
@@ -38,7 +40,9 @@ static FEServer::Config parse_args(int argc, char* argv[]) {
 int main(int argc, char* argv[]) {
     FEServer::Config cfg = parse_args(argc, argv);
 
-    if (!cfg.redirect_to.empty()) {
+    if (cfg.page_not_found_stub) {
+        std::cout << "[feserver] 404-stub: port " << cfg.port << "\n";
+    } else if (!cfg.redirect_to.empty()) {
         std::cout << "[feserver] redirect-stub: port " << cfg.port
                   << " -> " << cfg.redirect_to << "\n";
     } else {

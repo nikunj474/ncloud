@@ -19,7 +19,9 @@
 #include <thread>
 #include <map>
 #include <vector>
+#include <unordered_set>
 #include <algorithm>
+#include <cstdlib>
 #include <cctype>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -38,7 +40,37 @@ struct AdminFrontendNode {
 
 static bool frontend_admin_status_ok_admin(int port);
 
-constexpr int kMaxSSEConnections = 64;
+static std::string peer_addr_admin(int fd) {
+    sockaddr_storage addr{};
+    socklen_t len = sizeof(addr);
+    if (::getpeername(fd, reinterpret_cast<sockaddr*>(&addr), &len) != 0) return "";
+
+    char buf[INET6_ADDRSTRLEN] = {0};
+    if (addr.ss_family == AF_INET) {
+        auto* in = reinterpret_cast<sockaddr_in*>(&addr);
+        if (::inet_ntop(AF_INET, &in->sin_addr, buf, sizeof(buf))) return buf;
+    } else if (addr.ss_family == AF_INET6) {
+        auto* in6 = reinterpret_cast<sockaddr_in6*>(&addr);
+        if (::inet_ntop(AF_INET6, &in6->sin6_addr, buf, sizeof(buf))) return buf;
+    }
+    return "";
+}
+
+static bool is_loopback_peer_admin(const std::string& addr) {
+    if (addr == "127.0.0.1" || addr == "::1" || addr == "::ffff:127.0.0.1") return true;
+    auto starts_with = [](const std::string& s, const std::string& p) {
+        return s.size() >= p.size() && s.compare(0, p.size(), p) == 0;
+    };
+    if (starts_with(addr, "10.") || starts_with(addr, "192.168.")) return true;
+    if (starts_with(addr, "172.")) {
+        size_t dot = addr.find('.', 4);
+        if (dot != std::string::npos) {
+            int second = std::atoi(addr.substr(4, dot - 4).c_str());
+            if (second >= 16 && second <= 31) return true;
+        }
+    }
+    return false;
+}
 
 static bool tcp_probe_admin(const std::string& host, int port, int timeout_ms = 300) {
     int fd = ::socket(AF_INET, SOCK_STREAM, 0);
@@ -152,6 +184,14 @@ static bool query_coordinator_tablets_json(const std::string& host, int port, st
     return query_coordinator_json_admin(host, port, "TABLETS", json_out);
 }
 
+static bool query_kv_dump_json_admin(const std::string& host, int port,
+                                     size_t limit, size_t offset,
+                                     std::string& json_out) {
+    if (port <= 0) return false;
+    const std::string op = "DUMP " + std::to_string(limit) + " " + std::to_string(offset);
+    return query_coordinator_json_admin(host, port, op, json_out, 700);
+}
+
 static std::vector<AdminFrontendNode> admin_frontend_nodes() {
     std::vector<AdminFrontendNode> out;
     out.push_back({"fe1", "127.0.0.1", 8090, false});
@@ -177,6 +217,17 @@ static std::string frontend_nodes_json() {
     }
     json += "]";
     return json;
+}
+
+static bool is_spa_shell_route(const std::string& path) {
+    return path == "/" ||
+           path == "/index.html" ||
+           path == "/inbox" ||
+           path == "/compose" ||
+           path == "/drive" ||
+           path == "/chat" ||
+           path == "/email" ||
+           path == "/settings";
 }
 
 static std::string admin_json_field(const std::string& body, const std::string& key) {
@@ -205,6 +256,17 @@ static std::string admin_json_field(const std::string& body, const std::string& 
     size_t start = p;
     while (p < body.size() && body[p] != ',' && body[p] != '}' && !std::isspace(static_cast<unsigned char>(body[p]))) ++p;
     return body.substr(start, p - start);
+}
+
+static std::string admin_location_token(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (unsigned char c : s) {
+        if (std::isalnum(c) || c == '_' || c == '-' || c == '.' || c == ',') {
+            out.push_back(static_cast<char>(c));
+        }
+    }
+    return out;
 }
 
 static bool run_shell_command(const std::string& cmd) {
@@ -313,10 +375,30 @@ static AdminClusterSpec multi_group_cluster_spec_admin(const std::string& root) 
     c.name = "multi-group";
     c.coord_port = 7110;
     c.frontend_kv_port = 7500;
-    c.backends["node1"] = {"node1", 7500, 7600, first_existing_path_admin({"/tmp/pc_multi_group/node1","/tmp/pc_multi_group_cluster/node1","/tmp/pc_mg_cluster/node1"}), root + "/mg_node1.log", {}};
-    c.backends["node2"] = {"node2", 7501, 7601, first_existing_path_admin({"/tmp/pc_multi_group/node2","/tmp/pc_multi_group_cluster/node2","/tmp/pc_mg_cluster/node2"}), root + "/mg_node2.log", {}};
-    c.backends["node3"] = {"node3", 7502, 7602, first_existing_path_admin({"/tmp/pc_multi_group/node3","/tmp/pc_multi_group_cluster/node3","/tmp/pc_mg_cluster/node3"}), root + "/mg_node3.log", {}};
-    c.backends["node4"] = {"node4", 7503, 7603, first_existing_path_admin({"/tmp/pc_multi_group/node4","/tmp/pc_multi_group_cluster/node4","/tmp/pc_mg_cluster/node4"}), root + "/mg_node4.log", {}};
+    const std::vector<std::string> node1_tablets = {
+        "--tablet", "tabletA:a:f",
+        "--tablet", "tabletC:m:r",
+        "--tablet", "tabletD:s:"
+    };
+    const std::vector<std::string> node2_tablets = {
+        "--tablet", "tabletA:a:f",
+        "--tablet", "tabletB:g:l",
+        "--tablet", "tabletD:s:"
+    };
+    const std::vector<std::string> node3_tablets = {
+        "--tablet", "tabletA:a:f",
+        "--tablet", "tabletB:g:l",
+        "--tablet", "tabletC:m:r"
+    };
+    const std::vector<std::string> node4_tablets = {
+        "--tablet", "tabletB:g:l",
+        "--tablet", "tabletC:m:r",
+        "--tablet", "tabletD:s:"
+    };
+    c.backends["node1"] = {"node1", 7500, 7600, first_existing_path_admin({"/tmp/pc_multi_group_demo/node1","/tmp/pc_multi_group/node1","/tmp/pc_multi_group_cluster/node1","/tmp/pc_mg_cluster/node1"}), root + "/mg_node1.log", node1_tablets};
+    c.backends["node2"] = {"node2", 7501, 7601, first_existing_path_admin({"/tmp/pc_multi_group_demo/node2","/tmp/pc_multi_group/node2","/tmp/pc_multi_group_cluster/node2","/tmp/pc_mg_cluster/node2"}), root + "/mg_node2.log", node2_tablets};
+    c.backends["node3"] = {"node3", 7502, 7602, first_existing_path_admin({"/tmp/pc_multi_group_demo/node3","/tmp/pc_multi_group/node3","/tmp/pc_multi_group_cluster/node3","/tmp/pc_mg_cluster/node3"}), root + "/mg_node3.log", node3_tablets};
+    c.backends["node4"] = {"node4", 7503, 7603, first_existing_path_admin({"/tmp/pc_multi_group_demo/node4","/tmp/pc_multi_group/node4","/tmp/pc_multi_group_cluster/node4","/tmp/pc_mg_cluster/node4"}), root + "/mg_node4.log", node4_tablets};
     return c;
 }
 
@@ -328,7 +410,7 @@ static AdminClusterSpec multi_tablet_cluster_spec_admin(const std::string& root)
     std::vector<std::string> tablets = {
         "--tablet", "tabletA:a:g",
         "--tablet", "tabletB:h:p",
-        "--tablet", "tabletC:q:zzzzz"
+        "--tablet", "tabletC:q:"
     };
     c.backends["node1"] = {"node1", 6500, 6600,
         first_existing_path_admin({"/tmp/pc_multi_tablet_demo/node1","/tmp/pc_multi_tablet/node1","/tmp/pc_mt_demo/node1"}),
@@ -353,31 +435,74 @@ static AdminClusterSpec single_cluster_spec_admin(const std::string& root) {
     return c;
 }
 
+// Build a cluster spec directly from the frontend's own --kv-port / --coord-port
+// so admin status/control still works for non-standard KV port demos.
+static AdminClusterSpec cfg_derived_cluster_spec_admin(const FEServer::Config& cfg) {
+    const std::string root = resolve_project_root_admin();
+    const int base = cfg.kv_port > 0 ? cfg.kv_port : 5000;
+    const int repl_base = base + 100;
+    AdminClusterSpec c;
+    c.name = "configured";
+    c.coord_port = cfg.coord_port;
+    c.frontend_kv_port = base;
+    c.backends["node1"] = {"node1", base,   repl_base,   "/tmp/pc_cluster/node1", root + "/node1.log", {}};
+    c.backends["node2"] = {"node2", base+1, repl_base+1, "/tmp/pc_cluster/node2", root + "/node2.log", {}};
+    c.backends["node3"] = {"node3", base+2, repl_base+2, "/tmp/pc_cluster/node3", root + "/node3.log", {}};
+    return c;
+}
+
+static AdminClusterSpec configured_cluster_spec_admin(const FEServer::Config& cfg);
+
 static AdminClusterSpec detect_active_cluster_admin(const FEServer::Config& cfg) {
     const std::string root = resolve_project_root_admin();
     std::string host = cfg.coord_host.empty() ? "127.0.0.1" : cfg.coord_host;
-    if (cfg.coord_port > 0 && tcp_probe_admin(host, cfg.coord_port, 250)) {
-        if (cfg.coord_port == 7110) return multi_group_cluster_spec_admin(root);
-        if (cfg.coord_port == 7010) return multi_tablet_cluster_spec_admin(root);
-        if (cfg.coord_port == 6000) return single_cluster_spec_admin(root);
-        return abc_cluster_spec_admin(root);
+    if (cfg.coord_port > 0 && cfg.kv_port > 0) {
+        if (tcp_probe_admin(host, cfg.coord_port, 250))
+            return configured_cluster_spec_admin(cfg);
     }
+
+    if (cfg.kv_port > 0) {
+        AdminClusterSpec configured = cfg_derived_cluster_spec_admin(cfg);
+        for (const auto& kv : configured.backends) {
+            if (tcp_probe_admin("127.0.0.1", kv.second.kv_port, 80))
+                return configured;
+        }
+    }
+
     if (tcp_probe_admin("127.0.0.1", 7110, 250)) return multi_group_cluster_spec_admin(root);
     if (tcp_probe_admin("127.0.0.1", 7010, 250)) return multi_tablet_cluster_spec_admin(root);
     if (tcp_probe_admin("127.0.0.1", 6010, 250)) return abc_cluster_spec_admin(root);
     if (tcp_probe_admin("127.0.0.1", 6000, 250)) return single_cluster_spec_admin(root);
-    if (cfg.coord_port == 7110) return multi_group_cluster_spec_admin(root);
-    if (cfg.coord_port == 7010) return multi_tablet_cluster_spec_admin(root);
-    if (cfg.coord_port == 6000) return single_cluster_spec_admin(root);
-    return abc_cluster_spec_admin(root);
+    if (cfg.kv_port > 0) return cfg_derived_cluster_spec_admin(cfg);
+    return single_cluster_spec_admin(root);
 }
 
 static AdminClusterSpec configured_cluster_spec_admin(const FEServer::Config& cfg) {
     const std::string root = resolve_project_root_admin();
-    if (cfg.coord_port == 7110) return multi_group_cluster_spec_admin(root);
-    if (cfg.coord_port == 7010) return multi_tablet_cluster_spec_admin(root);
-    if (cfg.coord_port == 6000) return single_cluster_spec_admin(root);
-    return abc_cluster_spec_admin(root);
+    auto kv_matches = [&](int expected) {
+        return cfg.kv_port <= 0 || cfg.kv_port == expected;
+    };
+
+    if (cfg.coord_port == 7110 && kv_matches(7500)) return multi_group_cluster_spec_admin(root);
+    if (cfg.coord_port == 7010 && kv_matches(6500)) return multi_tablet_cluster_spec_admin(root);
+    if (cfg.coord_port == 6010 && kv_matches(5500)) return abc_cluster_spec_admin(root);
+    if (cfg.coord_port == 6000 && kv_matches(5000)) return single_cluster_spec_admin(root);
+    if (cfg.kv_port > 0) return cfg_derived_cluster_spec_admin(cfg);
+    return single_cluster_spec_admin(root);
+}
+
+static bool any_backend_listener_alive_admin(const FEServer::Config& cfg) {
+    if (cfg.kv_port > 0 &&
+        tcp_probe_admin(cfg.kv_host.empty() ? "127.0.0.1" : cfg.kv_host,
+                        cfg.kv_port, 80)) {
+        return true;
+    }
+    AdminClusterSpec cluster = detect_active_cluster_admin(cfg);
+    for (const auto& kv : cluster.backends) {
+        const auto& node = kv.second;
+        if (tcp_probe_admin("127.0.0.1", node.kv_port, 80)) return true;
+    }
+    return false;
 }
 
 static bool verify_port_up_admin(int port, int attempts = 16, int sleep_ms = 250) {
@@ -388,14 +513,24 @@ static bool verify_port_up_admin(int port, int attempts = 16, int sleep_ms = 250
     return false;
 }
 
-static std::string pids_for_port_cmd_admin(int port) {
+static std::string kill_processes_for_port_cmd_admin(int port) {
     std::string p = std::to_string(port);
-    return "lsof -nP -tiTCP:" + p + " -sTCP:LISTEN 2>/dev/null";
+    std::string cmd;
+    cmd += "ps -axo pid=,command= 2>/dev/null | ";
+    cmd += "awk -v port=" + shell_escape_admin(p) + " '";
+    cmd += "($0 ~ /frontend\\/feserver/ || $0 ~ /(^|[[:space:]\\/])feserver([[:space:]]|$)/ || ";
+    cmd += "$0 ~ /kvstore\\/kvserver/ || $0 ~ /(^|[[:space:]\\/])kvserver([[:space:]]|$)/) && ";
+    cmd += "(index($0, \"--port \" port) || index($0, \"--port=\" port) || ";
+    cmd += " index($0, \"--repl-port \" port) || index($0, \"--repl-port=\" port)) && ";
+    cmd += "$0 !~ /(^|[[:space:]])(sh|bash|zsh)[[:space:]]+-c[[:space:]]/ && ";
+    cmd += "$0 !~ /(^|[[:space:]])awk[[:space:]]/ { print $1 }' | ";
+    cmd += "while read pid; do [ -n \"$pid\" ] && kill -KILL \"$pid\" 2>/dev/null || true; done; true";
+    return cmd;
 }
 
 static bool port_has_listener_admin(int port) {
     if (port <= 0) return false;
-    return ::system(pids_for_port_cmd_admin(port).c_str()) == 0;
+    return tcp_probe_admin("127.0.0.1", port, 80);
 }
 
 static int frontend_target_port_admin(const std::string& id) {
@@ -458,17 +593,18 @@ static std::string frontend_self_kill_helper_cmd_admin(const std::vector<int>& k
     std::string script = "sleep 0.15; ";
     for (int port : kill_ports) {
         if (port <= 0) continue;
-        std::string p = std::to_string(port);
-        script += "pkill -KILL -f -- \"--port " + p + "\" 2>/dev/null || true; ";
+        script += kill_processes_for_port_cmd_admin(port) + "; ";
     }
-    if (stub_port > 0 && stub_peer > 0 && !fe_bin.empty() && file_exists_admin(fe_bin)) {
+    if (stub_port > 0 && !fe_bin.empty() && file_exists_admin(fe_bin)) {
         std::string sp = std::to_string(stub_port);
-        script += "for i in 1 2 3 4 5 6 7 8 9 10; do ";
-        script += "if ! pgrep -f -- \"--port " + sp + "\" >/dev/null 2>&1; then ";
-        script += "exec " + shell_escape_admin(fe_bin) +
-                  " --port " + sp +
-                  " --redirect-to http://127.0.0.1:" + std::to_string(stub_peer) + "; ";
-        script += "fi; sleep 0.05; done; ";
+        script += "sleep 0.10; ";
+        script += "exec " + shell_escape_admin(fe_bin) + " --port " + sp;
+        if (stub_peer > 0) {
+            script += " --redirect-to http://127.0.0.1:" + std::to_string(stub_peer);
+        } else {
+            script += " --page-not-found-stub";
+        }
+        script += "; ";
     }
     return "nohup /bin/sh -c " + shell_escape_admin(script) + " >/dev/null 2>&1 &";
 }
@@ -494,13 +630,7 @@ static void start_fe_redirect_stub(int killed_port, const std::string& fe_bin) {
 }
 
 static std::string kill_port_cmd_admin(int port) {
-    std::string p = std::to_string(port);
-    // No lsof in the container; match by --port argument with pkill -f.
-    // Send SIGKILL immediately -- admin kill must be instant.
-    std::string cmd;
-    cmd += "pkill -KILL -f -- \"--port " + p + "\" 2>/dev/null || true; ";
-    cmd += "true";
-    return cmd;
+    return kill_processes_for_port_cmd_admin(port);
 }
 
 static void kill_ports_fast_admin(const std::string& label, const std::vector<int>& ports) {
@@ -513,12 +643,7 @@ static void kill_ports_fast_admin(const std::string& label, const std::vector<in
     for (int port : ports) {
         if (port <= 0) continue;
         admin_log("graceful shutdown triggered for " + label + " port " + std::to_string(port));
-        std::string p = std::to_string(port);
-        // The "--" separator tells pkill that the pattern, which starts with
-        // "--", is positional and not an option flag.
-        combined += "{ pkill -KILL -f -- \"--port " + p + "\" 2>/dev/null; "
-                    "pkill -KILL -f -- \"--repl-port " + p + "\" 2>/dev/null; "
-                    "true; } & ";
+        combined += "{ " + kill_processes_for_port_cmd_admin(port) + "; } & ";
     }
     if (!combined.empty()) {
         combined += "wait; true";
@@ -718,14 +843,18 @@ static bool perform_admin_control(const FEServer::Config& cfg, const std::string
         if (action == "kill") {
             admin_log("kill requested for node " + target);
             if (fe_port == cfg.port) {
-                // Self-kill fallback path. If no real peer exists, remove all
-                // frontend listeners/stubs so the whole frontend tier is truly down.
+                // Self-kill fallback path. If no real peer exists, replace the
+                // frontend tier with the tiny 404 stub on port 8090 so refreshes
+                // still show "Page Not Found" instead of connection refused.
                 int stub_peer = real_fe_redirect_peer_admin(fe_port);
                 std::vector<int> ports_to_kill = stub_peer > 0
                     ? std::vector<int>{fe_port}
                     : std::vector<int>{8090, 8091, 8092};
                 std::string kill_and_stub =
-                    frontend_self_kill_helper_cmd_admin(ports_to_kill, fe_port, stub_peer, fe_bin);
+                    frontend_self_kill_helper_cmd_admin(ports_to_kill,
+                                                        stub_peer > 0 ? fe_port : 8090,
+                                                        stub_peer,
+                                                        fe_bin);
                 run_shell_command(kill_and_stub);
                 admin_log("graceful shutdown triggered for node " + target + " via external self-kill helper");
                 message = "kill scheduled for " + target;
@@ -825,7 +954,7 @@ struct FEServer::ThreadPool {
 // ---------------------------------------------------------------------------
 FEServer::FEServer(const Config& cfg) : cfg_(cfg) {
     // Redirect stub mode: no KV or session setup needed
-    if (!cfg_.redirect_to.empty()) {
+    if (!cfg_.redirect_to.empty() || cfg_.page_not_found_stub) {
         pool_ = std::make_unique<ThreadPool>(cfg_.threads);
         return;
     }
@@ -918,7 +1047,9 @@ int FEServer::create_listen_socket() {
 // Connection handling -- persistent HTTP/1.1
 // ---------------------------------------------------------------------------
 void FEServer::handle_connection(int fd) {
-    struct timeval tv{.tv_sec = 5, .tv_usec = 0};
+    // 120 s idle timeout — long enough for a slow 128 MB upload from the browser
+    // without being infinite (guards against zombie connections).
+    struct timeval tv{.tv_sec = 120, .tv_usec = 0};
     ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     bool detached = false;
     while (running_ && !detached && handle_one_request(fd, detached)) {}
@@ -928,6 +1059,26 @@ void FEServer::handle_connection(int fd) {
 bool FEServer::handle_one_request(int fd, bool& detached) {
     HttpRequest req;
     if (!read_http_request(fd, req)) return false;
+    req.remote_addr = peer_addr_admin(fd);
+
+    auto finish_response = [&](HttpResponse& resp, bool is_head) {
+        bool close_after_send = !req.keep_alive();
+        auto it = resp.headers.find("Connection");
+        if (it == resp.headers.end()) {
+            resp.headers["Connection"] = req.keep_alive() ? "keep-alive" : "close";
+        } else {
+            std::string conn = it->second;
+            for (char& c : conn) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            if (conn.find("close") != std::string::npos) close_after_send = true;
+        }
+        return send_http_response(fd, resp, is_head) && !close_after_send;
+    };
+
+    if (!cfg_.redirect_to.empty() || cfg_.page_not_found_stub) {
+        HttpResponse resp = dispatch(req);
+        bool is_head = (req.method == "HEAD");
+        return finish_response(resp, is_head);
+    }
 
     // SSE -- does not return through normal response path
     if (req.path == "/events" && req.method == "GET") {
@@ -944,28 +1095,23 @@ bool FEServer::handle_one_request(int fd, bool& detached) {
                 "{\"ok\":false,\"error\":\"auth\"}";
             http_write_all(fd, r401);
         } else {
-            int active = active_sse_.fetch_add(1) + 1;
-            if (active > kMaxSSEConnections) {
-                active_sse_.fetch_sub(1);
-                std::string body = "{\"ok\":false,\"error\":\"too many events\"}";
-                std::string r503 = std::string(
-                    "HTTP/1.1 503 Service Unavailable\r\n"
-                    "Content-Type: application/json\r\n") +
-                    "Content-Length: " + std::to_string(body.size()) + "\r\n"
-                    "Connection: close\r\n"
-                    "\r\n" + body;
-                http_write_all(fd, r503);
+            if (!acquire_sse_slot()) {
+                HttpResponse busy = HttpResponse::json(R"({"ok":false,"error":"too many live event streams"})");
+                busy.status_code = 429;
+                busy.status_text = "Too Many Requests";
+                busy.headers["Retry-After"] = "5";
+                send_http_response(fd, busy, false);
                 return false;
             }
             try {
                 std::thread([this, fd, req, user] {
                     handle_sse(fd, req, user);
-                    active_sse_.fetch_sub(1);
+                    release_sse_slot();
                     ::close(fd);
                 }).detach();
                 detached = true;
             } catch (...) {
-                active_sse_.fetch_sub(1);
+                release_sse_slot();
                 std::string body = "{\"ok\":false,\"error\":\"events failed\"}";
                 std::string r503 = std::string(
                     "HTTP/1.1 503 Service Unavailable\r\n"
@@ -988,10 +1134,8 @@ bool FEServer::handle_one_request(int fd, bool& detached) {
     if (conn_it == resp.headers.end()) {
         resp.headers["Connection"] = req.keep_alive() ? "keep-alive" : "close";
     }
-    bool keep = (resp.headers["Connection"] != "close");
     bool is_head = (req.method == "HEAD");
-    if (!send_http_response(fd, resp, is_head)) return false;
-    return keep;
+    return finish_response(resp, is_head);
 }
 
 // ---------------------------------------------------------------------------
@@ -1001,9 +1145,49 @@ std::string FEServer::get_user(const HttpRequest& req) {
     return sessions_->authenticate(req);
 }
 
+bool FEServer::admin_control_allowed(const HttpRequest& req) const {
+    if (is_loopback_peer_admin(req.remote_addr)) return true;
+
+    const char* env_token = std::getenv("ADMIN_TOKEN");
+    if (!env_token || !*env_token) return false;
+
+    const std::string expected = env_token;
+    if (req.header("x-admin-token") == expected) return true;
+    if (req.param("admin_token") == expected) return true;
+
+    std::string auth = req.header("authorization");
+    const std::string bearer = "Bearer ";
+    if (auth.rfind(bearer, 0) == 0 && auth.substr(bearer.size()) == expected) return true;
+    return false;
+}
+
+bool FEServer::acquire_sse_slot() {
+    const int limit = std::max(1, std::min(8, cfg_.threads / 4));
+    int cur = active_sse_.load();
+    while (cur < limit) {
+        if (active_sse_.compare_exchange_weak(cur, cur + 1)) return true;
+    }
+    return false;
+}
+
+void FEServer::release_sse_slot() {
+    int cur = active_sse_.load();
+    while (cur > 0 && !active_sse_.compare_exchange_weak(cur, cur - 1)) {}
+}
+
 HttpResponse FEServer::dispatch(const HttpRequest& req) {
     const std::string& path   = req.path;
     const std::string& method = req.method;
+
+    if (cfg_.page_not_found_stub) {
+        (void)method;
+        HttpResponse r;
+        r.status_code = 404;
+        r.status_text = "Not Found";
+        r.body = "<html><body><h1>404 Not Found</h1></body></html>";
+        r.headers["Content-Type"] = "text/html; charset=utf-8";
+        return r;
+    }
 
     // Redirect stub mode: return 503 for API probes so health checks can
     // distinguish this stub from a real server; redirect everything else.
@@ -1025,16 +1209,32 @@ HttpResponse FEServer::dispatch(const HttpRequest& req) {
     // Admin endpoints must not depend on session lookup in KV, and they must
     // stay reachable even when every backend node is down.
     if (path == "/api/admin/ping" && method == "GET")     return HttpResponse::json(R"({"ok":true})");
-    if (path == "/api/admin/status" && method == "GET")   return handle_admin_status(req);
+    if (path == "/api/admin/status" && method == "GET") {
+        if (!admin_control_allowed(req)) return HttpResponse::forbidden();
+        return handle_admin_status(req);
+    }
+    if (path == "/api/admin/raw" && method == "GET") {
+        if (!admin_control_allowed(req)) return HttpResponse::forbidden();
+        return handle_admin_raw(req);
+    }
     if (path == "/api/admin/control" && method == "POST") return handle_admin_control(req);
     if (path == "/admin/control" && method == "GET")      return handle_admin_control_redirect(req);
-    if (path == "/admin/metrics" && method == "GET")      return handle_admin_metrics(req);
-    if ((path == "/admin" || path.rfind("/admin/", 0) == 0) && method == "GET")
+    if (path == "/admin/metrics" && method == "GET") {
+        if (!admin_control_allowed(req)) return HttpResponse::forbidden();
+        return handle_admin_metrics(req);
+    }
+    if ((path == "/admin" || path.rfind("/admin/", 0) == 0) && method == "GET") {
+        if (!admin_control_allowed(req)) return HttpResponse::forbidden();
         return handle_admin_page(req);
+    }
 
     // ---- Static / SPA shell -------------------------------------------------
-    if (path == "/" || path == "/index.html")
+    if ((method == "GET" || method == "HEAD") && is_spa_shell_route(path)) {
+        if (!any_backend_listener_alive_admin(cfg_)) {
+            return HttpResponse::not_found();
+        }
         return handle_spa_shell(req);
+    }
 
     if (path.rfind("/static/", 0) == 0)
         return handle_static(req);
@@ -1048,6 +1248,7 @@ HttpResponse FEServer::dispatch(const HttpRequest& req) {
     // ---- Auth endpoints (no session required) --------------------------------
     if (path == "/api/login"  && method == "POST") return handle_login(req);
     if (path == "/api/signup" && method == "POST") return handle_signup(req);
+    if (path == "/api/session" && method == "GET") return handle_session(req);
 
     // ---- Protected endpoints (session required) ------------------------------
     std::string user = get_user(req);
@@ -1057,7 +1258,7 @@ HttpResponse FEServer::dispatch(const HttpRequest& req) {
         return HttpResponse::json(std::string("{\"ok\":true,\"user\":") + json_str(user) + "}");
     }
 
-    if (path == "/api/logout"          && method == "POST") return handle_logout(req);
+    if (path == "/api/logout"          && method == "POST") return handle_logout(req, user);
     if (path == "/api/change-password" && method == "POST") {
         if (user.empty()) return HttpResponse::error(401, "Unauthorized");
         return handle_change_password(req);
@@ -1206,20 +1407,26 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     :root {
       --penn-blue: #011F5B;
-      --accent:    #0066CC;
-      --bg:        #F5F7FA;
+      --penn-blue-2: #0A2D72;
+      --accent:    #1464C8;
+      --accent-soft: #EAF3FF;
+      --bg:        #F4F7FB;
       --surface:   #FFFFFF;
-      --border:    #E2E8F0;
-      --text:      #1A202C;
-      --muted:     #718096;
-      --success:   #1A6B3A;
-      --danger:    #C53030;
+      --surface-soft: #FBFDFF;
+      --border:    #DDE6F1;
+      --text:      #182235;
+      --muted:     #6C7A8C;
+      --success:   #167246;
+      --danger:    #C93636;
       --sidebar-w: 220px;
-      --shadow-sm: 0 6px 18px rgba(1,31,91,0.06);
-      --shadow-md: 0 14px 34px rgba(1,31,91,0.10);
+      --shadow-sm: 0 8px 22px rgba(1,31,91,0.07);
+      --shadow-md: 0 18px 44px rgba(1,31,91,0.12);
+      --ring: 0 0 0 3px rgba(20,100,200,0.13);
     }
     body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-           background: linear-gradient(180deg, #F8FAFC 0%, var(--bg) 260px);
+           background:
+             radial-gradient(circle at 16% 0%, rgba(20,100,200,0.08), transparent 28%),
+             linear-gradient(180deg, #FAFCFF 0%, var(--bg) 280px);
            color: var(--text); min-height: 100vh;
            -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
 
@@ -1228,28 +1435,52 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
       display: flex; align-items: center; justify-content: center;
       min-height: 100vh;
       background:
-        radial-gradient(circle at top left, rgba(0,102,204,0.35), transparent 34%),
-        linear-gradient(135deg, #011F5B 0%, #001642 100%);
+        radial-gradient(circle at 18% 12%, rgba(84,153,232,0.34), transparent 32%),
+        radial-gradient(circle at 82% 86%, rgba(255,255,255,0.12), transparent 30%),
+        linear-gradient(135deg, #011F5B 0%, #071B46 52%, #00112F 100%);
     }
     .login-card {
-      background: var(--surface); border-radius: 12px;
+      background: rgba(255,255,255,0.98); border-radius: 18px;
       padding: 40px 36px; width: 360px;
-      box-shadow: 0 24px 70px rgba(0,0,0,0.30);
-      border: 1px solid rgba(255,255,255,0.45);
+      box-shadow: 0 26px 80px rgba(0,0,0,0.30);
+      border: 1px solid rgba(255,255,255,0.58);
+      backdrop-filter: blur(10px);
     }
-    .login-card h1 { color: var(--penn-blue); font-size: 26px; margin-bottom: 6px; }
-    .login-card p  { color: var(--muted); font-size: 14px; margin-bottom: 24px; }
+    .login-brand {
+      display: flex; align-items: center; gap: 14px; margin-bottom: 24px;
+    }
+    .login-brand h1 { color: var(--penn-blue); font-size: 28px; letter-spacing: -0.5px; margin-bottom: 5px; }
+    .login-brand p  { color: var(--muted); font-size: 14px; margin-bottom: 0; }
+    .pc-logo {
+      display: inline-flex; align-items: center; justify-content: center;
+      border-radius: 14px;
+      background: #FFFFFF;
+      box-shadow: 0 10px 26px rgba(1,31,91,0.13);
+      border: 1px solid rgba(221,230,241,0.9);
+      overflow: hidden;
+      flex: 0 0 auto;
+    }
+    .pc-logo img {
+      display: block; width: 100%; height: 100%;
+      object-fit: contain; object-position: center;
+    }
+    .pc-logo-large { width: 60px; height: 60px; padding: 5px; }
+    .pc-logo-small {
+      width: 32px; height: 32px; padding: 3px; border-radius: 9px;
+      box-shadow: 0 6px 16px rgba(1,31,91,0.18);
+    }
     .form-group { margin-bottom: 16px; }
     .form-group label { display: block; font-size: 13px; font-weight: 600;
                         color: var(--muted); margin-bottom: 6px; }
     .form-group input {
       width: 100%; padding: 10px 14px; border: 1px solid var(--border);
-      border-radius: 8px; font-size: 14px; outline: none;
+      border-radius: 10px; font-size: 14px; outline: none; background: #FBFDFF;
       transition: border .15s, box-shadow .15s, background .15s;
     }
     .form-group input:focus {
       border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(0,102,204,0.12);
+      background: #FFFFFF;
+      box-shadow: var(--ring);
     }
     .field-help { font-size: 12px; color: var(--muted); margin-top: 6px; line-height: 1.35; }
     .password-field { display: flex; gap: 8px; align-items: center; }
@@ -1258,10 +1489,11 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
       flex: 0 0 40px; width: 40px; height: 40px; padding: 0;
       display: inline-flex; align-items: center; justify-content: center;
       border: 1px solid var(--border);
-      border-radius: 8px; background: var(--surface); color: var(--muted);
+      border-radius: 10px; background: var(--surface-soft); color: var(--muted);
       cursor: pointer;
+      transition: background .15s, color .15s, border-color .15s, transform .12s;
     }
-    .password-toggle:hover { background: #F8FBFF; color: var(--text); }
+    .password-toggle:hover { background: #FFFFFF; color: var(--text); border-color: #B8C7DA; transform: translateY(-1px); }
     .password-toggle svg {
       width: 18px; height: 18px; display: block;
       stroke: currentColor; fill: none; stroke-width: 1.9;
@@ -1272,27 +1504,48 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
     .password-toggle.showing .icon-eye { display: block; }
     .password-toggle.showing .icon-eye-off { display: none; }
     .btn {
-      width: 100%; padding: 11px; border: none; border-radius: 8px;
+      width: 100%; padding: 11px; border: none; border-radius: 10px;
       font-size: 14px; font-weight: 600; cursor: pointer;
       transition: opacity .15s, transform .12s, box-shadow .15s;
     }
-    .btn-primary { background: var(--penn-blue); color: white; box-shadow: var(--shadow-sm); }
+    .btn-primary {
+      background: linear-gradient(180deg, var(--penn-blue-2), var(--penn-blue));
+      color: white; box-shadow: var(--shadow-sm);
+    }
     .btn-primary:hover { opacity: .92; transform: translateY(-1px); box-shadow: var(--shadow-md); }
     .btn:disabled { transform: none; box-shadow: none; }
-    .btn-link { background: none; color: var(--accent); font-size: 13px;
-                text-decoration: underline; cursor: pointer; border: none; }
+    .auth-divider {
+      display: flex; align-items: center; gap: 10px;
+      margin: 18px 0 12px; color: var(--muted); font-size: 12px;
+    }
+    .auth-divider::before, .auth-divider::after {
+      content: ""; height: 1px; flex: 1; background: var(--border);
+    }
+    .btn-link {
+      width: 100%; padding: 10px 12px; border-radius: 10px;
+      border: 1px solid var(--border); background: var(--surface-soft);
+      color: var(--penn-blue); font-size: 13px; font-weight: 650;
+      cursor: pointer; transition: background .15s, border-color .15s, transform .12s, box-shadow .15s;
+    }
+    .btn-link:hover {
+      background: #FFFFFF; border-color: #B8C7DA; transform: translateY(-1px);
+      box-shadow: 0 8px 18px rgba(1,31,91,0.07);
+    }
     .error-msg { color: var(--danger); font-size: 13px; margin-top: 8px; display: none; }
 
     /* ---- App shell ---- */
     #app { display: none; min-height: 100vh; flex-direction: column; }
     .topbar {
-      background: var(--penn-blue); color: white;
+      background: linear-gradient(90deg, #011F5B 0%, #082A68 100%); color: white;
       padding: 0 24px; height: 52px;
       display: flex; align-items: center; justify-content: space-between;
-      box-shadow: 0 2px 12px rgba(1,31,91,0.18);
+      box-shadow: 0 3px 16px rgba(1,31,91,0.18);
       position: sticky; top: 0; z-index: 20;
     }
-    .topbar .brand { font-size: 18px; font-weight: 700; letter-spacing: -0.3px; }
+    .topbar .brand {
+      display: inline-flex; align-items: center; gap: 10px;
+      font-size: 18px; font-weight: 750; letter-spacing: -0.4px;
+    }
     .topbar .user-info { font-size: 13px; opacity: .8; display: flex;
                          align-items: center; gap: 16px; }
     .topbar .logout-btn { background: rgba(255,255,255,0.15); border: none;
@@ -1301,19 +1554,23 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
     .topbar .logout-btn:hover { background: rgba(255,255,255,0.24); }
     .main-layout { display: flex; flex: 1; }
     .sidebar {
-      width: var(--sidebar-w); background: var(--surface);
-      border-right: 1px solid var(--border); padding: 16px 0;
+      width: var(--sidebar-w); background: rgba(255,255,255,0.88);
+      border-right: 1px solid var(--border); padding: 18px 12px;
       display: flex; flex-direction: column; gap: 2px;
+      backdrop-filter: blur(10px);
     }
     .nav-item {
       display: flex; align-items: center; gap: 10px;
-      padding: 10px 20px; cursor: pointer; border-radius: 0;
-      font-size: 14px; color: var(--muted); transition: all .1s;
+      padding: 10px 12px; cursor: pointer; border-radius: 12px;
+      font-size: 14px; color: var(--muted); transition: background .14s, color .14s, transform .12s;
       border: none; background: none; width: 100%; text-align: left;
     }
-    .nav-item:hover { background: var(--bg); color: var(--text); }
-    .nav-item.active { background: #EEF3FB; color: var(--penn-blue);
-                       font-weight: 600; border-right: 3px solid var(--penn-blue); }
+    .nav-item:hover { background: #F3F7FC; color: var(--text); transform: translateX(2px); }
+    .nav-item.active {
+      background: linear-gradient(180deg, #EEF5FF, #E7F0FC);
+      color: var(--penn-blue); font-weight: 650;
+      box-shadow: inset 0 0 0 1px rgba(20,100,200,0.10);
+    }
     .nav-icon {
       width: 24px; height: 24px; flex: 0 0 24px;
       display: inline-flex; align-items: center; justify-content: center;
@@ -1324,27 +1581,27 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
       stroke: currentColor; fill: none; stroke-width: 1.9;
       stroke-linecap: round; stroke-linejoin: round;
     }
-    .content { flex: 1; padding: 28px; overflow-y: auto; }
+    .content { flex: 1; padding: 30px; overflow-y: auto; }
 
     /* ---- Inbox ---- */
-    .page-title { font-size: 20px; font-weight: 700; color: var(--penn-blue);
+    .page-title { font-size: 22px; font-weight: 750; color: var(--penn-blue);
                   margin-bottom: 16px; display: flex; align-items: center;
-                  justify-content: space-between; }
+                  justify-content: space-between; letter-spacing: -0.35px; }
     .compose-btn {
       background: var(--penn-blue); color: white; border: none;
       padding: 8px 16px; border-radius: 8px; cursor: pointer;
-      font-size: 13px; font-weight: 600; box-shadow: var(--shadow-sm);
+      font-size: 13px; font-weight: 650; box-shadow: var(--shadow-sm);
       transition: transform .12s, box-shadow .15s, opacity .15s;
     }
     .compose-btn:hover { transform: translateY(-1px); box-shadow: var(--shadow-md); opacity: .94; }
-    .email-list { background: var(--surface); border-radius: 10px;
+    .email-list { background: var(--surface); border-radius: 14px;
                   border: 1px solid var(--border); overflow: hidden; box-shadow: var(--shadow-sm); }
     .email-row {
       display: flex; align-items: center; padding: 14px 20px;
       border-bottom: 1px solid var(--border); cursor: pointer;
-      transition: background .1s, transform .12s; gap: 16px;
+      transition: background .1s, transform .12s, box-shadow .12s; gap: 16px;
     }
-    .email-row:hover { background: #F8FBFF; transform: translateX(2px); }
+    .email-row:hover { background: #F8FBFF; transform: translateX(2px); box-shadow: inset 3px 0 0 var(--accent-soft); }
     .email-row:last-child { border-bottom: none; }
     .email-row.unread .email-from { font-weight: 700; }
     .email-from  { width: 160px; flex-shrink: 0; font-size: 14px;
@@ -1358,7 +1615,7 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
     }
 
     /* ---- Email view ---- */
-    .email-view { background: var(--surface); border-radius: 10px;
+    .email-view { background: var(--surface); border-radius: 14px;
                   border: 1px solid var(--border); padding: 28px; box-shadow: var(--shadow-sm); }
     .email-view h2 { font-size: 18px; margin-bottom: 12px; }
     .email-meta { color: var(--muted); font-size: 13px; margin-bottom: 16px;
@@ -1367,8 +1624,8 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
                   border-top: 1px solid var(--border); padding-top: 16px; }
     .email-actions { display: flex; gap: 8px; margin-bottom: 16px; }
     .action-btn {
-      padding: 7px 14px; border-radius: 7px; font-size: 13px; cursor: pointer;
-      border: 1px solid var(--border); background: var(--surface);
+      padding: 7px 14px; border-radius: 9px; font-size: 13px; cursor: pointer;
+      border: 1px solid var(--border); background: var(--surface-soft);
       transition: background .12s, border-color .12s, transform .12s;
     }
     .action-btn:hover { background: #F8FBFF; border-color: #B8C7DA; transform: translateY(-1px); }
@@ -1378,7 +1635,7 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
     .chat-panel {
       display: grid; grid-template-rows: 1fr auto; gap: 14px; min-height: 520px;
       background: linear-gradient(180deg, #FFFFFF 0%, #F8FBFF 100%);
-      border: 1px solid var(--border); border-radius: 14px; padding: 16px;
+      border: 1px solid var(--border); border-radius: 16px; padding: 16px;
       box-shadow: var(--shadow-sm);
     }
     .chat-messages {
@@ -1391,11 +1648,11 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
     }
     .chat-bubble {
       max-width: 76%; padding: 10px 12px; border: 1px solid var(--border);
-      border-radius: 14px; background: white; margin-bottom: 10px;
+      border-radius: 16px; background: white; margin-bottom: 10px;
       box-shadow: 0 2px 8px rgba(15,23,42,.04);
     }
     .chat-bubble.mine {
-      margin-left: auto; background: #EEF3FB; border-color: #C9D6EA;
+      margin-left: auto; background: linear-gradient(180deg, #EEF5FF, #E8F1FC); border-color: #C9D6EA;
     }
     .chat-meta {
       display: flex; justify-content: space-between; gap: 12px; margin-bottom: 6px;
@@ -1433,7 +1690,7 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
     }
     .chat-dialog {
       width: min(420px, 100%); background: var(--surface); border: 1px solid var(--border);
-      border-radius: 14px; padding: 22px; box-shadow: 0 18px 50px rgba(15,23,42,.22);
+      border-radius: 16px; padding: 22px; box-shadow: 0 18px 50px rgba(15,23,42,.22);
     }
     .chat-dialog h3 { font-size: 17px; margin-bottom: 6px; color: var(--penn-blue); }
     .chat-dialog p { font-size: 13px; color: var(--muted); margin-bottom: 14px; }
@@ -1449,26 +1706,26 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
     }
 
     /* ---- Compose ---- */
-    .compose-form { background: var(--surface); border-radius: 10px;
+    .compose-form { background: var(--surface); border-radius: 14px;
                     border: 1px solid var(--border); padding: 28px; max-width: 700px;
                     box-shadow: var(--shadow-sm); }
     .compose-form input, .compose-form textarea {
       width: 100%; padding: 10px 14px; border: 1px solid var(--border);
-      border-radius: 8px; font-size: 14px; margin-bottom: 12px;
+      border-radius: 10px; font-size: 14px; margin-bottom: 12px;
       font-family: inherit; outline: none;
       transition: border .15s, box-shadow .15s, background .15s;
     }
     .compose-form textarea { height: 200px; resize: vertical; }
     .compose-form input:focus, .compose-form textarea:focus {
       border-color: var(--accent);
-      box-shadow: 0 0 0 3px rgba(0,102,204,0.12);
+      box-shadow: var(--ring);
     }
 
     /* ---- Drive ---- */
-    .drive-toolbar { display: flex; gap: 8px; margin-bottom: 16px; }
+    .drive-toolbar { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
     .drive-toolbar button {
-      padding: 7px 14px; border-radius: 7px; font-size: 13px; cursor: pointer;
-      border: 1px solid var(--border); background: var(--surface);
+      padding: 7px 14px; border-radius: 9px; font-size: 13px; cursor: pointer;
+      border: 1px solid var(--border); background: var(--surface-soft);
       transition: background .12s, border-color .12s, transform .12s;
     }
     .drive-toolbar button:hover { background: #F8FBFF; border-color: #B8C7DA; transform: translateY(-1px); }
@@ -1536,8 +1793,8 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
     /* ---- Notifications ---- */
     .toast {
       position: fixed; bottom: 24px; right: 24px;
-      background: var(--text); color: white;
-      padding: 12px 20px; border-radius: 8px; font-size: 13px;
+      background: #172033; color: white;
+      padding: 12px 20px; border-radius: 10px; font-size: 13px;
       opacity: 0; transition: opacity .3s, transform .3s; pointer-events: none; z-index: 999;
       transform: translateY(8px); box-shadow: 0 14px 30px rgba(0,0,0,0.18);
     }
@@ -1559,8 +1816,15 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
 <!-- Login Page -->
 <div id="login-page">
   <div class="login-card">
-    <h1>PennCloud</h1>
-    <p id="login-subtitle">Sign in to your account</p>
+    <div class="login-brand">
+      <span class="pc-logo pc-logo-large" aria-hidden="true">
+        <img src="/static/logo.png" alt="">
+      </span>
+      <div>
+        <h1>PennCloud</h1>
+        <p id="login-subtitle">Sign in to your account</p>
+      </div>
+    </div>
     <div class="form-group">
       <label>Username</label>
       <input id="username-in" type="text" placeholder="e.g. nikunj" autocomplete="username">
@@ -1591,7 +1855,7 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
     </div>
     <button class="btn btn-primary" id="login-btn" onclick="doLogin()">Sign in</button>
     <div id="login-error" class="error-msg"></div>
-    <br>
+    <div class="auth-divider" id="auth-divider">New to PennCloud?</div>
     <button class="btn-link" id="auth-switch-btn" onclick="showSignup()">Create an account</button>
   </div>
 </div>
@@ -1599,7 +1863,12 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
 <!-- App Shell -->
 <div id="app">
   <div class="topbar">
-    <div class="brand">PennCloud</div>
+    <div class="brand">
+      <span class="pc-logo pc-logo-small" aria-hidden="true">
+        <img src="/static/logo.png" alt="">
+      </span>
+      <span>PennCloud</span>
+    </div>
     <div class="user-info">
       <span id="topbar-user"></span>
       <button class="logout-btn" onclick="doLogout()">Sign out</button>
@@ -1769,10 +2038,48 @@ function redirectToPeerApp() {
   window.location.replace(`${window.location.protocol}//${window.location.hostname}:${peers[0]}${path}${query}${hash}`);
 }
 
-function markFrontendHealthFailure() {
+async function probeFrontendStatus(port) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 450);
+  try {
+    const url = `${window.location.protocol}//${window.location.hostname}:${port}/api/admin/status`;
+    const r = await fetch(url, { cache: 'no-store', signal: controller.signal });
+    if (!r.ok) return null;
+    const data = await r.json();
+    return data && data.ok ? data : null;
+  } catch (_) {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function markFrontendHealthFailure() {
   frontendHealthFailures += 1;
-  if (frontendHealthFailures >= 1) redirectToPeerApp();
-  return null;
+  const currentPort = window.location.port || (window.location.protocol === 'https:' ? '443' : '80');
+  const currentId = frontendIdForPort(currentPort);
+  const peers = peerFrontendPorts(currentId);
+
+  for (const port of peers) {
+    const data = await probeFrontendStatus(port);
+    if (!data) continue;
+
+    lastFrontendNodes = data.frontend_nodes || [];
+    const backendAlive = (data.backend_nodes || []).some(n => !!n.alive);
+    if (!backendAlive) return false;
+
+    if (String(port) !== String(currentPort) && !frontendRedirecting) {
+      frontendRedirecting = true;
+      const path = window.location.pathname || '/';
+      const query = queryWithDownFrontend(currentId);
+      const hash = window.location.hash || '';
+      window.location.replace(`${window.location.protocol}//${window.location.hostname}:${port}${path}${query}${hash}`);
+      return null;
+    }
+    return true;
+  }
+
+  return false;
 }
 
 async function backendStorageAvailable() {
@@ -1780,17 +2087,18 @@ async function backendStorageAvailable() {
   const timeout = setTimeout(() => controller.abort(), 700);
   try {
     const r = await fetch('/api/admin/status', { cache: 'no-store', signal: controller.signal });
-    if (!r.ok) return true;
+    if (!r.ok) return await markFrontendHealthFailure();
     const data = await r.json();
     frontendHealthFailures = 0;
     lastFrontendNodes = data.frontend_nodes || [];
     const backendAlive = (data.backend_nodes || []).some(n => !!n.alive);
-    const frontendAlive = (data.frontend_nodes || []).some(n => !!n.alive);
-    return backendAlive || frontendAlive;
+    // The user-facing app requires storage. A live frontend alone is only a
+    // handoff target; if every backend is down, match admin's 404 behavior.
+    return backendAlive;
   } catch (_) {
     // If this frontend was killed, local fetches fail even when other frontends
     // and backends are alive. Treat that as a peer-redirect condition, not 404.
-    return markFrontendHealthFailure();
+    return await markFrontendHealthFailure();
   } finally {
     clearTimeout(timeout);
   }
@@ -2010,6 +2318,7 @@ function setAuthMode(mode) {
   document.getElementById('login-subtitle').textContent = signup ? 'Create a new account' : 'Sign in to your account';
   document.getElementById('login-btn').textContent = signup ? 'Create account' : 'Sign in';
   document.getElementById('login-btn').onclick = signup ? doSignup : doLogin;
+  document.getElementById('auth-divider').textContent = signup ? 'Already have an account?' : 'New to PennCloud?';
   document.getElementById('auth-switch-btn').textContent = signup ? 'Back to sign in' : 'Create an account';
   document.getElementById('auth-switch-btn').onclick = signup ? (() => showLogin()) : showSignup;
   document.querySelectorAll('.signup-only').forEach(el => {
@@ -2125,7 +2434,7 @@ function mailFolderTabs(activeFolder, counts = {}) {
     </button>`).join('')}</div>`;
 }
 
-async function renderInbox(folder = 'inbox') {
+async function renderInbox(folder = 'inbox', _retry = 0) {
   currentMailFolder = folder;
   const mySeq = ++inboxRenderSeq;
   const folders = ['inbox', 'sent', 'trash'];
@@ -2152,6 +2461,12 @@ async function renderInbox(folder = 'inbox') {
   const content = document.getElementById('content');
 
   if (!active.ok) {
+    if (_retry < 2) {
+      content.innerHTML = '<div class="spinner">Reconnecting to storage...</div>';
+      await new Promise(r => setTimeout(r, 1500));
+      if (mySeq !== inboxRenderSeq) return;
+      return renderInbox(folder, _retry + 1);
+    }
     if (!(await ensureBackendStorageAvailable())) return;
     content.innerHTML = '<p>Error loading mail.</p>';
     return;
@@ -2435,11 +2750,15 @@ async function sendEmail() {
 
   try {
     const attachmentIds = (composeAttachments || []).map(a => a.id).join(',');
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
     const r = await fetch('/api/send', {
       method: 'POST',
       headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      signal: controller.signal,
       body: `to=${encodeURIComponent(to)}&subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}&attachment_ids=${encodeURIComponent(attachmentIds)}`
     });
+    clearTimeout(timeout);
     const data = await r.json();
     if (data.ok) {
       composeAttachments = [];
@@ -2451,7 +2770,7 @@ async function sendEmail() {
       errBox.style.display = 'block';
     }
   } catch (e) {
-    errBox.textContent = 'Send failed.';
+    errBox.textContent = e && e.name === 'AbortError' ? 'Send timed out. External SMTP may be blocked.' : 'Send failed.';
     errBox.style.display = 'block';
   } finally {
     sendInFlight = false;
@@ -2468,7 +2787,12 @@ async function addCurrentRecipientToContacts() {
   rememberComposeDraft();
   const email = document.getElementById('to-in').value.trim();
   if (!email) return showToast('Enter a recipient first.');
-  const name = prompt('Save contact as:');
+  const name = await appPrompt({
+    title: 'Save contact',
+    description: `Add ${email} to your PennCloud contacts.`,
+    placeholder: 'Display name',
+    submitText: 'Save contact'
+  });
   if (!name) return;
   const r = await fetch('/api/contacts/add', {
     method: 'POST',
@@ -2682,7 +3006,7 @@ async function renderChat(room = 'general', dmPeer = '') {
     chatMessagesCache = msgsData.messages || [];
 
     content.innerHTML = `
-      <div class="page-title" style="display:flex;justify-content:space-between;align-items:center;gap:12px"> 
+      <div class="page-title" style="display:flex;justify-content:space-between;align-items:center;gap:12px">
         <span>Chat <span id="chat-header-label" style="font-size:14px;color:var(--muted);font-weight:600">${escHtml(chatHeaderLabel())}</span></span>
         <div class="chat-actions">
           <button class="action-btn" onclick="openChatRoomDialog()">+ New room</button>
@@ -2746,34 +3070,45 @@ async function switchDirectMessage(peer) {
   await renderChat(currentChatRoom || 'general', peer);
 }
 
-function closeChatDialog() {
-  const el = document.getElementById('chat-modal-backdrop');
+function closeAppDialog() {
+  const el = document.getElementById('app-modal-backdrop');
   if (el) el.remove();
 }
 
-function openChatDialog({title, description, placeholder, submitText, onSubmit}) {
-  closeChatDialog();
+function closeChatDialog() {
+  closeAppDialog();
+}
+
+function openAppDialog({title, description, placeholder = '', submitText = 'Continue',
+                        initialValue = '', showInput = true, danger = false, onSubmit}) {
+  closeAppDialog();
   const overlay = document.createElement('div');
-  overlay.id = 'chat-modal-backdrop';
+  overlay.id = 'app-modal-backdrop';
   overlay.className = 'modal-backdrop';
+  const inputHtml = showInput
+    ? `<input id="app-dialog-input" type="text" placeholder="${escHtml(placeholder)}" value="${escHtml(initialValue)}" autocomplete="off">`
+    : '';
+  const submitStyle = danger
+    ? 'width:auto;padding:9px 18px;background:var(--danger)'
+    : 'width:auto;padding:9px 18px';
   overlay.innerHTML = `
     <div class="chat-dialog" role="dialog" aria-modal="true">
       <h3>${escHtml(title)}</h3>
       <p>${escHtml(description)}</p>
-      <input id="chat-dialog-input" type="text" placeholder="${escHtml(placeholder)}" autocomplete="off">
-      <div id="chat-dialog-error" class="error-msg" style="display:none"></div>
+      ${inputHtml}
+      <div id="app-dialog-error" class="error-msg" style="display:none"></div>
       <div class="chat-dialog-actions">
-        <button class="action-btn" type="button" id="chat-dialog-cancel">Cancel</button>
-        <button class="btn btn-primary" type="button" id="chat-dialog-submit" style="width:auto;padding:9px 18px">${escHtml(submitText)}</button>
+        <button class="action-btn" type="button" id="app-dialog-cancel">Cancel</button>
+        <button class="btn btn-primary" type="button" id="app-dialog-submit" style="${submitStyle}">${escHtml(submitText)}</button>
       </div>
     </div>`;
   document.body.appendChild(overlay);
-  const input = overlay.querySelector('#chat-dialog-input');
-  const err = overlay.querySelector('#chat-dialog-error');
+  const input = overlay.querySelector('#app-dialog-input');
+  const err = overlay.querySelector('#app-dialog-error');
   const submit = async () => {
     err.style.display = 'none';
     err.textContent = '';
-    const value = input.value.trim();
+    const value = input ? input.value.trim() : '';
     try {
       await onSubmit(value, err);
     } catch (_) {
@@ -2781,14 +3116,66 @@ function openChatDialog({title, description, placeholder, submitText, onSubmit})
       err.style.display = 'block';
     }
   };
-  overlay.querySelector('#chat-dialog-cancel').addEventListener('click', closeChatDialog);
-  overlay.querySelector('#chat-dialog-submit').addEventListener('click', submit);
-  overlay.addEventListener('click', e => { if (e.target === overlay) closeChatDialog(); });
-  input.addEventListener('keydown', e => {
-    if (e.key === 'Enter') submit();
-    if (e.key === 'Escape') closeChatDialog();
+  overlay.querySelector('#app-dialog-cancel').addEventListener('click', closeAppDialog);
+  overlay.querySelector('#app-dialog-submit').addEventListener('click', submit);
+  overlay.addEventListener('click', e => { if (e.target === overlay) closeAppDialog(); });
+  overlay.addEventListener('keydown', e => {
+    if (e.key === 'Escape') closeAppDialog();
   });
-  input.focus();
+  if (input) {
+    input.addEventListener('keydown', e => {
+      if (e.key === 'Enter') submit();
+    });
+    input.focus();
+    input.select();
+  } else {
+    overlay.querySelector('#app-dialog-submit').focus();
+  }
+}
+
+function openChatDialog(opts) {
+  openAppDialog(opts);
+}
+
+function appPrompt({title, description, placeholder = '', submitText = 'Save', initialValue = ''}) {
+  return new Promise(resolve => {
+    openAppDialog({
+      title, description, placeholder, submitText, initialValue,
+      onSubmit: async (value, err) => {
+        if (!value) {
+          err.textContent = 'Please enter a value.';
+          err.style.display = 'block';
+          return;
+        }
+        closeAppDialog();
+        resolve(value);
+      }
+    });
+    const cancel = document.getElementById('app-dialog-cancel');
+    const overlay = document.getElementById('app-modal-backdrop');
+    const finishCancel = () => resolve(null);
+    cancel.addEventListener('click', finishCancel, { once: true });
+    overlay.addEventListener('click', e => { if (e.target === overlay) finishCancel(); });
+    overlay.addEventListener('keydown', e => { if (e.key === 'Escape') finishCancel(); });
+  });
+}
+
+function appConfirm({title, description, submitText = 'Confirm', danger = false}) {
+  return new Promise(resolve => {
+    openAppDialog({
+      title, description, submitText, danger, showInput: false,
+      onSubmit: async () => {
+        closeAppDialog();
+        resolve(true);
+      }
+    });
+    const cancel = document.getElementById('app-dialog-cancel');
+    const overlay = document.getElementById('app-modal-backdrop');
+    const finishCancel = () => resolve(false);
+    cancel.addEventListener('click', finishCancel, { once: true });
+    overlay.addEventListener('click', e => { if (e.target === overlay) finishCancel(); });
+    overlay.addEventListener('keydown', e => { if (e.key === 'Escape') finishCancel(); });
+  });
 }
 
 function openDirectMessageDialog() {
@@ -2931,7 +3318,7 @@ function mailFolderTabs(activeFolder, counts = {}) {
     </button>`).join('')}</div>`;
 }
 
-async function renderInbox(folder = 'inbox') {
+async function renderInbox(folder = 'inbox', _retry = 0) {
   currentMailFolder = folder;
   const mySeq = ++inboxRenderSeq;
   const folders = ['inbox', 'sent', 'trash'];
@@ -2958,6 +3345,12 @@ async function renderInbox(folder = 'inbox') {
   const content = document.getElementById('content');
 
   if (!active.ok) {
+    if (_retry < 2) {
+      content.innerHTML = '<div class="spinner">Reconnecting to storage...</div>';
+      await new Promise(r => setTimeout(r, 1500));
+      if (mySeq !== inboxRenderSeq) return;
+      return renderInbox(folder, _retry + 1);
+    }
     if (!(await ensureBackendStorageAvailable())) return;
     content.innerHTML = '<p>Error loading mail.</p>';
     return;
@@ -3241,11 +3634,15 @@ async function sendEmail() {
 
   try {
     const attachmentIds = (composeAttachments || []).map(a => a.id).join(',');
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15000);
     const r = await fetch('/api/send', {
       method: 'POST',
       headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      signal: controller.signal,
       body: `to=${encodeURIComponent(to)}&subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}&attachment_ids=${encodeURIComponent(attachmentIds)}`
     });
+    clearTimeout(timeout);
     const data = await r.json();
     if (data.ok) {
       composeAttachments = [];
@@ -3257,7 +3654,7 @@ async function sendEmail() {
       errBox.style.display = 'block';
     }
   } catch (e) {
-    errBox.textContent = 'Send failed.';
+    errBox.textContent = e && e.name === 'AbortError' ? 'Send timed out. External SMTP may be blocked.' : 'Send failed.';
     errBox.style.display = 'block';
   } finally {
     sendInFlight = false;
@@ -3274,7 +3671,12 @@ async function addCurrentRecipientToContacts() {
   rememberComposeDraft();
   const email = document.getElementById('to-in').value.trim();
   if (!email) return showToast('Enter a recipient first.');
-  const name = prompt('Save contact as:');
+  const name = await appPrompt({
+    title: 'Save contact',
+    description: `Add ${email} to your PennCloud contacts.`,
+    placeholder: 'Display name',
+    submitText: 'Save contact'
+  });
   if (!name) return;
   const r = await fetch('/api/contacts/add', {
     method: 'POST',
@@ -3292,7 +3694,7 @@ async function addCurrentRecipientToContacts() {
 }
 
 
-async function renderDrive(folderPath = '/') {
+async function renderDrive(folderPath = '/', _retry = 0) {
   currentPath = folderPath;
   const content = document.getElementById('content');
   let r, quota;
@@ -3302,11 +3704,21 @@ async function renderDrive(folderPath = '/') {
       loadQuota(true)
     ]);
   } catch (_) {
+    if (_retry < 2) {
+      content.innerHTML = '<div class="spinner">Reconnecting to storage...</div>';
+      await new Promise(res => setTimeout(res, 1500));
+      return renderDrive(folderPath, _retry + 1);
+    }
     if (!(await ensureBackendStorageAvailable())) return;
     content.innerHTML = '<p>Error loading drive.</p>';
     return;
   }
   if (!r.ok) {
+    if (_retry < 2) {
+      content.innerHTML = '<div class="spinner">Reconnecting to storage...</div>';
+      await new Promise(res => setTimeout(res, 1500));
+      return renderDrive(folderPath, _retry + 1);
+    }
     if (!(await ensureBackendStorageAvailable())) return;
     content.innerHTML = '<p>Error loading drive.</p>';
     return;
@@ -3367,6 +3779,12 @@ function showUpload() { document.getElementById('file-input').click(); }
 async function uploadFile(input) {
   const file = input.files[0];
   if (!file) return;
+  const MAX_FILE_BYTES = 1024 * 1024 * 1024;
+  if (file.size > MAX_FILE_BYTES) {
+    showToast(`Upload blocked: file exceeds 1 GB server limit (${formatBytes(file.size)})`);
+    input.value = '';
+    return;
+  }
   const quota = await loadQuota(true);
   if (quota && quota.used_bytes + file.size > quota.limit_bytes) {
     showToast(`Upload blocked: quota exceeded by ${formatBytes(quota.used_bytes + file.size - quota.limit_bytes)}`);
@@ -3376,7 +3794,7 @@ async function uploadFile(input) {
   const fd = new FormData();
   fd.append('file', file);
   fd.append('path', currentPath);
-  showToast('Uploading...');
+  showToast('Uploading... (large files may take a few seconds)');
   const r = await fetch('/api/upload', { method: 'POST', body: fd });
   const data = await r.json();
   showToast(data.ok ? 'Uploaded!' : 'Upload failed: ' + (data.error || ''));
@@ -3395,7 +3813,14 @@ async function downloadFile(uid, name) {
 }
 
 async function renameItem(path) {
-  const newName = prompt('New name:');
+  const itemName = path.split('/').filter(Boolean).pop() || path;
+  const newName = await appPrompt({
+    title: 'Rename item',
+    description: `Choose a new name for ${itemName}.`,
+    placeholder: 'New name',
+    submitText: 'Rename',
+    initialValue: itemName
+  });
   if (!newName) return;
   const r = await fetch('/api/rename', {
     method: 'POST',
@@ -3413,13 +3838,15 @@ async function moveItem(srcPath) {
 
   const itemName = srcPath.split('/').filter(Boolean).pop() || srcPath;
   const pathParts = srcPath.split('/').filter(Boolean);
-  const parentPath = pathParts.length <= 1 ? null : '/' + pathParts.slice(0, -1).join('/');
+  const currentFolderPath = pathParts.length <= 1 ? '/' : '/' + pathParts.slice(0, -1).join('/');
+  const currentFolderParts = currentFolderPath.split('/').filter(Boolean);
+  const parentPath = currentFolderParts.length <= 1 ? '/' : '/' + currentFolderParts.slice(0, -1).join('/');
 
   const overlay = document.createElement('div');
   overlay.id = 'move-modal-overlay';
   overlay.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:9999;display:flex;align-items:center;justify-content:center';
 
-  const parentBtnHtml = (parentPath && parentPath !== srcPath)
+  const parentBtnHtml = (currentFolderPath !== '/')
     ? `<button data-dst="${escHtml(parentPath)}" class="move-quick-btn" style="text-align:left;padding:10px 14px;border:1px solid var(--border);border-radius:8px;background:var(--bg);cursor:pointer;width:100%;font-size:14px">
          ${driveInlineFolderIcon()}Parent folder&nbsp;<span style="font-size:12px;color:var(--muted)">${escHtml(parentPath)}</span>
        </button>`
@@ -3492,7 +3919,14 @@ async function execMove(srcPath, dstPath) {
 }
 
 async function deleteItem(path) {
-  if (!confirm('Delete this item?')) return;
+  const itemName = path.split('/').filter(Boolean).pop() || path;
+  const ok = await appConfirm({
+    title: 'Delete item?',
+    description: `Delete ${itemName}? This action cannot be undone.`,
+    submitText: 'Delete',
+    danger: true
+  });
+  if (!ok) return;
   const r = await fetch('/api/delete-path', {
     method: 'POST',
     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
@@ -3507,7 +3941,12 @@ async function deleteItem(path) {
 }
 
 async function makeFolder() {
-  const name = prompt('Folder name:');
+  const name = await appPrompt({
+    title: 'New folder',
+    description: `Create a folder in ${currentPath || '/'}.`,
+    placeholder: 'Folder name',
+    submitText: 'Create folder'
+  });
   if (!name) return;
   const r = await fetch('/api/mkdir', {
     method: 'POST',
@@ -3536,7 +3975,7 @@ async function renderSettings() {
       </div>
       <div class="compose-form" style="max-width:none">
         <h3 style="margin-bottom:16px;font-size:15px">Storage quota</h3>
-        <div style="font-size:13px;color:var(--muted);margin-bottom:12px">Explicit extra credit feature: per-user drive quota with upload enforcement.</div>
+        <div style="font-size:13px;color:var(--muted);margin-bottom:12px">per-user drive quota with upload enforcement.</div>
         <input id="quota-mb" type="number" min="1" max="1024" value="${quota ? Math.round(quota.limit_bytes / (1024 * 1024)) : 50}">
         <div style="font-size:13px;color:var(--muted);margin-bottom:12px">Currently using ${quota ? `${formatBytes(quota.used_bytes)} of ${formatBytes(quota.limit_bytes)}` : 'unknown'}.</div>
         <button class="btn btn-primary" style="width:auto;padding:9px 24px" onclick="updateQuota()">Save quota</button>
@@ -3791,13 +4230,31 @@ HttpResponse FEServer::handle_login(const HttpRequest& req) {
     return resp;
 }
 
-HttpResponse FEServer::handle_logout(const HttpRequest& req) {
+HttpResponse FEServer::handle_logout(const HttpRequest& req, const std::string& user) {
     std::string sid = req.cookie("sid");
-    if (!sid.empty()) sessions_->destroy(sid);
+    if (!sid.empty() && !user.empty()) {
+        sessions_->destroy(sid);
+    }
     HttpResponse resp = HttpResponse::json(R"({"ok":true})");
-    // Clear cookie
-    resp.headers["Set-Cookie"] = "sid=; Path=/; Max-Age=0; HttpOnly";
+    resp.set_cookie("sid", "", "/", true, 0);
     return resp;
+}
+
+HttpResponse FEServer::handle_session(const HttpRequest& req) {
+    std::string user;
+    SessionKVReadStatus st = sessions_->validate_status(req.cookie("sid"), user);
+    if (st == SessionKVReadStatus::Found) {
+        return HttpResponse::json("{\"ok\":true,\"authenticated\":true,\"user\":" +
+                                  json_str(user) + "}");
+    }
+    if (st == SessionKVReadStatus::Unavailable) {
+        HttpResponse r = HttpResponse::json(
+            R"({"ok":false,"authenticated":false,"error":"storage unavailable"})");
+        r.status_code = 503;
+        r.status_text = "Service Unavailable";
+        return r;
+    }
+    return HttpResponse::json(R"({"ok":true,"authenticated":false})");
 }
 
 HttpResponse FEServer::handle_signup(const HttpRequest& req) {
@@ -3852,11 +4309,22 @@ HttpResponse FEServer::handle_change_password(const HttpRequest& req) {
     std::string new_pw = params["new_password"];
     if (!valid_account_password(new_pw)) return invalid_password_response();
 
-    std::string stored = kv_->get_str(user, "pwd");
+    std::string stored;
+    KVReadStatus st = kv_->get_status(user, "pwd", stored);
+    if (st == KVReadStatus::Unavailable) {
+        return HttpResponse::json(
+            R"({"ok":false,"error":"Storage temporarily unavailable, please try again"})");
+    }
+    if (st == KVReadStatus::NotFound) {
+        return HttpResponse::error(401, "Unauthorized");
+    }
     if (stored != old_pw)
         return HttpResponse::json(R"({"ok":false,"error":"Wrong current password"})");
 
-    kv_->put(user, "pwd", new_pw);
+    if (!kv_->put(user, "pwd", new_pw)) {
+        return HttpResponse::json(
+            R"({"ok":false,"error":"Storage temporarily unavailable, please try again"})");
+    }
     return HttpResponse::json(R"({"ok":true})");
 }
 
@@ -3901,7 +4369,63 @@ HttpResponse FEServer::handle_admin_status(const HttpRequest&) {
     return HttpResponse::json(body);
 }
 
+HttpResponse FEServer::handle_admin_raw(const HttpRequest& req) {
+    auto parse_size_param = [&](const std::string& name, size_t fallback,
+                                size_t min_value, size_t max_value) {
+        std::string raw = req.param(name);
+        if (raw.empty()) return fallback;
+        try {
+            size_t pos = 0;
+            unsigned long long parsed = std::stoull(raw, &pos, 10);
+            if (pos != raw.size()) return fallback;
+            size_t value = static_cast<size_t>(parsed);
+            if (value < min_value) return min_value;
+            if (value > max_value) return max_value;
+            return value;
+        } catch (...) {
+            return fallback;
+        }
+    };
+
+    const size_t limit = parse_size_param("limit", 25, 1, 200);
+    const size_t offset = parse_size_param("offset", 0, 0, static_cast<size_t>(-1));
+    AdminClusterSpec cluster = configured_cluster_spec_admin(cfg_);
+
+    std::string node_id = req.param("node");
+    if (node_id.empty() && !cluster.backends.empty()) node_id = cluster.backends.begin()->first;
+
+    auto it = cluster.backends.find(node_id);
+    if (it == cluster.backends.end()) {
+        HttpResponse r = HttpResponse::json(R"({"ok":false,"error":"unknown backend node"})");
+        r.status_code = 400;
+        r.status_text = "Bad Request";
+        return r;
+    }
+
+    const AdminBackendSpec& n = it->second;
+    std::string dump_json;
+    if (!query_kv_dump_json_admin("127.0.0.1", n.kv_port, limit, offset, dump_json)) {
+        HttpResponse r = HttpResponse::json("{\"ok\":false,\"error\":\"raw dump unavailable\",\"node\":" +
+                                            json_str(n.id) + "}");
+        r.status_code = 503;
+        r.status_text = "Service Unavailable";
+        return r;
+    }
+
+    std::string body = "{\"ok\":true,\"node\":" + json_str(n.id) +
+                       ",\"host\":\"127.0.0.1\",\"port\":" + std::to_string(n.kv_port) +
+                       ",\"dump\":" + dump_json + "}";
+    return HttpResponse::json(body);
+}
+
 HttpResponse FEServer::handle_admin_control(const HttpRequest& req) {
+    if (!admin_control_allowed(req)) {
+        HttpResponse r = HttpResponse::json(R"({"ok":false,"error":"admin control forbidden"})");
+        r.status_code = 403;
+        r.status_text = "Forbidden";
+        return r;
+    }
+
     std::string kind = admin_json_field(req.body, "kind");
     std::string action = admin_json_field(req.body, "action");
     std::string target = admin_json_field(req.body, "target");
@@ -3938,13 +4462,15 @@ HttpResponse FEServer::handle_admin_control(const HttpRequest& req) {
 }
 
 HttpResponse FEServer::handle_admin_control_redirect(const HttpRequest& req) {
+    if (!admin_control_allowed(req)) return HttpResponse::forbidden();
+
     std::string kind = req.param("kind");
     std::string action = req.param("action");
     std::string target = req.param("target");
 
     admin_log("control redirect request kind=" + kind + " action=" + action + " target=" + target);
 
-    std::string down = req.param("pc_down");
+    std::string down = admin_location_token(req.param("pc_down"));
     std::string host = req.header("host");
     if (host.empty()) host = "127.0.0.1";
     size_t colon = host.find(':');
@@ -3962,7 +4488,7 @@ HttpResponse FEServer::handle_admin_control_redirect(const HttpRequest& req) {
             {
                 // Use an external helper so kill+stub-launch survives after this
                 // process exits. FD_CLOEXEC on the listen socket keeps the helper
-                // from appearing in lsof as another listener on our own port.
+                // from inheriting our listener while it relaunches the stub.
                 int my_port = cfg_.port;
                 std::string fe_bin_loc = fe_binary_path_admin(resolve_project_root_admin());
                 int stub_peer = p.second; // redirect stub points to the peer we're handing off to
@@ -3971,16 +4497,15 @@ HttpResponse FEServer::handle_admin_control_redirect(const HttpRequest& req) {
                 run_shell_command(kill_and_stub);
             }
             std::string location = "http://" + host + ":" + std::to_string(p.second) + "/admin";
-            if (!down.empty()) location += "?pc_down=" + down + "," + target;
-            else               location += "?pc_down=" + target;
+            std::string safe_target = admin_location_token(target);
+            if (!down.empty()) location += "?pc_down=" + down + "," + safe_target;
+            else               location += "?pc_down=" + safe_target;
             admin_log("self-kill: killing " + target + " via shell subshell, redirecting browser to " + p.first);
-            // Force connection close: this process is about to be SIGKILLed.
-            // With HTTP keep-alive, the browser may hold the dying socket and
-            // mishandle the in-flight redirect when the kernel later tears the
-            // connection down asynchronously.
-            HttpResponse r = HttpResponse::redirect(location, 302);
-            r.headers["Connection"] = "close";
-            return r;
+            HttpResponse resp = HttpResponse::redirect(location, 302);
+            // Force close before SIGKILL so browsers do not reuse a dying socket
+            // and miss the redirect.
+            resp.headers["Connection"] = "close";
+            return resp;
         }
         // No real peer found — fall through to perform_admin_control (self-kill fallback)
     }
@@ -4017,7 +4542,7 @@ HttpResponse FEServer::handle_admin_control_redirect(const HttpRequest& req) {
             down += ids[i];
         }
     };
-    if (kind == "frontend" && action == "kill") add_down(target);
+    if (kind == "frontend" && action == "kill") add_down(admin_location_token(target));
 
     int redirect_port = cfg_.port;
     if (kind == "frontend" && action == "kill" && target_port == cfg_.port) {
@@ -4035,7 +4560,9 @@ HttpResponse FEServer::handle_admin_control_redirect(const HttpRequest& req) {
         location += has_q ? "&" : "?";
         location += std::string("pc_msg=") + (ok ? "ok" : "failed");
     }
-    return HttpResponse::redirect(location, 302);
+    HttpResponse resp = HttpResponse::redirect(location, 302);
+    if (kind == "frontend" && action == "kill") resp.headers["Connection"] = "close";
+    return resp;
 }
 
 HttpResponse FEServer::handle_admin_metrics(const HttpRequest& req) {
@@ -4051,34 +4578,68 @@ HttpResponse FEServer::handle_admin_page(const HttpRequest&) {
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>PennCloud Admin</title>
   <style>
+    :root {
+      --penn-blue: #011F5B;
+      --penn-blue-2: #0A2D72;
+      --accent: #1464C8;
+      --bg: #F4F7FB;
+      --surface: #FFFFFF;
+      --border: #DDE6F1;
+      --text: #182235;
+      --muted: #6C7A8C;
+      --success: #167246;
+      --danger: #C93636;
+      --shadow-sm: 0 8px 22px rgba(1,31,91,0.07);
+    }
+    *, *::before, *::after {
+      box-sizing: border-box;
+    }
     body {
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: #f5f7fa;
-      color: #1a202c;
+      background:
+        radial-gradient(circle at 12% 0%, rgba(20,100,200,0.09), transparent 28%),
+        linear-gradient(180deg, #FAFCFF 0%, var(--bg) 280px);
+      color: var(--text);
       margin: 0;
-      padding: 24px;
+      padding: 28px;
+      min-height: 100vh;
+      -webkit-font-smoothing: antialiased;
+      text-rendering: optimizeLegibility;
     }
     h1 {
       margin: 0 0 20px 0;
-      color: #011F5B;
-      font-size: 28px;
+      color: var(--penn-blue);
+      font-size: 30px;
+      letter-spacing: -0.5px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    h1::before {
+      content: "";
+      width: 12px;
+      height: 12px;
+      border-radius: 999px;
+      background: linear-gradient(180deg, #42A5FF, var(--accent));
+      box-shadow: 0 0 0 5px rgba(20,100,200,0.11);
     }
     h2 {
-      margin: 24px 0 12px 0;
-      color: #011F5B;
+      margin: 26px 0 12px 0;
+      color: var(--penn-blue);
       font-size: 20px;
+      letter-spacing: -0.25px;
     }
     .meta {
-      color: #718096;
+      color: var(--muted);
       font-size: 14px;
-      margin-bottom: 16px;
+      margin-bottom: 18px;
     }
     .card {
-      background: white;
-      border: 1px solid #e2e8f0;
-      border-radius: 12px;
+      background: rgba(255,255,255,0.94);
+      border: 1px solid var(--border);
+      border-radius: 16px;
       overflow: hidden;
-      box-shadow: 0 6px 20px rgba(0,0,0,0.04);
+      box-shadow: var(--shadow-sm);
       margin-bottom: 18px;
     }
     table {
@@ -4086,35 +4647,134 @@ HttpResponse FEServer::handle_admin_page(const HttpRequest&) {
       border-collapse: collapse;
     }
     th, td {
-      padding: 12px 14px;
-      border-bottom: 1px solid #e2e8f0;
+      padding: 13px 15px;
+      border-bottom: 1px solid var(--border);
       text-align: left;
       font-size: 14px;
     }
     th {
-      background: #f8fafc;
-      color: #4a5568;
+      background: #F8FBFF;
+      color: #46566B;
       font-weight: 700;
+      font-size: 12px;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+    }
+    tbody tr {
+      transition: background .12s, box-shadow .12s;
+    }
+    tbody tr:hover {
+      background: #F8FBFF;
+      box-shadow: inset 3px 0 0 rgba(20,100,200,0.14);
     }
     td button {
       margin-right: 6px;
-      padding: 5px 10px;
-      border: 1px solid #cbd5e0;
-      background: #fff;
-      border-radius: 6px;
+      padding: 6px 11px;
+      border: 1px solid var(--border);
+      background: #FBFDFF;
+      border-radius: 8px;
       cursor: pointer;
       font-size: 12px;
+      color: var(--text);
+      transition: background .12s, border-color .12s, transform .12s;
     }
-    td button:hover { background: #f8fafc; }
+    td button:hover {
+      background: #FFFFFF;
+      border-color: #B8C7DA;
+      transform: translateY(-1px);
+    }
     tr:last-child td {
       border-bottom: none;
     }
-    .alive { color: #1A6B3A; font-weight: 700; }
-    .down { color: #C53030; font-weight: 700; }
-    #status {
-      margin-top: 12px;
-      color: #718096;
+    .alive, .down {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 750;
+    }
+    .alive {
+      color: var(--success);
+      background: rgba(22,114,70,0.10);
+    }
+    .down {
+      color: var(--danger);
+      background: rgba(201,54,54,0.10);
+    }
+    .muted {
+      color: var(--muted);
+    }
+    .ok {
+      color: var(--success);
+      font-weight: 750;
+    }
+    .warn {
+      color: #9A5B00;
+      font-weight: 750;
+    }
+    .raw-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 15px;
+      border-bottom: 1px solid var(--border);
+      background: #F8FBFF;
+      flex-wrap: wrap;
+    }
+    .raw-toolbar label {
+      color: var(--muted);
       font-size: 13px;
+      font-weight: 700;
+    }
+    .raw-toolbar select {
+      min-width: 170px;
+      padding: 6px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: #FFFFFF;
+      color: var(--text);
+    }
+    .raw-toolbar button {
+      padding: 6px 11px;
+      border: 1px solid var(--border);
+      background: #FFFFFF;
+      border-radius: 8px;
+      cursor: pointer;
+      color: var(--text);
+    }
+    .raw-toolbar button:disabled {
+      cursor: not-allowed;
+      opacity: .55;
+    }
+    #raw-meta {
+      color: var(--muted);
+      font-size: 13px;
+      padding: 10px 15px;
+      border-bottom: 1px solid var(--border);
+    }
+    .preview {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 12px;
+      word-break: break-word;
+      max-width: 520px;
+    }
+    #status {
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 13px;
+      background: rgba(255,255,255,0.72);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      display: inline-flex;
+      padding: 8px 12px;
+      box-shadow: 0 5px 16px rgba(1,31,91,0.04);
+    }
+    @media (max-width: 860px) {
+      body { padding: 18px; }
+      .card { overflow-x: auto; }
+      table { min-width: 720px; }
     }
   </style>
 </head>
@@ -4132,7 +4792,6 @@ HttpResponse FEServer::handle_admin_page(const HttpRequest&) {
           <th>KV Port</th>
           <th>Repl Port</th>
           <th>Alive</th>
-          <th>Role</th>
           <th>LSN</th>
           <th>Missed</th>
           <th>Actions</th>
@@ -4177,9 +4836,54 @@ HttpResponse FEServer::handle_admin_page(const HttpRequest&) {
     </table>
   </div>
 
+  <h2>Replica Validation</h2>
+  <div class="card">
+    <table id="replica-table">
+      <thead>
+        <tr>
+          <th>Tablet</th>
+          <th>Total Copies</th>
+          <th>Distinct Servers</th>
+          <th>Live Copies</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
+  <h2>Raw KV Data</h2>
+  <div class="card">
+    <div class="raw-toolbar">
+      <label for="raw-node">Backend</label>
+      <select id="raw-node" onchange="handleRawNodeChange()"></select>
+      <button type="button" onclick="refreshRawData(true)">Refresh</button>
+      <button id="raw-prev" type="button" onclick="rawPrev()">Prev</button>
+      <button id="raw-next" type="button" onclick="rawNext()">Next</button>
+    </div>
+    <div id="raw-meta">Loading raw KV data</div>
+    <table id="raw-table">
+      <thead>
+        <tr>
+          <th>Tablet</th>
+          <th>Row</th>
+          <th>Column</th>
+          <th>Bytes</th>
+          <th>Preview</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+
   <div id="status">Loading…</div>
 
 <script>
+function adminTokenHeaders(headers = {}) {
+  const adminToken = new URLSearchParams(window.location.search || '').get('admin_token') || '';
+  if (adminToken) headers['X-Admin-Token'] = adminToken;
+  return headers;
+}
 function esc(s) {
   if (s === null || s === undefined) return "";
   return String(s)
@@ -4202,7 +4906,6 @@ function renderBackend(nodes) {
       <td>${esc(n.port)}</td>
       <td>${esc(n.repl_port)}</td>
       <td>${aliveCell(!!n.alive)}</td>
-      <td>${esc(n.role)}</td>
       <td>${esc(n.lsn)}</td>
       <td>${esc(n.missed)}</td>
       <td>
@@ -4281,6 +4984,161 @@ function renderTablets(tablets) {
     });
   }
 }
+
+let adminRawNode = '';
+let adminRawOffset = 0;
+let adminRawLimit = 25;
+let adminRawHasMore = false;
+let adminRawInFlight = false;
+let adminRawLoaded = false;
+
+function renderReplicaValidation(tablets) {
+  const tbody = document.querySelector('#replica-table tbody');
+  tbody.innerHTML = '';
+  if (!tablets || tablets.length === 0) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td colspan="5" class="muted">No tablet metadata reported</td>';
+    tbody.appendChild(tr);
+    return;
+  }
+  for (const t of tablets) {
+    const reps = t.replicas || [];
+    const ids = new Set();
+    let live = 0;
+    for (const r of reps) {
+      if (r && r.id) ids.add(String(r.id));
+      if (r && r.alive) live += 1;
+    }
+    const placementOk = reps.length >= 3 && ids.size >= 3;
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${esc(t.name)}</td>
+      <td>${esc(reps.length)}</td>
+      <td>${esc(ids.size)}</td>
+      <td>${esc(live)}</td>
+      <td class="${placementOk ? 'ok' : 'warn'}">${placementOk ? '3-copy placement OK' : 'Needs 3 distinct replicas'}</td>
+    `;
+    tbody.appendChild(tr);
+  }
+}
+
+function renderRawNodeOptions(nodes) {
+  const select = document.getElementById('raw-node');
+  if (!select) return;
+  const previous = adminRawNode || select.value || '';
+  const list = (nodes || []).filter(n => n && n.id);
+  let next = previous;
+  if (!next || !list.some(n => String(n.id) === String(next))) {
+    const preferred = list.find(n => n.alive) || list[0];
+    next = preferred ? String(preferred.id) : '';
+  }
+  if (next !== adminRawNode) {
+    adminRawNode = next;
+    adminRawOffset = 0;
+    adminRawLoaded = false;
+  }
+  select.innerHTML = '';
+  for (const n of list) {
+    const opt = document.createElement('option');
+    opt.value = String(n.id);
+    opt.textContent = `${n.id}:${n.port || ''} ${n.alive ? 'UP' : 'DOWN'}`;
+    select.appendChild(opt);
+  }
+  select.value = adminRawNode;
+  select.disabled = list.length === 0;
+}
+
+function renderRawData(payload) {
+  const tbody = document.querySelector('#raw-table tbody');
+  const meta = document.getElementById('raw-meta');
+  const prev = document.getElementById('raw-prev');
+  const next = document.getElementById('raw-next');
+  tbody.innerHTML = '';
+  const dump = payload && payload.dump ? payload.dump : {};
+  const cells = dump.cells || [];
+  adminRawHasMore = !!dump.has_more;
+  if (prev) prev.disabled = adminRawOffset === 0;
+  if (next) next.disabled = !adminRawHasMore;
+  meta.textContent = `${payload.node || adminRawNode} rows ${dump.offset || 0} through ${(dump.offset || 0) + cells.length} of ${dump.total || 0}`;
+  if (!cells.length) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = '<td colspan="5" class="muted">No cells on this backend page</td>';
+    tbody.appendChild(tr);
+    return;
+  }
+  for (const c of cells) {
+    const suffix = c.truncated ? ' ...' : '';
+    const format = c.preview_format === 'hex' ? 'hex: ' : '';
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${esc(c.tablet)}</td>
+      <td>${esc(c.row)}</td>
+      <td>${esc(c.column)}</td>
+      <td>${esc(c.value_size)}</td>
+      <td class="preview">${esc(format + (c.preview || '') + suffix)}</td>
+    `;
+    tbody.appendChild(tr);
+  }
+}
+
+async function refreshRawData(resetOffset) {
+  if (resetOffset) adminRawOffset = 0;
+  const meta = document.getElementById('raw-meta');
+  const tbody = document.querySelector('#raw-table tbody');
+  if (!adminRawNode) {
+    meta.textContent = 'No backend node available';
+    tbody.innerHTML = '<tr><td colspan="5" class="muted">No backend node available</td></tr>';
+    return;
+  }
+  if (adminRawInFlight) return;
+  adminRawInFlight = true;
+  try {
+    meta.textContent = `Loading ${adminRawNode} raw data...`;
+    const params = new URLSearchParams();
+    params.set('node', adminRawNode);
+    params.set('limit', String(adminRawLimit));
+    params.set('offset', String(adminRawOffset));
+    const r = await fetch(`/api/admin/raw?${params.toString()}`, {
+      cache: 'no-store',
+      headers: adminTokenHeaders({})
+    });
+    const data = await r.json();
+    if (!r.ok || !data.ok) throw new Error(data.error || `raw ${r.status}`);
+    adminRawLoaded = true;
+    renderRawData(data);
+  } catch (e) {
+    adminRawLoaded = false;
+    adminRawHasMore = false;
+    const prev = document.getElementById('raw-prev');
+    const next = document.getElementById('raw-next');
+    if (prev) prev.disabled = adminRawOffset === 0;
+    if (next) next.disabled = true;
+    meta.textContent = 'Raw KV data unavailable: ' + (e && e.message ? e.message : e);
+    tbody.innerHTML = '<tr><td colspan="5" class="muted">Unable to read this backend</td></tr>';
+  } finally {
+    adminRawInFlight = false;
+  }
+}
+
+function handleRawNodeChange() {
+  const select = document.getElementById('raw-node');
+  adminRawNode = select ? select.value : '';
+  adminRawOffset = 0;
+  adminRawLoaded = false;
+  refreshRawData(true);
+}
+
+function rawPrev() {
+  adminRawOffset = Math.max(0, adminRawOffset - adminRawLimit);
+  refreshRawData(false);
+}
+
+function rawNext() {
+  if (!adminRawHasMore) return;
+  adminRawOffset += adminRawLimit;
+  refreshRawData(false);
+}
+
 async function adminControl(kind, action, target) {
   if (kind === 'frontend' && action === 'kill') {
     adminFrontendKill(target);
@@ -4289,9 +5147,10 @@ async function adminControl(kind, action, target) {
   const status = document.getElementById('status');
   status.textContent = `Sending ${action} to ${target}...`;
   try {
+    const headers = adminTokenHeaders({'Content-Type': 'application/json'});
     const r = await fetch('/api/admin/control', {
       method: 'POST',
-      headers: {'Content-Type': 'application/json'},
+      headers,
       body: JSON.stringify({kind, action, target})
     });
     const text = await r.text();
@@ -4451,14 +5310,21 @@ async function refreshStatus() {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 2500);
   try {
-    const r = await fetch('/api/admin/status', { signal: controller.signal });
+    const r = await fetch('/api/admin/status', {
+      signal: controller.signal,
+      headers: adminTokenHeaders({})
+    });
     if (!r.ok) throw new Error('status ' + r.status);
     const data = await r.json();
     adminStatusFailures = 0;
     adminFrontendNodes = data.frontend_nodes || [];
-    renderBackend(data.backend_nodes || []);
+    const backendNodes = data.backend_nodes || [];
+    renderBackend(backendNodes);
     renderFrontend(data.frontend_nodes || []);
     renderTablets(data.tablets || []);
+    renderReplicaValidation(data.tablets || []);
+    renderRawNodeOptions(backendNodes);
+    if (!adminRawLoaded && !adminRawInFlight) refreshRawData(false);
     status.textContent = 'Last updated: ' + new Date().toLocaleTimeString();
   } catch (e) {
     adminStatusFailures += 1;
@@ -4491,6 +5357,10 @@ HttpResponse FEServer::handle_static(const HttpRequest& req) {
 
     std::string full = cfg_.static_dir + "/" + path;
     std::ifstream f(full, std::ios::binary);
+    if (!f && path == "logo.png") {
+        full = "logo.png";
+        f.open(full, std::ios::binary);
+    }
     if (!f) return HttpResponse::not_found();
 
     std::string content((std::istreambuf_iterator<char>(f)),
@@ -4514,7 +5384,7 @@ HttpResponse FEServer::handle_static(const HttpRequest& req) {
 // The SMTP server writes to "notify:{user}" col "latest" when new mail arrives.
 // We poll that key every 500ms and push SSE events on change.
 // ---------------------------------------------------------------------------
-void FEServer::handle_sse(int fd, const HttpRequest&, const std::string& user) {
+void FEServer::handle_sse(int fd, const HttpRequest& req, const std::string& user) {
     // Send SSE response headers
     std::string headers =
         "HTTP/1.1 200 OK\r\n"
@@ -4528,9 +5398,15 @@ void FEServer::handle_sse(int fd, const HttpRequest&, const std::string& user) {
 
     std::string last_notify;
     int keepalive_ticks = 0;
+    int auth_ticks = 0;
 
     while (running_) {
         std::this_thread::sleep_for(std::chrono::milliseconds(500));
+
+        if (++auth_ticks >= 30) {
+            auth_ticks = 0;
+            if (get_user(req) != user) break;
+        }
 
         // Check for new email notification
         std::string notify = kv_->get_str("notify:" + user, "latest");
@@ -4606,6 +5482,50 @@ std::string chat_join_csv(const std::vector<std::string>& items) {
     return out;
 }
 
+bool append_csv_item_cas(KVClient* kv, const std::string& row, const std::string& col,
+                         const std::string& item, bool prepend, size_t max_items) {
+    if (item.empty()) return false;
+    for (int attempt = 0; attempt < 16; ++attempt) {
+        std::string old_value;
+        KVReadStatus st = kv->get_status(row, col, old_value);
+        if (st == KVReadStatus::Unavailable) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(3));
+            continue;
+        }
+
+        auto items = chat_split_csv(old_value);
+        auto it = std::find(items.begin(), items.end(), item);
+        if (it != items.end()) {
+            if (!prepend) return true;
+            items.erase(it);
+            items.insert(items.begin(), item);
+        } else if (prepend) {
+            items.insert(items.begin(), item);
+        } else {
+            items.push_back(item);
+        }
+
+        if (max_items > 0 && items.size() > max_items) {
+            if (prepend) {
+                items.resize(max_items);
+            } else {
+                items.erase(items.begin(), items.begin() + static_cast<std::ptrdiff_t>(items.size() - max_items));
+            }
+        }
+
+        std::string next = chat_join_csv(items);
+        if (st == KVReadStatus::Found) {
+            if (next == old_value || kv->cput(row, col, old_value, next)) return true;
+        } else {
+            // Missing columns cannot be CPUT-created in this KV API.  Put once,
+            // then loop back and merge with CPUT so concurrent creators converge.
+            (void)kv->put(row, col, next);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(3));
+    }
+    return false;
+}
+
 const std::vector<std::string>& chat_default_room_names() {
     static const std::vector<std::string> kRooms = {"general", "team", "random"};
     return kRooms;
@@ -4665,21 +5585,7 @@ std::string chat_room_row(const std::string& room) { return "chat:room:" + room;
 std::string chat_message_row(const std::string& room, const std::string& id) { return "chat:msg:" + room + ":" + id; }
 
 bool append_chat_message_id(KVClient* kv, const std::string& room, const std::string& id) {
-    const std::string row = chat_room_row(room);
-    for (int attempt = 0; attempt < 8; ++attempt) {
-        std::string old_ids = kv->get_str(row, "ids");
-        auto ids = chat_split_csv(old_ids);
-        ids.push_back(id);
-        if (ids.size() > 200) ids.erase(ids.begin(), ids.begin() + (ids.size() - 200));
-        std::string next = chat_join_csv(ids);
-        if (old_ids.empty()) {
-            if (kv->put(row, "ids", next)) return true;
-        } else {
-            if (kv->cput(row, "ids", old_ids, next)) return true;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(2));
-    }
-    return false;
+    return append_csv_item_cas(kv, chat_room_row(room), "ids", id, false, 200);
 }
 
 std::string dm_canon_peer(const std::string& a, const std::string& b) {
@@ -4691,40 +5597,11 @@ std::string chat_dm_thread_row(const std::string& canon) { return "chat:dm:threa
 std::string chat_dm_message_row(const std::string& canon, const std::string& id) { return "chat:dm:msg:" + canon + ":" + id; }
 
 bool append_dm_peer(KVClient* kv, const std::string& user, const std::string& peer) {
-    const std::string row = chat_dm_row(user);
-    for (int attempt = 0; attempt < 8; ++attempt) {
-        std::string old_peers = kv->get_str(row, "peers");
-        auto peers = chat_split_csv(old_peers);
-        peers.erase(std::remove(peers.begin(), peers.end(), peer), peers.end());
-        peers.insert(peers.begin(), peer);
-        if (peers.size() > 100) peers.resize(100);
-        std::string next = chat_join_csv(peers);
-        if (old_peers.empty()) {
-            if (kv->put(row, "peers", next)) return true;
-        } else {
-            if (kv->cput(row, "peers", old_peers, next)) return true;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(2));
-    }
-    return false;
+    return append_csv_item_cas(kv, chat_dm_row(user), "peers", peer, true, 100);
 }
 
 bool append_dm_message_id(KVClient* kv, const std::string& canon, const std::string& id) {
-    const std::string row = chat_dm_thread_row(canon);
-    for (int attempt = 0; attempt < 8; ++attempt) {
-        std::string old_ids = kv->get_str(row, "ids");
-        auto ids = chat_split_csv(old_ids);
-        ids.push_back(id);
-        if (ids.size() > 200) ids.erase(ids.begin(), ids.begin() + (ids.size() - 200));
-        std::string next = chat_join_csv(ids);
-        if (old_ids.empty()) {
-            if (kv->put(row, "ids", next)) return true;
-        } else {
-            if (kv->cput(row, "ids", old_ids, next)) return true;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(2));
-    }
-    return false;
+    return append_csv_item_cas(kv, chat_dm_thread_row(canon), "ids", id, false, 200);
 }
 
 std::string chat_timestamp_now() {
@@ -4773,16 +5650,28 @@ size_t user_drive_quota_bytes(KVClient* kv, const std::string& user) {
     return parse_size_t_or(kv->get_str(drive_user_row(user), drive_quota_col()), kDefaultDriveQuotaBytes);
 }
 
-size_t subtree_file_bytes(KVClient* kv, const std::string& uid) {
+size_t subtree_file_bytes_inner(KVClient* kv, const std::string& uid,
+                                std::unordered_set<std::string>& seen,
+                                size_t depth) {
+    if (uid.empty() || depth > 4096 || !seen.insert(uid).second) return 0;
     std::string type = kv->get_str(drive_obj_row(uid), "type");
     if (type == "file") {
-        return parse_size_t_or(kv->get_str(drive_obj_row(uid), "size"), get_file_bytes(kv, uid).size());
+        std::string size_str = kv->get_str(drive_obj_row(uid), "size");
+        if (!size_str.empty()) {
+            return parse_size_t_or(size_str, 0);
+        }
+        return get_file_bytes(kv, uid).size();
     }
     size_t total = 0;
     for (const auto& child : split_csv(kv->get_str(drive_dir_row(uid), "children"))) {
-        total += subtree_file_bytes(kv, child);
+        total += subtree_file_bytes_inner(kv, child, seen, depth + 1);
     }
     return total;
+}
+
+size_t subtree_file_bytes(KVClient* kv, const std::string& uid) {
+    std::unordered_set<std::string> seen;
+    return subtree_file_bytes_inner(kv, uid, seen, 0);
 }
 
 size_t user_drive_used_bytes(KVClient* kv, const std::string& user) {
@@ -4887,13 +5776,40 @@ std::string parent_path(const std::string& path) {
     return path.substr(0, slash);
 }
 
+std::string path_basename(const std::string& path) {
+    if (path.empty() || path == "/") return "";
+    size_t end = path.find_last_not_of('/');
+    if (end == std::string::npos) return "";
+    size_t slash = path.rfind('/', end);
+    return path.substr(slash == std::string::npos ? 0 : slash + 1, end - (slash == std::string::npos ? 0 : slash + 1) + 1);
+}
+
 std::string join_path(const std::string& parent, const std::string& name) {
     if (parent.empty() || parent == "/") return "/" + name;
     return parent + "/" + name;
 }
 
 bool valid_component(const std::string& name) {
-    return !name.empty() && name.find('/') == std::string::npos && name != "." && name != "..";
+    if (name.empty() || name.find('/') != std::string::npos || name == "." || name == "..") return false;
+    for (unsigned char c : name) {
+        if (c < 0x20 || c == 0x7F) return false;
+    }
+    return true;
+}
+
+std::string content_disposition_attachment(const std::string& name) {
+    std::string escaped;
+    for (unsigned char c : name) {
+        if (c == '\r' || c == '\n') continue;
+        if (c < 0x20 || c == 0x7F) {
+            escaped.push_back('_');
+            continue;
+        }
+        if (c == '"' || c == '\\') escaped.push_back('\\');
+        escaped.push_back(static_cast<char>(c));
+    }
+    if (escaped.empty()) escaped = "download";
+    return "attachment; filename=\"" + escaped + "\"";
 }
 
 bool ensure_drive_root(KVClient* kv, const std::string& user, std::string& root_uid) {
@@ -4943,30 +5859,58 @@ bool resolve_path(KVClient* kv, const std::string& user, const std::string& path
     return true;
 }
 
-bool append_child(KVClient* kv, const std::string& dir_uid, const std::string& child_uid) {
-    for (int attempt = 0; attempt < 8; ++attempt) {
-        std::string old_children = kv->get_str(drive_dir_row(dir_uid), "children");
-        auto kids = split_csv(old_children);
-        if (std::find(kids.begin(), kids.end(), child_uid) == kids.end()) kids.push_back(child_uid);
-        std::string next = join_csv(kids);
-        if (old_children.empty()) {
-            if (kv->put(drive_dir_row(dir_uid), "children", next)) return true;
-        } else {
-            if (kv->cput(drive_dir_row(dir_uid), "children", old_children, next)) return true;
+bool resolve_move_destination(KVClient* kv, const std::string& user,
+                              const std::string& src_path,
+                              const std::string& requested_dst,
+                              std::string& dst_path_out,
+                              std::string& dst_uid_out,
+                              std::string& dst_type_out) {
+    std::vector<std::string> candidates;
+    auto add_candidate = [&](const std::string& p) {
+        if (p.empty()) return;
+        if (std::find(candidates.begin(), candidates.end(), p) == candidates.end()) {
+            candidates.push_back(p);
         }
-        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    };
+
+    add_candidate(requested_dst);
+    if (!requested_dst.empty() && requested_dst.front() != '/') {
+        add_candidate("/" + requested_dst);
+        add_candidate(join_path(parent_path(src_path), requested_dst));
+
+        std::string cur = parent_path(src_path);
+        while (!cur.empty() && cur != "/") {
+            if (path_basename(cur) == requested_dst) add_candidate(cur);
+            cur = parent_path(cur);
+        }
+    }
+
+    for (const auto& candidate : candidates) {
+        std::string uid, type;
+        if (resolve_path(kv, user, candidate, uid, &type) && type == "folder") {
+            dst_path_out = candidate;
+            dst_uid_out = uid;
+            dst_type_out = type;
+            return true;
+        }
     }
     return false;
 }
 
-bool remove_child(KVClient* kv, const std::string& dir_uid, const std::string& child_uid) {
+bool append_child(KVClient* kv, const std::string& dir_uid, const std::string& child_uid) {
+    return append_csv_item_cas(kv, drive_dir_row(dir_uid), "children", child_uid, false, 0);
+}
+
+bool remove_child(KVClient* kv, const std::string& dir_uid, const std::string& child_uid,
+                  bool require_present = false) {
     for (int attempt = 0; attempt < 8; ++attempt) {
         std::string old_children = kv->get_str(drive_dir_row(dir_uid), "children");
+        if (old_children.empty()) return !require_present;
         auto kids = split_csv(old_children);
+        const size_t before = kids.size();
         kids.erase(std::remove(kids.begin(), kids.end(), child_uid), kids.end());
+        if (kids.size() == before) return !require_present;
         std::string next = join_csv(kids);
-        if (old_children == next) return true;
-        if (old_children.empty()) return true;
         if (kv->cput(drive_dir_row(dir_uid), "children", old_children, next)) return true;
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
@@ -5001,19 +5945,32 @@ std::string build_path(KVClient* kv, const std::string& uid) {
     return path;
 }
 
-bool collect_subtree(KVClient* kv, const std::string& uid, std::vector<std::string>& out) {
+bool collect_subtree_inner(KVClient* kv, const std::string& uid, std::vector<std::string>& out,
+                           std::unordered_set<std::string>& seen, size_t depth) {
+    if (uid.empty() || depth > 4096 || !seen.insert(uid).second) return true;
     out.push_back(uid);
     if (kv->get_str(drive_obj_row(uid), "type") != "folder") return true;
     for (const auto& child : split_csv(kv->get_str(drive_dir_row(uid), "children"))) {
-        if (!collect_subtree(kv, child, out)) return false;
+        if (!collect_subtree_inner(kv, child, out, seen, depth + 1)) return false;
     }
     return true;
 }
 
+bool collect_subtree(KVClient* kv, const std::string& uid, std::vector<std::string>& out) {
+    std::unordered_set<std::string> seen;
+    return collect_subtree_inner(kv, uid, out, seen, 0);
+}
+
 bool is_descendant_of(KVClient* kv, const std::string& possible_descendant, const std::string& ancestor) {
     std::string cur = possible_descendant;
+    std::unordered_set<std::string> seen;
+    size_t depth = 0;
     while (!cur.empty()) {
         if (cur == ancestor) return true;
+        if (++depth > 4096 || !seen.insert(cur).second) {
+            std::cerr << "[drive] parent cycle detected while checking move\n";
+            return true;
+        }
         cur = kv->get_str(drive_obj_row(cur), "parent");
     }
     return false;
@@ -5298,7 +6255,7 @@ HttpResponse FEServer::handle_download(const HttpRequest&, const std::string& us
 
     HttpResponse resp = HttpResponse::ok(get_file_bytes(kv_.get(), uid), "application/octet-stream");
     std::string name = kv_->get_str(drive_obj_row(uid), "name");
-    if (!name.empty()) resp.headers["Content-Disposition"] = "attachment; filename=\"" + name + "\"";
+    if (!name.empty()) resp.headers["Content-Disposition"] = content_disposition_attachment(name);
     return resp;
 }
 
@@ -5331,9 +6288,9 @@ HttpResponse FEServer::handle_move(const HttpRequest& req, const std::string& us
         return HttpResponse::json(R"({"ok":false,"error":"invalid move request"})");
     }
 
-    std::string uid, type, dst_uid, dst_type;
+    std::string uid, type, dst_uid, dst_type, resolved_dst_path;
     if (!resolve_path(kv_.get(), user, src_path, uid, &type) ||
-        !resolve_path(kv_.get(), user, dst_path, dst_uid, &dst_type) || dst_type != "folder") {
+        !resolve_move_destination(kv_.get(), user, src_path, dst_path, resolved_dst_path, dst_uid, dst_type)) {
         return HttpResponse::json(R"({"ok":false,"error":"move target not found"})");
     }
     std::string name = kv_->get_str(drive_obj_row(uid), "name");
@@ -5345,22 +6302,29 @@ HttpResponse FEServer::handle_move(const HttpRequest& req, const std::string& us
     }
     std::string old_parent = kv_->get_str(drive_obj_row(uid), "parent");
     if (old_parent == dst_uid) {
-        return HttpResponse::json("{\"ok\":true,\"path\":" + json_str(join_path(dst_path, name)) + "}");
+        return HttpResponse::json("{\"ok\":true,\"path\":" + json_str(join_path(resolved_dst_path, name)) + "}");
+    }
+    if (!remove_child(kv_.get(), old_parent, uid, true)) {
+        return HttpResponse::json(R"({"ok":false,"error":"move failed"})");
     }
     if (!append_child(kv_.get(), dst_uid, uid)) {
+        if (!append_child(kv_.get(), old_parent, uid)) {
+            std::cerr << "[drive] move rollback failed while restoring source listing for " << uid << "\n";
+        }
         return HttpResponse::json(R"({"ok":false,"error":"move failed"})");
     }
     if (!kv_->put(drive_obj_row(uid), "parent", dst_uid)) {
-        remove_child(kv_.get(), dst_uid, uid);
-        return HttpResponse::json(R"({"ok":false,"error":"move failed"})");
-    }
-    if (!remove_child(kv_.get(), old_parent, uid)) {
-        kv_->put(drive_obj_row(uid), "parent", old_parent);
-        remove_child(kv_.get(), dst_uid, uid);
+        bool removed_dst = remove_child(kv_.get(), dst_uid, uid);
+        bool restored_src = append_child(kv_.get(), old_parent, uid);
+        if (!removed_dst || !restored_src) {
+            std::cerr << "[drive] move rollback incomplete for " << uid
+                      << " removed_dst=" << removed_dst
+                      << " restored_src=" << restored_src << "\n";
+        }
         return HttpResponse::json(R"({"ok":false,"error":"move failed"})");
     }
     kv_->put(drive_obj_row(uid), "updated_at", chat_timestamp_now());
-    return HttpResponse::json("{\"ok\":true,\"path\":" + json_str(join_path(dst_path, name)) + "}");
+    return HttpResponse::json("{\"ok\":true,\"path\":" + json_str(join_path(resolved_dst_path, name)) + "}");
 }
 
 HttpResponse FEServer::handle_mkdir(const HttpRequest& req, const std::string& user) {
@@ -5408,7 +6372,7 @@ HttpResponse FEServer::handle_delete_path(const HttpRequest& req, const std::str
     }
 
     std::string parent_uid = kv_->get_str(drive_obj_row(uid), "parent");
-    if (!remove_child(kv_.get(), parent_uid, uid)) {
+    if (!remove_child(kv_.get(), parent_uid, uid, true)) {
         return HttpResponse::json(R"({"ok":false,"error":"delete failed"})");
     }
 
@@ -5445,7 +6409,11 @@ HttpResponse FEServer::handle_quota_status(const HttpRequest&, const std::string
 HttpResponse FEServer::handle_quota_update(const HttpRequest& req, const std::string& user) {
     auto params = parse_urlencoded(req.body);
     size_t limit_mb = parse_size_t_or(params["limit_mb"], 0);
-    if (limit_mb == 0 || limit_mb > 1024) {
+    // Hard cap: quota cannot exceed the HTTP body limit (128 MB).
+    // A quota above the HTTP limit is unreachable — the body parser rejects the
+    // request before the quota check runs.
+    constexpr size_t kMaxQuotaMB = 1024;
+    if (limit_mb == 0 || limit_mb > kMaxQuotaMB) {
         return HttpResponse::json(R"({"ok":false,"error":"limit must be between 1 and 1024 MB"})");
     }
     size_t new_limit = limit_mb * 1024ull * 1024ull;

@@ -10,5 +10,6 @@ pkill -KILL -f kvserver 2>/dev/null || true
 pkill -KILL -f '/coordinator/coordinator' 2>/dev/null || true
 sleep 0.5
 ./stop_abc_cluster.sh 2>/dev/null || true
+./stop_multi_tablet_cluster.sh 2>/dev/null || true
 
 echo "[demo] stopped."

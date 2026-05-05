@@ -1,6 +1,7 @@
 // session.h  --  Session management for PennCloud frontend
 
 
+#include <array>
 #include <string>
 #include <random>
 #include <sstream>
@@ -36,8 +37,10 @@ static constexpr int SESSION_TTL_SECONDS = 7 * 86400;  // 7 days
 
 inline std::string generate_sid() {
     std::ifstream urandom("/dev/urandom", std::ios::binary);
-    uint8_t buf[16];
-    urandom.read(reinterpret_cast<char*>(buf), 16);
+    std::array<uint8_t, 16> buf{};
+    if (!urandom.is_open()) return "";
+    urandom.read(reinterpret_cast<char*>(buf.data()), static_cast<std::streamsize>(buf.size()));
+    if (urandom.gcount() != static_cast<std::streamsize>(buf.size())) return "";
 
     std::ostringstream oss;
     for (uint8_t b : buf) {
@@ -63,6 +66,7 @@ public:
 
     std::string create(const std::string& username) {
         std::string sid = generate_sid();
+        if (sid.empty()) return "";
         std::string row = session_row(sid);
 
         if (!kv_put_(row, "user", username)) {
@@ -76,21 +80,23 @@ public:
         return sid;
     }
 
-    std::string validate(const std::string& sid) {
-        if (sid.empty() || sid.size() != 32) return "";
+    SessionKVReadStatus validate_status(const std::string& sid,
+                                        std::string& username_out) {
+        username_out.clear();
+        if (sid.empty() || sid.size() != 32) return SessionKVReadStatus::NotFound;
 
         std::string row = session_row(sid);
         std::string username, expiry;
 
         if (kv_get_status_) {
             auto s1 = retry_get_status(row, "user", username);
-            if (s1 != SessionKVReadStatus::Found) return "";
+            if (s1 != SessionKVReadStatus::Found) return s1;
 
             auto s2 = retry_get_status(row, "expiry", expiry);
-            if (s2 != SessionKVReadStatus::Found) return "";
+            if (s2 != SessionKVReadStatus::Found) return s2;
         } else {
-            if (!retry_get_legacy(row, "user", username)) return "";
-            if (!retry_get_legacy(row, "expiry", expiry)) return "";
+            if (!retry_get_legacy(row, "user", username)) return SessionKVReadStatus::NotFound;
+            if (!retry_get_legacy(row, "expiry", expiry)) return SessionKVReadStatus::NotFound;
         }
 
         long exp = 0;
@@ -98,13 +104,20 @@ public:
             exp = std::stol(expiry);
         } catch (...) {
             destroy(sid);
-            return "";
+            return SessionKVReadStatus::NotFound;
         }
 
         if (std::time(nullptr) > exp) {
             destroy(sid);
-            return "";
+            return SessionKVReadStatus::NotFound;
         }
+        username_out = username;
+        return SessionKVReadStatus::Found;
+    }
+
+    std::string validate(const std::string& sid) {
+        std::string username;
+        if (validate_status(sid, username) != SessionKVReadStatus::Found) return "";
         return username;
     }
 

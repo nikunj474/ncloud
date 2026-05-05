@@ -63,11 +63,13 @@ public:
     }
 
     int borrow() {
-        std::lock_guard<std::mutex> lk(mu_);
-        while (!conns_.empty()) {
-            int fd = conns_.front();
-            conns_.pop();
-            if (fd >= 0) return fd;
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            while (!conns_.empty()) {
+                int fd = conns_.front();
+                conns_.pop();
+                if (fd >= 0) return fd;
+            }
         }
         return connect_to_node();
     }
@@ -90,6 +92,8 @@ public:
     const NodeInfo& node() const { return node_; }
 
 private:
+    static constexpr int kDefaultSocketTimeoutMs = 350;
+
     NodeInfo        node_;
     std::queue<int> conns_;
     std::mutex      mu_;
@@ -110,8 +114,8 @@ private:
         }
 
         timeval tv{};
-        tv.tv_sec = 0;
-        tv.tv_usec = 350000; // 350 ms
+        tv.tv_sec = kDefaultSocketTimeoutMs / 1000;
+        tv.tv_usec = (kDefaultSocketTimeoutMs % 1000) * 1000;
         ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
         ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
@@ -130,12 +134,12 @@ class KVClient {
 public:
     KVClient(const std::string& host, int port)
         : current_(NodeInfo{host, port}),
-          pool_(std::make_unique<ConnectionPool>(current_)) {}
+          pool_(std::make_shared<ConnectionPool>(current_)) {}
 
     KVClient(const std::string& host, int port,
              const std::string& coord_host, int coord_port)
         : current_(NodeInfo{host, port}),
-          pool_(std::make_unique<ConnectionPool>(current_)),
+          pool_(std::make_shared<ConnectionPool>(current_)),
           coord_host_(coord_host),
           coord_port_(coord_port),
           use_coordinator_(coord_port > 0) {}
@@ -143,18 +147,19 @@ public:
     bool put(const std::string& row,
              const std::string& col,
              const std::string& val) {
+        const int timeout_ms = val.size() >= kLargeValueThresholdBytes
+                                 ? kLargeValueSocketTimeoutMs
+                                 : kDefaultSocketTimeoutMs;
         return exec_row(row, [&](int fd) {
             if (!send_put(fd, row, col, val)) return false;
             KVResponse resp = read_response(fd);
             return resp.ok;
-        });
+        }, timeout_ms);
     }
 
     KVReadStatus get_status(const std::string& row,
                             const std::string& col,
                             std::string& val_out) {
-        std::lock_guard<std::mutex> lk(mu_);
-
         constexpr int kAttempts = 4;
         constexpr int kSleepMs[kAttempts] = {0, 75, 150, 250};
 
@@ -165,15 +170,14 @@ public:
             if (use_coordinator_) {
                 NodeInfo primary_node;
                 if (lookup_primary(row, primary_node)) {
-                    bool changed = (primary_node.host != current_.host || primary_node.port != current_.port);
-                    current_ = primary_node;
-                    if (changed) rebuild_pool_locked(current_);
+                    install_target(primary_node, false);
                 }
             }
 
-            int fd = pool_->borrow();
+            auto pool = snapshot_pool();
+            int fd = pool ? pool->borrow() : -1;
             if (fd < 0) {
-                if (use_coordinator_) refresh_target_for_row_locked(row);
+                if (use_coordinator_) refresh_target_for_row(row, false);
                 std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs[attempt]));
                 continue;
             }
@@ -181,14 +185,14 @@ public:
             KVReadStatus st = do_get_once(fd, row, col, val_out);
 
             if (st == KVReadStatus::Found || st == KVReadStatus::NotFound) {
-                pool_->release(fd);
+                pool->release(fd);
                 return st;
             }
 
             // Unavailable — primary unreachable, retry with fresh target
             ::close(fd);
-            rebuild_pool_locked(current_);
-            if (use_coordinator_) refresh_target_for_row_locked(row);
+            rebuild_current_pool();
+            if (use_coordinator_) refresh_target_for_row(row, false);
             std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs[attempt]));
         }
 
@@ -227,8 +231,8 @@ public:
     }
 
     bool ping(uint64_t& lsn_out) {
-        std::lock_guard<std::mutex> lk(mu_);
-        int fd = pool_->borrow();
+        auto pool = snapshot_pool();
+        int fd = pool ? pool->borrow() : -1;
         if (fd < 0) return false;
 
         bool ok = false;
@@ -250,55 +254,71 @@ public:
         }
 
         if (ok) {
-            pool_->release(fd);
+            pool->release(fd);
         } else {
             ::close(fd);
-            rebuild_pool_locked(current_);
+            rebuild_current_pool();
         }
         return ok;
     }
 
 private:
+    static constexpr int kDefaultSocketTimeoutMs = 350;
+    static constexpr int kLargeValueSocketTimeoutMs = 5000;
+    static constexpr size_t kLargeValueThresholdBytes = 256 * 1024;
+
     std::mutex                      mu_;
     NodeInfo                        current_;
-    std::unique_ptr<ConnectionPool> pool_;
+    std::shared_ptr<ConnectionPool> pool_;
     std::string                     coord_host_;
     int                             coord_port_ = 0;
     bool                            use_coordinator_ = false;
 
     template <typename Op>
-    bool exec_row(const std::string& row, Op op) {
-        std::lock_guard<std::mutex> lk(mu_);
-
+    bool exec_row(const std::string& row, Op op, int socket_timeout_ms = kDefaultSocketTimeoutMs) {
         constexpr int kAttempts = 4;
         constexpr int kSleepMs[kAttempts] = {0, 75, 150, 250};
 
         if (use_coordinator_) {
-            refresh_target_for_row_locked(row);
+            refresh_target_for_row(row, true);
         }
 
         for (int attempt = 0; attempt < kAttempts; ++attempt) {
-            int fd = pool_->borrow();
+            auto pool = snapshot_pool();
+            int fd = pool ? pool->borrow() : -1;
 
             if (fd >= 0) {
+                set_socket_timeout(fd, socket_timeout_ms);
                 bool ok = op(fd);
                 if (ok) {
-                    pool_->release(fd);
+                    if (socket_timeout_ms != kDefaultSocketTimeoutMs) {
+                        set_socket_timeout(fd, kDefaultSocketTimeoutMs);
+                    }
+                    pool->release(fd);
                     return true;
                 }
 
                 ::close(fd);
-                rebuild_pool_locked(current_);
+                rebuild_current_pool();
             }
 
             if (use_coordinator_) {
-                refresh_target_for_row_locked(row);
+                refresh_target_for_row(row, true);
             }
 
             std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs[attempt]));
         }
 
         return false;
+    }
+
+    static void set_socket_timeout(int fd, int timeout_ms) {
+        if (fd < 0) return;
+        timeval tv{};
+        tv.tv_sec = timeout_ms / 1000;
+        tv.tv_usec = (timeout_ms % 1000) * 1000;
+        ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
     }
 
     KVReadStatus do_get_once(int fd,
@@ -330,12 +350,60 @@ private:
         return KVReadStatus::Unavailable;
     }
 
-    void rebuild_pool_locked(const NodeInfo& node) {
-        pool_.reset();
-        pool_ = std::make_unique<ConnectionPool>(node);
+    std::shared_ptr<ConnectionPool> snapshot_pool() {
+        std::lock_guard<std::mutex> lk(mu_);
+        return pool_;
     }
 
-    bool refresh_target_for_row_locked(const std::string& row) {
+    void rebuild_current_pool() {
+        NodeInfo target;
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            target = current_;
+        }
+        auto fresh_pool = std::make_shared<ConnectionPool>(target);
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            if (same_node(current_, target)) pool_ = std::move(fresh_pool);
+        }
+    }
+
+    bool install_target(const NodeInfo& node, bool log_result) {
+        bool changed = false;
+        while (true) {
+            {
+                std::lock_guard<std::mutex> lk(mu_);
+                changed = !pool_ || !same_node(node, current_);
+                if (!changed) break;
+            }
+
+            auto fresh_pool = std::make_shared<ConnectionPool>(node);
+
+            {
+                std::lock_guard<std::mutex> lk(mu_);
+                if (!pool_ || !same_node(node, current_)) {
+                    current_ = node;
+                    pool_ = std::move(fresh_pool);
+                    changed = true;
+                    break;
+                }
+            }
+        }
+
+        if (log_result) {
+            std::cout << "[kv_client] "
+                      << (changed ? "refreshed" : "revalidated")
+                      << " KV write target to " << node.host << ":" << node.port
+                      << "\n";
+        }
+        return true;
+    }
+
+    static bool same_node(const NodeInfo& a, const NodeInfo& b) {
+        return a.host == b.host && a.port == b.port;
+    }
+
+    bool refresh_target_for_row(const std::string& row, bool log_result) {
         if (!use_coordinator_ || coord_host_.empty() || coord_port_ <= 0)
             return false;
 
@@ -345,16 +413,7 @@ private:
         NodeInfo node;
         for (int i = 0; i < kLookupAttempts; ++i) {
             if (lookup_primary(row, node)) {
-                bool changed = (node.host != current_.host || node.port != current_.port);
-                current_ = node;
-
-                rebuild_pool_locked(current_);
-
-                std::cout << "[kv_client] "
-                          << (changed ? "refreshed" : "revalidated")
-                          << " KV write target to " << current_.host << ":" << current_.port
-                          << "\n";
-                return true;
+                return install_target(node, log_result);
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs[i]));
         }

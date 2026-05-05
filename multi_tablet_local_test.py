@@ -44,7 +44,7 @@ def main():
         "--port", "5055",
         "--data", DATA,
         "--tablet", "tabletA:a:m",
-        "--tablet", "tabletB:n:zzzzz",
+        "--tablet", "tabletB:n:",
     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
     try:

@@ -1,27 +1,23 @@
 // smtp_client.h -- outbound SMTP client
 //
 // Modes:
-//   1) relay  -> authenticated SMTP relay/submission via libcurl
-//   2) direct -> direct MX delivery on port 25 (existing/fallback path)
+//   direct -> direct MX delivery on port 25
 //
 // Environment variables:
 //   SMTP_MODE=relay|direct
 //
-// Relay mode:
-//   SMTP_RELAY_HOST=smtp.gmail.com
-//   SMTP_RELAY_PORT=587
-//   SMTP_RELAY_USER=your_email@gmail.com
-//   SMTP_RELAY_PASS=app_password
-//   SMTP_RELAY_FROM=your_email@gmail.com
-//
 // Notes:
-// - Relay mode is the practical fix when direct MX port 25 is blocked.
-// - For Gmail, use an App Password, not the normal account password. From hw
+// - The course container has no libcurl/OpenSSL, so Gmail-style STARTTLS relay
+//   is intentionally not compiled in. If SMTP_MODE=relay is set accidentally,
+//   the sender falls back to direct MX delivery.
 
 #include <arpa/inet.h>
 #include <arpa/nameser.h>
+#include <cerrno>
+#include <fcntl.h>
 #include <netdb.h>
 #include <resolv.h>
+#include <sys/select.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -31,13 +27,13 @@
 #include <cstring>
 #include <ctime>
 #include <cstdlib>
+#include <iomanip>
+#include <random>
 #include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
 #include <iostream>
-
-#include <curl/curl.h>
 
 struct SMTPExternalResult {
     bool ok = false;
@@ -56,6 +52,41 @@ inline std::string trim(std::string s) {
     while (a < b && std::isspace(static_cast<unsigned char>(s[a]))) ++a;
     while (b > a && std::isspace(static_cast<unsigned char>(s[b - 1]))) --b;
     return s.substr(a, b - a);
+}
+
+inline std::string lower_copy(std::string s) {
+    for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+
+inline std::string recipient_domain_for(const std::string& addr) {
+    auto at = addr.find('@');
+    if (at == std::string::npos || at + 1 >= addr.size()) return "";
+    return lower_copy(trim(addr.substr(at + 1)));
+}
+
+inline bool domain_matches_direct_list(const std::string& domain, const char* csv) {
+    if (domain.empty() || !csv || !*csv) return false;
+    std::istringstream ss(csv);
+    std::string tok;
+    while (std::getline(ss, tok, ',')) {
+        tok = lower_copy(trim(tok));
+        if (tok.empty()) continue;
+        if (domain == tok) return true;
+        if (domain.size() > tok.size() &&
+            domain.compare(domain.size() - tok.size(), tok.size(), tok) == 0 &&
+            domain[domain.size() - tok.size() - 1] == '.') {
+            return true;
+        }
+    }
+    return false;
+}
+
+inline bool env_flag_enabled(const char* key, bool fallback) {
+    const char* v = env_or_null(key);
+    if (!v) return fallback;
+    std::string s = lower_copy(trim(v));
+    return s == "1" || s == "true" || s == "yes" || s == "on";
 }
 
 inline std::string sanitize_header_value(const std::string& s) {
@@ -97,46 +128,93 @@ inline bool starts_with(const std::string& s, const std::string& p) {
 
 // Relay mode via libcurl SMTP submission
 
-struct UploadStatus {
-    size_t bytes_read = 0;
-    std::string payload;
-};
-
-inline size_t curl_payload_source(char* ptr, size_t size, size_t nmemb, void* userp) {
-    size_t max = size * nmemb;
-    UploadStatus* st = static_cast<UploadStatus*>(userp);
-    if (!st || st->bytes_read >= st->payload.size()) return 0;
-
-    size_t remain = st->payload.size() - st->bytes_read;
-    size_t take = remain < max ? remain : max;
-    std::memcpy(ptr, st->payload.data() + st->bytes_read, take);
-    st->bytes_read += take;
-    return take;
-}
-
 inline std::string rfc2822_date_now() {
     std::time_t t = std::time(nullptr);
+    std::tm tm{};
+#if defined(_WIN32)
+    localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
     char buf[128];
-    std::strftime(buf, sizeof(buf), "%a, %d %b %Y %H:%M:%S %z", std::localtime(&t));
+    std::strftime(buf, sizeof(buf), "%a, %d %b %Y %H:%M:%S %z", &tm);
     return buf;
 }
 
-inline std::string message_id_now() {
-    auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                  std::chrono::system_clock::now().time_since_epoch()).count();
-    return "<" + std::to_string(ns) + "." + std::to_string(::getpid()) + "@penncloud.com>";
+inline std::string quote_header_phrase(std::string s) {
+    std::string out = "\"";
+    for (char c : s) {
+        if (c == '\\' || c == '"') out.push_back('\\');
+        if (c == '\r' || c == '\n') continue;
+        out.push_back(c);
+    }
+    out.push_back('"');
+    return out;
+}
+
+inline std::string sanitize_header_text(std::string s) {
+    std::string out;
+    out.reserve(s.size());
+    for (unsigned char c : s) {
+        if (c == '\r' || c == '\n') {
+            if (!out.empty() && out.back() != ' ') out.push_back(' ');
+            continue;
+        }
+        if (c < 0x20 || c == 0x7F) continue;
+        out.push_back(static_cast<char>(c));
+    }
+    return trim(out);
+}
+
+inline std::string relay_display_name_for(const std::string& original_sender) {
+    auto at = original_sender.find('@');
+    std::string local = at == std::string::npos ? original_sender : original_sender.substr(0, at);
+    local = trim(local);
+    if (local.empty()) return "PennCloud";
+    return "PennCloud " + local;
+}
+
+inline std::string domain_part_or(const std::string& addr, const std::string& fallback) {
+    auto at = addr.find('@');
+    if (at == std::string::npos || at + 1 >= addr.size()) return fallback;
+    std::string domain = trim(addr.substr(at + 1));
+    return domain.empty() ? fallback : domain;
+}
+
+inline std::string message_id_for(const std::string& from_addr) {
+    auto now = std::chrono::system_clock::now().time_since_epoch();
+    auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now).count();
+    static std::mt19937 rng(static_cast<unsigned>(ns));
+    std::uniform_int_distribution<unsigned> dist(0, 0xFFFFFF);
+    std::ostringstream oss;
+    oss << "<penncloud." << ns << "."
+        << std::hex << std::setw(6) << std::setfill('0') << dist(rng)
+        << "@" << domain_part_or(from_addr, "localhost") << ">";
+    return oss.str();
 }
 
 inline std::string build_message(const std::string& from_addr,
                                  const std::string& to_addr,
                                  const std::string& subject,
-                                 const std::string& body) {
+                                 const std::string& body,
+                                 const std::string& reply_to_addr = "",
+                                 const std::string& from_display = "",
+                                 const std::string& original_sender = "") {
     std::ostringstream oss;
-    oss << "From: <" << from_addr << ">\r\n";
+    oss << "From: ";
+    if (!from_display.empty()) oss << quote_header_phrase(from_display) << " ";
+    oss << "<" << from_addr << ">\r\n";
+    if (!reply_to_addr.empty() && reply_to_addr != from_addr) {
+        oss << "Reply-To: <" << reply_to_addr << ">\r\n";
+    }
+    if (!original_sender.empty() && original_sender != from_addr) {
+        oss << "X-PennCloud-From: <" << original_sender << ">\r\n";
+    }
     oss << "To: <" << to_addr << ">\r\n";
-    oss << "Subject: " << sanitize_header_value(subject) << "\r\n";
+    oss << "Subject: " << sanitize_header_text(subject) << "\r\n";
     oss << "Date: " << rfc2822_date_now() << "\r\n";
-    oss << "Message-ID: " << message_id_now() << "\r\n";
+    oss << "Message-ID: " << message_id_for(from_addr) << "\r\n";
+    oss << "X-Mailer: PennCloud\r\n";
     oss << "MIME-Version: 1.0\r\n";
     oss << "Content-Type: text/plain; charset=UTF-8\r\n";
     oss << "Content-Transfer-Encoding: 8bit\r\n";
@@ -157,78 +235,12 @@ inline std::string dot_stuff_data(const std::string& msg) {
     return out;
 }
 
-inline SMTPExternalResult smtp_send_via_relay(const std::string& from_addr,
-                                              const std::string& to_addr,
-                                              const std::string& subject,
-                                              const std::string& body) {
+inline SMTPExternalResult smtp_send_via_relay(const std::string& /*from_addr*/,
+                                              const std::string& /*to_addr*/,
+                                              const std::string& /*subject*/,
+                                              const std::string& /*body*/) {
     SMTPExternalResult res;
-
-    const char* host = env_or_null("SMTP_RELAY_HOST");
-    const char* port = env_or_null("SMTP_RELAY_PORT");
-    const char* user = env_or_null("SMTP_RELAY_USER");
-    const char* pass = env_or_null("SMTP_RELAY_PASS");
-    const char* from = env_or_null("SMTP_RELAY_FROM");
-
-    if (!host || !port || !user || !pass || !from) {
-        res.error = "relay env not fully configured";
-        return res;
-    }
-    if (!is_safe_mailbox(from) || !is_safe_mailbox(to_addr) || !is_safe_mailbox(from_addr)) {
-        res.error = "invalid SMTP address";
-        return res;
-    }
-
-    CURLcode ginit = curl_global_init(CURL_GLOBAL_DEFAULT);
-    if (ginit != CURLE_OK) {
-        res.error = std::string("curl_global_init failed: ") + curl_easy_strerror(ginit);
-        return res;
-    }
-
-    CURL* curl = curl_easy_init();
-    if (!curl) {
-        curl_global_cleanup();
-        res.error = "curl_easy_init failed";
-        return res;
-    }
-
-    std::string url = std::string("smtp://") + host + ":" + port;
-    UploadStatus upload;
-    upload.payload = build_message(from, to_addr, subject, body);
-
-    struct curl_slist* recipients = nullptr;
-    recipients = curl_slist_append(recipients, ("<" + to_addr + ">").c_str());
-
-    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-    curl_easy_setopt(curl, CURLOPT_USERNAME, user);
-    curl_easy_setopt(curl, CURLOPT_PASSWORD, pass);
-    curl_easy_setopt(curl, CURLOPT_USE_SSL, (long)CURLUSESSL_ALL);
-    curl_easy_setopt(curl, CURLOPT_MAIL_FROM, ("<" + std::string(from) + ">").c_str());
-    curl_easy_setopt(curl, CURLOPT_MAIL_RCPT, recipients);
-    curl_easy_setopt(curl, CURLOPT_READFUNCTION, curl_payload_source);
-    curl_easy_setopt(curl, CURLOPT_READDATA, &upload);
-    curl_easy_setopt(curl, CURLOPT_UPLOAD, 1L);
-    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT_MS, 5000L);
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT_MS, 15000L);
-    curl_easy_setopt(curl, CURLOPT_NOSIGNAL, 1L);
-
-    // Best-effort pragmatic defaults. For a demo/student project this is
-    // usually enough. Tightening verification can be done later if needed.
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 1L);
-    curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 2L);
-
-    std::cerr << "[smtp-relay] submitting via " << host << ":" << port
-              << " as " << user << "\n";
-
-    CURLcode rc = curl_easy_perform(curl);
-    if (rc == CURLE_OK) {
-        res.ok = true;
-    } else {
-        res.error = std::string("relay send failed: ") + curl_easy_strerror(rc);
-    }
-
-    curl_slist_free_all(recipients);
-    curl_easy_cleanup(curl);
-    curl_global_cleanup();
+    res.error = "SMTP relay mode is disabled in the course build; use direct MX delivery";
     return res;
 }
 
@@ -329,13 +341,37 @@ inline int connect_host_port(const std::string& host, int port, int timeout_ms =
         fd = ::socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
         if (fd < 0) continue;
 
-        timeval tv{};
-        tv.tv_sec = timeout_ms / 1000;
-        tv.tv_usec = (timeout_ms % 1000) * 1000;
-        ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-        ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+        int flags = ::fcntl(fd, F_GETFL, 0);
+        if (flags >= 0) ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 
-        if (::connect(fd, rp->ai_addr, rp->ai_addrlen) == 0) break;
+        bool connected = false;
+        int rc = ::connect(fd, rp->ai_addr, rp->ai_addrlen);
+        if (rc == 0) {
+            connected = true;
+        } else if (errno == EINPROGRESS) {
+            fd_set wfds;
+            FD_ZERO(&wfds);
+            FD_SET(fd, &wfds);
+            timeval tv{};
+            tv.tv_sec = timeout_ms / 1000;
+            tv.tv_usec = (timeout_ms % 1000) * 1000;
+            rc = ::select(fd + 1, nullptr, &wfds, nullptr, &tv);
+            if (rc > 0 && FD_ISSET(fd, &wfds)) {
+                int so_error = 0;
+                socklen_t len = sizeof(so_error);
+                connected = (::getsockopt(fd, SOL_SOCKET, SO_ERROR, &so_error, &len) == 0 && so_error == 0);
+            }
+        }
+
+        if (connected) {
+            if (flags >= 0) ::fcntl(fd, F_SETFL, flags);
+            timeval tv{};
+            tv.tv_sec = timeout_ms / 1000;
+            tv.tv_usec = (timeout_ms % 1000) * 1000;
+            ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+            ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+            break;
+        }
 
         ::close(fd);
         fd = -1;
@@ -487,7 +523,9 @@ inline SMTPExternalResult smtp_send_direct(const std::string& from_addr,
         mx.push_back({0, domain});
     }
 
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    if (mx.size() > 3) mx.resize(3);
+
+    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
 
     std::string last_err;
     for (const auto& rec : mx) {
@@ -517,10 +555,29 @@ inline SMTPExternalResult smtp_send_external(const std::string& from_addr,
                                              const std::string& subject,
                                              const std::string& body) {
     const char* mode = smtp_client_detail::env_or_null("SMTP_MODE");
+    const char* direct_domains = smtp_client_detail::env_or_null("SMTP_DIRECT_DOMAINS");
     std::string mode_s = mode ? mode : "direct";
 
+    if (smtp_client_detail::domain_matches_direct_list(
+            smtp_client_detail::recipient_domain_for(to_addr), direct_domains)) {
+        SMTPExternalResult direct = smtp_client_detail::smtp_send_direct(from_addr, to_addr, subject, body);
+        if (direct.ok || mode_s != "relay" ||
+            !smtp_client_detail::env_flag_enabled("SMTP_DIRECT_FALLBACK_RELAY", true)) {
+            return direct;
+        }
+        std::cerr << "[smtp] direct delivery failed for " << to_addr
+                  << " (" << direct.error << "); falling back to relay\n";
+        SMTPExternalResult relay = smtp_client_detail::smtp_send_via_relay(from_addr, to_addr, subject, body);
+        if (!relay.ok) {
+            relay.error = "direct delivery failed (" + direct.error + "); relay fallback failed (" + relay.error + ")";
+        }
+        return relay;
+    }
+
     if (mode_s == "relay") {
-        return smtp_client_detail::smtp_send_via_relay(from_addr, to_addr, subject, body);
+        std::cerr << "[smtp] SMTP_MODE=relay requested, but this course build has no TLS SMTP relay client; "
+                  << "falling back to direct MX delivery\n";
+        return smtp_client_detail::smtp_send_direct(from_addr, to_addr, subject, body);
     }
     return smtp_client_detail::smtp_send_direct(from_addr, to_addr, subject, body);
 }

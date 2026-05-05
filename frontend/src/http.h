@@ -29,6 +29,7 @@ struct HttpRequest {
     std::unordered_map<std::string, std::string> cookies;
     std::unordered_map<std::string, std::string> query_params;
     std::string body;        // raw body bytes
+    std::string remote_addr; // peer IP, filled by server after parsing
 
     // Convenience accessors
     std::string header(const std::string& name) const {
@@ -73,6 +74,7 @@ struct HttpResponse {
     int status_code = 200;
     std::string status_text = "OK";
     std::unordered_map<std::string, std::string> headers;
+    std::vector<std::string> set_cookies;
     std::string body;
     bool chunked = false;   // set for SSE or large streaming responses
 
@@ -118,25 +120,33 @@ struct HttpResponse {
                            + "; Path=" + path
                            + "; Max-Age=" + std::to_string(max_age);
         if (http_only) cookie += "; HttpOnly";
-        // Multiple Set-Cookie headers -- append index
-        headers["Set-Cookie"] = cookie;
+        set_cookies.push_back(std::move(cookie));
     }
 };
 
 // URL encoding / decoding
+
+inline int hex_digit_value(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
 
 inline std::string url_decode(const std::string& s) {
     std::string out;
     out.reserve(s.size());
     for (size_t i = 0; i < s.size(); ++i) {
         if (s[i] == '%' && i + 2 < s.size()) {
-            int val = 0;
-            for (int j = 1; j <= 2; ++j) {
-                char c = static_cast<char>(std::tolower(s[i + j]));
-                val = val * 16 + (c >= 'a' ? c - 'a' + 10 : c - '0');
+            int hi = hex_digit_value(s[i + 1]);
+            int lo = hex_digit_value(s[i + 2]);
+            if (hi >= 0 && lo >= 0) {
+                out += static_cast<char>((hi << 4) | lo);
+                i += 2;
+            } else {
+                out.append(s, i, 3);
+                i += 2;
             }
-            out += static_cast<char>(val);
-            i += 2;
         } else if (s[i] == '+') {
             out += ' ';
         } else {
@@ -204,10 +214,22 @@ parse_multipart(const std::string& body, const std::string& content_type_header)
     std::string boundary;
     auto bpos = content_type_header.find("boundary=");
     if (bpos == std::string::npos) return parts;
-    boundary = "--" + content_type_header.substr(bpos + 9);
-    // trim trailing whitespace/CR from boundary
-    while (!boundary.empty() && (boundary.back() == '\r' || boundary.back() == ' '))
-        boundary.pop_back();
+    std::string raw_boundary = content_type_header.substr(bpos + 9);
+    auto semi = raw_boundary.find(';');
+    if (semi != std::string::npos) raw_boundary = raw_boundary.substr(0, semi);
+    while (!raw_boundary.empty() &&
+           (raw_boundary.back() == '\r' || raw_boundary.back() == ' ' || raw_boundary.back() == '\t')) {
+        raw_boundary.pop_back();
+    }
+    while (!raw_boundary.empty() &&
+           (raw_boundary.front() == ' ' || raw_boundary.front() == '\t')) {
+        raw_boundary.erase(raw_boundary.begin());
+    }
+    if (raw_boundary.size() >= 2 && raw_boundary.front() == '"' && raw_boundary.back() == '"') {
+        raw_boundary = raw_boundary.substr(1, raw_boundary.size() - 2);
+    }
+    if (raw_boundary.empty()) return parts;
+    boundary = "--" + raw_boundary;
 
     std::string delim = "\r\n" + boundary;
     size_t pos = body.find(boundary);

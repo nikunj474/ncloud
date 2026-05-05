@@ -26,6 +26,27 @@ bool row_in_range(const std::string& row,
     if (!end.empty() && row >= end) return false;  // exclusive end, matches coordinator
     return true;
 }
+
+std::string kv_json_str(const std::string& s) {
+    std::string out = "\"";
+    static const char hex[] = "0123456789abcdef";
+    for (unsigned char c : s) {
+        if (c == '"') out += "\\\"";
+        else if (c == '\\') out += "\\\\";
+        else if (c == '\n') out += "\\n";
+        else if (c == '\r') out += "\\r";
+        else if (c == '\t') out += "\\t";
+        else if (c < 0x20) {
+            out += "\\u00";
+            out.push_back(hex[c >> 4]);
+            out.push_back(hex[c & 0x0f]);
+        } else {
+            out.push_back(static_cast<char>(c));
+        }
+    }
+    out += "\"";
+    return out;
+}
 }
 
 ThreadPool::ThreadPool(int n) {
@@ -186,7 +207,9 @@ void KVServer::run() {
 
     std::cout << "[kvserver] recovering hosted tablets...\n";
     for (auto& hosted : hosted_) {
-        hosted.tablet->recover();
+        if (!hosted.tablet->recover()) {
+            throw std::runtime_error("failed to recover tablet " + hosted.cfg.name);
+        }
         std::cout << "[kvserver] tablet ready: " << hosted.cfg.name
                   << " range=[" << hosted.cfg.row_start << "," << hosted.cfg.row_end << "]"
                   << " rows=" << hosted.tablet->row_count()
@@ -258,7 +281,7 @@ bool KVServer::checkpoint_all() {
 }
 
 void KVServer::handle_connection(int fd) {
-    struct timeval tv { .tv_sec = 0, .tv_usec = 250000 };
+    struct timeval tv { .tv_sec = 5, .tv_usec = 0 };
     ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
     while (running_ && handle_request(fd)) {}
@@ -356,6 +379,7 @@ bool KVServer::handle_request(int fd) {
         uint64_t max_lsn = 0;
         for (const auto& hosted : hosted_) max_lsn = std::max(max_lsn, hosted.tablet->lsn());
         return send("+OK LSN=" + std::to_string(max_lsn) +
+                    " PID=" + std::to_string(static_cast<long long>(::getpid())) +
                     " TABLETS=" + std::to_string(hosted_.size()) + "\r\n");
     }
 
@@ -372,6 +396,56 @@ bool KVServer::handle_request(int fd) {
                          + "ops="   + std::to_string(total_ops)  + " "
                          + "lsn="   + std::to_string(max_lsn)    + " "
                          + "tablets=" + std::to_string(hosted_.size()) + "\r\n";
+        return send("+OK " + std::to_string(body.size()) + "\r\n" + body);
+    }
+
+    if (op == "DUMP") {
+        size_t limit = 10;
+        size_t offset = 0;
+        ss >> limit >> offset;
+        if (limit == 0) limit = 10;
+        limit = std::min<size_t>(limit, 200);
+
+        std::vector<TabletDumpCell> cells;
+        for (const auto& hosted : hosted_) {
+            auto tablet_cells = hosted.tablet->dump_cells();
+            cells.insert(cells.end(),
+                         std::make_move_iterator(tablet_cells.begin()),
+                         std::make_move_iterator(tablet_cells.end()));
+        }
+        std::sort(cells.begin(), cells.end(), [](const TabletDumpCell& a, const TabletDumpCell& b) {
+            if (a.tablet != b.tablet) return a.tablet < b.tablet;
+            if (a.row != b.row) return a.row < b.row;
+            return a.col < b.col;
+        });
+
+        const size_t total = cells.size();
+        const size_t start = std::min(offset, total);
+        const size_t end = std::min(total, start + limit);
+        const bool has_more = end < total;
+
+        std::string body = "{\"total\":" + std::to_string(total) +
+                           ",\"offset\":" + std::to_string(start) +
+                           ",\"limit\":" + std::to_string(limit) +
+                           ",\"next_offset\":" + std::to_string(end) +
+                           ",\"has_more\":" + std::string(has_more ? "true" : "false") +
+                           ",\"cells\":[";
+        bool first = true;
+        for (size_t i = start; i < end; ++i) {
+            const auto& c = cells[i];
+            if (!first) body += ",";
+            first = false;
+            body += "{";
+            body += "\"tablet\":" + kv_json_str(c.tablet);
+            body += ",\"row\":" + kv_json_str(c.row);
+            body += ",\"column\":" + kv_json_str(c.col);
+            body += ",\"value_size\":" + std::to_string(c.value_size);
+            body += ",\"preview\":" + kv_json_str(c.value_preview);
+            body += ",\"preview_format\":" + kv_json_str(c.value_is_text ? "text" : "hex");
+            body += ",\"truncated\":" + std::string(c.truncated ? "true" : "false");
+            body += "}";
+        }
+        body += "]}";
         return send("+OK " + std::to_string(body.size()) + "\r\n" + body);
     }
 
@@ -400,7 +474,7 @@ void KVServer::repl_accept_loop() {
 }
 
 void KVServer::handle_repl_connection(int fd) {
-    struct timeval tv { .tv_sec = 0, .tv_usec = 250000 };
+    struct timeval tv { .tv_sec = 5, .tv_usec = 0 };
     ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     std::string line;
     while (running_) {

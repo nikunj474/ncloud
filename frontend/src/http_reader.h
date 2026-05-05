@@ -17,7 +17,30 @@
 #include <string>
 #include <sstream>
 #include <iostream>
+#include <cctype>
 #include <cerrno>
+
+inline std::string http_trim_copy(const std::string& s) {
+    size_t start = 0;
+    while (start < s.size() && std::isspace(static_cast<unsigned char>(s[start]))) ++start;
+    size_t end = s.size();
+    while (end > start && std::isspace(static_cast<unsigned char>(s[end - 1]))) --end;
+    return s.substr(start, end - start);
+}
+
+inline bool http_parse_size_t(const std::string& raw, int base, size_t& out) {
+    std::string s = http_trim_copy(raw);
+    if (s.empty() || s[0] == '+' || s[0] == '-') return false;
+    try {
+        size_t pos = 0;
+        unsigned long parsed = std::stoul(s, &pos, base);
+        if (pos != s.size()) return false;
+        out = static_cast<size_t>(parsed);
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
 
 // Read one \r\n-terminated line from fd (max 8KB)
 inline bool http_read_line(int fd, std::string& line) {
@@ -47,8 +70,22 @@ inline bool http_read_exact(int fd, std::string& out, size_t n) {
     return true;
 }
 
+inline bool http_write_all(int fd, const std::string& data) {
+    size_t sent = 0;
+    while (sent < data.size()) {
+        ssize_t n = ::send(fd, data.data() + sent, data.size() - sent, MSG_NOSIGNAL);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) return false;
+        sent += static_cast<size_t>(n);
+    }
+    return true;
+}
+
+static constexpr size_t kMaxRequestBodyBytes = 1024ull * 1024ull * 1024ull;  // 1 GB hard cap (raised from 128 MB to test large files)
+
 // Read a chunked body from socket
 inline bool read_chunked_body(int fd, std::string& body) {
+    static constexpr size_t kMaxChunkedBodyBytes = kMaxRequestBodyBytes;
     body.clear();
     while (true) {
         std::string size_line;
@@ -58,18 +95,18 @@ inline bool read_chunked_body(int fd, std::string& body) {
         if (semi != std::string::npos) size_line = size_line.substr(0, semi);
 
         size_t chunk_size = 0;
-        try {
-            size_t parsed = 0;
-            chunk_size = std::stoul(size_line, &parsed, 16);
-            if (parsed != size_line.size()) return false;
-        } catch (...) {
-            return false;
-        }
+        if (!http_parse_size_t(size_line, 16, chunk_size)) return false;
         if (chunk_size == 0) {
-            // Trailing CRLF after final chunk
-            std::string empty;
-            http_read_line(fd, empty);
+            // Consume optional trailers, ending with an empty line.
+            std::string trailer;
+            do {
+                if (!http_read_line(fd, trailer)) return false;
+            } while (!trailer.empty());
             return true;
+        }
+        if (chunk_size > kMaxChunkedBodyBytes ||
+            body.size() > kMaxChunkedBodyBytes - chunk_size) {
+            return false;
         }
 
         std::string chunk;
@@ -138,15 +175,17 @@ inline bool read_http_request(int fd, HttpRequest& req) {
         std::string cl_str = req.header("content-length");
         if (!cl_str.empty()) {
             size_t content_length = 0;
-            try {
-                size_t parsed = 0;
-                content_length = std::stoul(cl_str, &parsed, 10);
-                if (parsed != cl_str.size()) return false;
-            } catch (...) {
-                return false;
-            }
-            if (content_length > 64 * 1024 * 1024) {
-                // Reject bodies > 64MB
+            if (!http_parse_size_t(cl_str, 10, content_length)) return false;
+            if (content_length > kMaxRequestBodyBytes) {
+                // Send a proper 413 before closing so the browser gets an error
+                // instead of a silent dropped connection.
+                static const std::string k413 =
+                    "HTTP/1.1 413 Content Too Large\r\n"
+                    "Content-Type: application/json\r\n"
+                    "Content-Length: 46\r\n"
+                    "Connection: close\r\n\r\n"
+                    "{\"ok\":false,\"error\":\"file exceeds 1 GB limit\"}";
+                http_write_all(fd, k413);
                 return false;
             }
             if (!http_read_exact(fd, req.body, content_length)) return false;
@@ -159,17 +198,6 @@ inline bool read_http_request(int fd, HttpRequest& req) {
 // send_http_response: serialize HttpResponse to socket
 // Supports: Content-Length for normal responses,
 //           Transfer-Encoding: chunked for streaming (SSE)
-
-inline bool http_write_all(int fd, const std::string& out) {
-    size_t off = 0;
-    while (off < out.size()) {
-        ssize_t w = ::send(fd, out.data() + off, out.size() - off, MSG_NOSIGNAL);
-        if (w < 0 && errno == EINTR) continue;
-        if (w <= 0) return false;
-        off += static_cast<size_t>(w);
-    }
-    return true;
-}
 
 inline bool send_http_response(int fd, const HttpResponse& resp,
                                 bool is_head = false) {
@@ -198,6 +226,9 @@ inline bool send_http_response(int fd, const HttpResponse& resp,
         const std::string& v = header.second;
         if (k == "Connection") continue;
         out += k + ": " + v + "\r\n";
+    }
+    for (const auto& cookie : resp.set_cookies) {
+        out += "Set-Cookie: " + cookie + "\r\n";
     }
 
     // CORS header for API endpoints (useful during dev)

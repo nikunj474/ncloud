@@ -3,11 +3,14 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cctype>
 #include <ctime>
 #include <iomanip>
 #include <iostream>
 #include <random>
 #include <sstream>
+#include <thread>
+#include <cstdlib>
 
 namespace {
 
@@ -27,21 +30,34 @@ std::string new_uid_mail() {
 
 std::string now_str_mail() {
     auto t = std::time(nullptr);
+    std::tm tm{};
+#if defined(_WIN32)
+    localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
     char buf[64];
-    std::strftime(buf, sizeof(buf), "%b %d, %Y %H:%M", std::localtime(&t));
+    std::strftime(buf, sizeof(buf), "%b %d, %Y %H:%M", &tm);
     return buf;
 }
 
 std::string esc_json_mail(const std::string& s) {
     std::string out;
     out.reserve(s.size() + 16);
-    for (char c : s) {
+    static const char hex[] = "0123456789abcdef";
+    for (unsigned char c : s) {
         if (c == '"') out += "\\\"";
         else if (c == '\\') out += "\\\\";
         else if (c == '\n') out += "\\n";
         else if (c == '\r') out += "\\r";
         else if (c == '\t') out += "\\t";
-        else out += c;
+        else if (c < 0x20) {
+            out += "\\u00";
+            out += hex[c >> 4];
+            out += hex[c & 0x0F];
+        } else {
+            out += static_cast<char>(c);
+        }
     }
     return out;
 }
@@ -78,18 +94,53 @@ std::string normalize_folder(const std::string& folder) {
     return "inbox";
 }
 
+std::string lower_mail(std::string s) {
+    for (char& c : s) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return s;
+}
+
+std::string penncloud_mail_domain() {
+    const char* env = std::getenv("PENNCLOUD_MAIL_DOMAIN");
+    std::string domain = env && *env ? env : "penncloud.local";
+    domain = lower_mail(domain);
+    if (domain.empty() || domain.find('@') != std::string::npos ||
+        domain.find('/') != std::string::npos ||
+        domain.find('\r') != std::string::npos ||
+        domain.find('\n') != std::string::npos) {
+        return "penncloud.local";
+    }
+    return domain;
+}
+
+bool is_local_penncloud_domain(const std::string& domain_raw) {
+    std::string domain = lower_mail(domain_raw);
+    return domain == "penncloud" ||
+           domain == "penncloud.com" ||
+           domain == "penncloud.local" ||
+           domain == penncloud_mail_domain();
+}
+
+std::string mail_content_disposition_attachment(const std::string& name) {
+    std::string escaped;
+    for (unsigned char c : name) {
+        if (c == '\r' || c == '\n') continue;
+        if (c < 0x20 || c == 0x7F) {
+            escaped.push_back('_');
+            continue;
+        }
+        if (c == '"' || c == '\\') escaped.push_back('\\');
+        escaped.push_back(static_cast<char>(c));
+    }
+    if (escaped.empty()) escaped = "attachment";
+    return "attachment; filename=\"" + escaped + "\"";
+}
+
 std::string folder_index(KVClient* kv, const std::string& user, const std::string& folder) {
     std::string val = kv->get_str(mail_row(user), mail_folder_col(normalize_folder(folder)));
     if (val.empty() && normalize_folder(folder) == "inbox") {
         val = kv->get_str(mail_row(user), "index");
     }
     return val;
-}
-
-void set_folder_index(KVClient* kv, const std::string& user, const std::string& folder, const std::string& csv) {
-    const std::string f = normalize_folder(folder);
-    kv->put(mail_row(user), mail_folder_col(f), csv);
-    if (f == "inbox") kv->put(mail_row(user), "index", csv);
 }
 
 std::vector<std::string> folder_uids(KVClient* kv, const std::string& user, const std::string& folder) {
@@ -101,17 +152,63 @@ bool uid_in_folder(KVClient* kv, const std::string& user, const std::string& fol
     return std::find(ids.begin(), ids.end(), uid) != ids.end();
 }
 
-void remove_uid_from_folder(KVClient* kv, const std::string& user, const std::string& folder, const std::string& uid) {
-    auto ids = folder_uids(kv, user, folder);
-    ids.erase(std::remove(ids.begin(), ids.end(), uid), ids.end());
-    set_folder_index(kv, user, folder, join_csv_mail(ids));
+bool remove_uid_from_folder(KVClient* kv, const std::string& user, const std::string& folder, const std::string& uid) {
+    const std::string f = normalize_folder(folder);
+    const std::string row = mail_row(user);
+    const std::string col = mail_folder_col(f);
+    for (int attempt = 0; attempt < 12; ++attempt) {
+        std::string old_value;
+        KVReadStatus st = kv->get_status(row, col, old_value);
+        if (st == KVReadStatus::Unavailable) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(3));
+            continue;
+        }
+        if (st == KVReadStatus::NotFound && f == "inbox") old_value = kv->get_str(row, "index");
+        auto ids = split_csv_mail(old_value);
+        size_t before = ids.size();
+        ids.erase(std::remove(ids.begin(), ids.end(), uid), ids.end());
+        if (ids.size() == before) return true;
+        std::string next = join_csv_mail(ids);
+        if (st == KVReadStatus::Found) {
+            if (kv->cput(row, col, old_value, next)) {
+                if (f == "inbox") kv->put(row, "index", next);
+                return true;
+            }
+        } else {
+            (void)kv->put(row, col, next);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(3));
+    }
+    return false;
 }
 
-void prepend_uid_to_folder(KVClient* kv, const std::string& user, const std::string& folder, const std::string& uid) {
-    auto ids = folder_uids(kv, user, folder);
-    ids.erase(std::remove(ids.begin(), ids.end(), uid), ids.end());
-    ids.insert(ids.begin(), uid);
-    set_folder_index(kv, user, folder, join_csv_mail(ids));
+bool prepend_uid_to_folder(KVClient* kv, const std::string& user, const std::string& folder, const std::string& uid) {
+    const std::string f = normalize_folder(folder);
+    const std::string row = mail_row(user);
+    const std::string col = mail_folder_col(f);
+    for (int attempt = 0; attempt < 16; ++attempt) {
+        std::string old_value;
+        KVReadStatus st = kv->get_status(row, col, old_value);
+        if (st == KVReadStatus::Unavailable) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(3));
+            continue;
+        }
+        if (st == KVReadStatus::NotFound && f == "inbox") old_value = kv->get_str(row, "index");
+        auto ids = split_csv_mail(old_value);
+        ids.erase(std::remove(ids.begin(), ids.end(), uid), ids.end());
+        ids.insert(ids.begin(), uid);
+        std::string next = join_csv_mail(ids);
+        if (st == KVReadStatus::Found) {
+            if (next == old_value || kv->cput(row, col, old_value, next)) {
+                if (f == "inbox") kv->put(row, "index", next);
+                return true;
+            }
+        } else {
+            (void)kv->put(row, col, next);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(3));
+    }
+    return false;
 }
 
 std::string mail_meta_col(const std::string& uid) { return "msg:" + uid; }
@@ -160,9 +257,31 @@ std::string attachment_json(KVClient* kv, const std::string& att_id) {
 }
 
 bool user_can_access_attachment(KVClient* kv, const std::string& user, const std::string& att_id) {
+    if (user.empty() || att_id.empty()) return false;
     std::string owner = kv->get_str(attachment_row(att_id), "owner");
     std::string recipient = kv->get_str(attachment_row(att_id), "recipient");
-    return owner == user || recipient == user;
+    return (!owner.empty() && owner == user) || (!recipient.empty() && recipient == user);
+}
+
+void delete_attachment_bytes(KVClient* kv, const std::string& att_id) {
+    const std::string row = attachment_row(att_id);
+    std::string chunks_s = kv->get_str(row, "chunks");
+    size_t chunks = 0;
+    try { if (!chunks_s.empty()) chunks = static_cast<size_t>(std::stoull(chunks_s)); }
+    catch (...) { chunks = 0; }
+    for (size_t i = 0; i < chunks; ++i) kv->del(row, attachment_chunk_col(i));
+    kv->del(row, "chunks");
+}
+
+void delete_attachment_record(KVClient* kv, const std::string& att_id) {
+    if (att_id.empty()) return;
+    const std::string row = attachment_row(att_id);
+    delete_attachment_bytes(kv, att_id);
+    kv->del(row, "name");
+    kv->del(row, "mime");
+    kv->del(row, "size");
+    kv->del(row, "owner");
+    kv->del(row, "recipient");
 }
 
 std::vector<std::string> parse_attachment_ids_csv(const std::string& csv) {
@@ -194,9 +313,11 @@ std::vector<std::string> finalize_attachment_ids_for_send(KVClient* kv,
         if (!kv->put(row, "name", name) ||
             !kv->put(row, "mime", mime.empty() ? "application/octet-stream" : mime) ||
             !kv->put(row, "size", size.empty() ? std::to_string(bytes.size()) : size) ||
-            !kv->put(row, "owner", recipient) ||
+            !kv->put(row, "owner", user) ||
             !kv->put(row, "recipient", recipient) ||
             !put_attachment_bytes(kv, dst_id, bytes)) {
+            delete_attachment_record(kv, dst_id);
+            for (const auto& copied_id : out) delete_attachment_record(kv, copied_id);
             err = "failed to persist attachment";
             return {};
         }
@@ -317,7 +438,7 @@ std::string local_recipient_from_to(const std::string& to, bool& is_external) {
     if (to.find('@') == std::string::npos) return to;
     auto at = to.find('@');
     std::string domain = to.substr(at + 1);
-    if (domain == "penncloud.com" || domain == "penncloud") return to.substr(0, at);
+    if (is_local_penncloud_domain(domain)) return to.substr(0, at);
     is_external = true;
     return "";
 }
@@ -330,8 +451,21 @@ bool store_message(KVClient* kv,
                    const std::string& body) {
     const std::string row = mail_row(owner_user);
     if (!kv->put(row, mail_meta_col(uid), meta) || !kv->put(row, mail_body_col(uid), body)) return false;
-    prepend_uid_to_folder(kv, owner_user, folder, uid);
+    if (!prepend_uid_to_folder(kv, owner_user, folder, uid)) {
+        kv->del(row, mail_meta_col(uid));
+        kv->del(row, mail_body_col(uid));
+        return false;
+    }
     return true;
+}
+
+void delete_stored_message(KVClient* kv,
+                           const std::string& owner_user,
+                           const std::string& folder,
+                           const std::string& uid) {
+    remove_uid_from_folder(kv, owner_user, folder, uid);
+    kv->del(mail_row(owner_user), mail_meta_col(uid));
+    kv->del(mail_row(owner_user), mail_body_col(uid));
 }
 
 } // namespace
@@ -440,7 +574,7 @@ HttpResponse FEServer::handle_mail_download_attachment(const HttpRequest& req, c
 
     HttpResponse resp = HttpResponse::ok(bytes, kv_->get_str(attachment_row(att_id), "mime"));
     std::string name = kv_->get_str(attachment_row(att_id), "name");
-    if (!name.empty()) resp.headers["Content-Disposition"] = "attachment; filename=\"" + name + "\"";
+    if (!name.empty()) resp.headers["Content-Disposition"] = mail_content_disposition_attachment(name);
     return resp;
 }
 
@@ -455,14 +589,14 @@ HttpResponse FEServer::handle_send_email(const HttpRequest& req, const std::stri
         return HttpResponse::json("{\"ok\":false,\"error\":\"Missing to or subject\"}");
     }
 
-    const std::string from_addr = user + "@penncloud.com";
+    const std::string from_addr = user + "@" + penncloud_mail_domain();
     const std::string time_str = now_str_mail();
     bool is_external = false;
     std::string recipient = local_recipient_from_to(to, is_external);
     std::vector<std::string> requested_attachment_ids = parse_attachment_ids_csv(attachment_ids_csv);
 
     if (is_external && !requested_attachment_ids.empty()) {
-        return HttpResponse::json(R"({"ok":false,"error":"attachments are supported only for local PennCloud.com recipients"})");
+        return HttpResponse::json(R"({"ok":false,"error":"attachments are supported only for local PennCloud recipients"})");
     }
 
     if (is_external) {
@@ -485,7 +619,13 @@ HttpResponse FEServer::handle_send_email(const HttpRequest& req, const std::stri
                                   "\",\"external\":true,\"delivered\":true}");
     }
 
-    if (kv_->get_str(recipient, "pwd").empty()) {
+    std::string recipient_pwd;
+    KVReadStatus recipient_status = kv_->get_status(recipient, "pwd", recipient_pwd);
+    if (recipient_status == KVReadStatus::Unavailable) {
+        return HttpResponse::json(
+            R"({"ok":false,"error":"Storage temporarily unavailable, please try again"})");
+    }
+    if (recipient_status == KVReadStatus::NotFound) {
         return HttpResponse::json("{\"ok\":false,\"error\":\"No such local user\"}");
     }
 
@@ -507,8 +647,11 @@ HttpResponse FEServer::handle_send_email(const HttpRequest& req, const std::stri
     std::string inbox_meta = make_meta_json(from_addr, to, subject, time_str, inbox_uid, inbox_attachments_json);
     std::string sent_meta = make_meta_json(from_addr, to, subject, time_str, sent_uid, sent_attachments_json);
 
-    if (!store_message(kv_.get(), recipient, "inbox", inbox_uid, inbox_meta, body) ||
-        !store_message(kv_.get(), user, "sent", sent_uid, sent_meta, body)) {
+    if (!store_message(kv_.get(), user, "sent", sent_uid, sent_meta, body)) {
+        return HttpResponse::json(R"({"ok":false,"error":"mail delivery failed"})");
+    }
+    if (!store_message(kv_.get(), recipient, "inbox", inbox_uid, inbox_meta, body)) {
+        delete_stored_message(kv_.get(), user, "sent", sent_uid);
         return HttpResponse::json(R"({"ok":false,"error":"mail delivery failed"})");
     }
 
@@ -528,17 +671,30 @@ HttpResponse FEServer::handle_delete_email(const HttpRequest& req, const std::st
 
     if (folder == "trash") {
         std::string meta = kv_->get_str(mail_row(user), mail_meta_col(uid));
-        remove_uid_from_folder(kv_.get(), user, "trash", uid);
-        kv_->del(mail_row(user), mail_meta_col(uid));
-        kv_->del(mail_row(user), mail_body_col(uid));
+        if (!remove_uid_from_folder(kv_.get(), user, "trash", uid)) {
+            return HttpResponse::json(R"({"ok":false,"error":"delete failed"})");
+        }
+        if (!kv_->del(mail_row(user), mail_meta_col(uid)) ||
+            !kv_->del(mail_row(user), mail_body_col(uid))) {
+            return HttpResponse::json(R"({"ok":false,"error":"delete failed"})");
+        }
         for (const auto& att_id : attachment_ids_from_meta(meta)) {
             delete_self_owned_attachment(kv_.get(), user, att_id);
         }
         return HttpResponse::json(R"({"ok":true,"deleted":true})");
     }
 
-    remove_uid_from_folder(kv_.get(), user, folder, uid);
-    prepend_uid_to_folder(kv_.get(), user, "trash", uid);
+    if (!prepend_uid_to_folder(kv_.get(), user, "trash", uid)) {
+        return HttpResponse::json(R"({"ok":false,"error":"move to trash failed"})");
+    }
+    if (!remove_uid_from_folder(kv_.get(), user, folder, uid)) {
+        bool rolled_back = remove_uid_from_folder(kv_.get(), user, "trash", uid);
+        if (!rolled_back) {
+            std::cerr << "[mail] move-to-trash rollback failed for uid " << uid
+                      << " user " << user << "\n";
+        }
+        return HttpResponse::json(R"({"ok":false,"error":"move to trash failed"})");
+    }
     return HttpResponse::json(R"({"ok":true,"deleted":false})");
 }
 
@@ -549,8 +705,17 @@ HttpResponse FEServer::handle_restore_email(const HttpRequest& req, const std::s
     if (!uid_in_folder(kv_.get(), user, "trash", uid)) {
         return HttpResponse::json(R"({"ok":false,"error":"message not in trash"})");
     }
-    remove_uid_from_folder(kv_.get(), user, "trash", uid);
-    prepend_uid_to_folder(kv_.get(), user, "inbox", uid);
+    if (!prepend_uid_to_folder(kv_.get(), user, "inbox", uid)) {
+        return HttpResponse::json(R"({"ok":false,"error":"restore failed"})");
+    }
+    if (!remove_uid_from_folder(kv_.get(), user, "trash", uid)) {
+        bool rolled_back = remove_uid_from_folder(kv_.get(), user, "inbox", uid);
+        if (!rolled_back) {
+            std::cerr << "[mail] restore rollback failed for uid " << uid
+                      << " user " << user << "\n";
+        }
+        return HttpResponse::json(R"({"ok":false,"error":"restore failed"})");
+    }
     return HttpResponse::json(R"({"ok":true})");
 }
 

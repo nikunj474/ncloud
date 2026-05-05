@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstring>
 #include <iostream>
 #include <memory>
@@ -79,6 +80,7 @@ private:
 
     std::vector<std::unique_ptr<ReplicaInfo>> replicas_;
     std::mutex replicas_mu_;
+    std::mutex primary_write_mu_;
 
     std::atomic<bool> running_{false};
     std::atomic<bool> is_primary_{true};
@@ -117,6 +119,7 @@ inline void ReplicationManager::stop() {
     running_.store(false);
     std::lock_guard<std::mutex> lk(replicas_mu_);
     for (auto& r : replicas_) {
+        std::lock_guard<std::mutex> clk(r->conn_mu);
         if (r->fd >= 0) {
             ::close(r->fd);
             r->fd = -1;
@@ -155,10 +158,11 @@ inline bool ReplicationManager::replicated_put(const std::string& row,
                                                const std::string& col,
                                                const std::string& val) {
     if (!is_primary()) return false;
-    if (!tablet_.put(row, col, val)) return false;
-    last_repl_lsn_.store(tablet_.lsn());
-    (void)forward_to_all(make_repl_put(tablet_.lsn(), row, col, val));
-    return true;
+    std::lock_guard<std::mutex> write_lock(primary_write_mu_);
+    uint64_t lsn = 0;
+    if (!tablet_.put(row, col, val, &lsn)) return false;
+    last_repl_lsn_.store(lsn);
+    return forward_to_all(make_repl_put(lsn, row, col, val));
 }
 
 inline bool ReplicationManager::replicated_cput(const std::string& row,
@@ -166,49 +170,61 @@ inline bool ReplicationManager::replicated_cput(const std::string& row,
                                                 const std::string& expected,
                                                 const std::string& replacement) {
     if (!is_primary()) return false;
-    if (!tablet_.cput(row, col, expected, replacement)) return false;
-    last_repl_lsn_.store(tablet_.lsn());
-    (void)forward_to_all(make_repl_put(tablet_.lsn(), row, col, replacement));
-    return true;
+    std::lock_guard<std::mutex> write_lock(primary_write_mu_);
+    uint64_t lsn = 0;
+    if (!tablet_.cput(row, col, expected, replacement, &lsn)) return false;
+    last_repl_lsn_.store(lsn);
+    return forward_to_all(make_repl_put(lsn, row, col, replacement));
 }
 
 inline bool ReplicationManager::replicated_delete(const std::string& row,
                                                   const std::string& col) {
     if (!is_primary()) return false;
-    if (!tablet_.del(row, col)) return false;
-    last_repl_lsn_.store(tablet_.lsn());
-    (void)forward_to_all(make_repl_delete(tablet_.lsn(), row, col));
-    return true;
+    std::lock_guard<std::mutex> write_lock(primary_write_mu_);
+    bool deleted = false;
+    uint64_t lsn = 0;
+    if (!tablet_.del(row, col, &deleted, &lsn)) return false;
+    if (!deleted) return true;
+    last_repl_lsn_.store(lsn);
+    return forward_to_all(make_repl_delete(lsn, row, col));
 }
 
 inline bool ReplicationManager::apply_replicate_put(uint64_t lsn,
                                                     const std::string& row,
                                                     const std::string& col,
                                                     const std::string& val) {
-    const uint64_t applied = last_repl_lsn_.load();
-    if (lsn <= applied) return true;
-    if (applied != 0 && lsn > applied + 1) {
+    const uint64_t current = tablet_.lsn();
+    if (lsn <= current) {
+        last_repl_lsn_.store(current);
+        return true;
+    }
+    if (lsn != current + 1) {
         std::cerr << "[repl:" << cfg_.node_id << ":" << cfg_.tablet_name
                   << "] warning: gap in replicated LSN stream. have="
-                  << applied << " incoming=" << lsn << "\n";
+                  << current << " incoming=" << lsn << "\n";
+        return false;
     }
-    if (!tablet_.put(row, col, val)) return false;
-    last_repl_lsn_.store(tablet_.lsn());
+    if (!tablet_.apply_replicated_put(row, col, val, lsn)) return false;
+    last_repl_lsn_.store(lsn);
     return true;
 }
 
 inline bool ReplicationManager::apply_replicate_delete(uint64_t lsn,
                                                        const std::string& row,
                                                        const std::string& col) {
-    const uint64_t applied = last_repl_lsn_.load();
-    if (lsn <= applied) return true;
-    if (applied != 0 && lsn > applied + 1) {
+    const uint64_t current = tablet_.lsn();
+    if (lsn <= current) {
+        last_repl_lsn_.store(current);
+        return true;
+    }
+    if (lsn != current + 1) {
         std::cerr << "[repl:" << cfg_.node_id << ":" << cfg_.tablet_name
                   << "] warning: gap in replicated LSN stream. have="
-                  << applied << " incoming=" << lsn << "\n";
+                  << current << " incoming=" << lsn << "\n";
+        return false;
     }
-    if (!tablet_.del(row, col)) return false;
-    last_repl_lsn_.store(tablet_.lsn());
+    if (!tablet_.apply_replicated_delete(row, col, lsn)) return false;
+    last_repl_lsn_.store(lsn);
     return true;
 }
 
@@ -216,7 +232,8 @@ inline std::string ReplicationManager::build_sync_response(uint64_t requester_ck
                                                            uint64_t requester_lsn) {
     std::string blob;
     std::string hdr;
-    if (requester_ckpt_ver == tablet_.checkpoint_version()) {
+    const uint64_t local_lsn = tablet_.lsn();
+    if (requester_ckpt_ver == tablet_.checkpoint_version() && requester_lsn <= local_lsn) {
         blob = tablet_.wal_delta_after(requester_lsn);
         hdr = "+DELTA " + std::to_string(blob.size()) + "\r\n";
         std::cout << "[repl:" << cfg_.node_id << ":" << cfg_.tablet_name
@@ -224,7 +241,7 @@ inline std::string ReplicationManager::build_sync_response(uint64_t requester_ck
                   << " lsn=" << requester_lsn
                   << " -> DELTA len=" << blob.size()
                   << " local_ckpt=" << tablet_.checkpoint_version()
-                  << " local_lsn=" << tablet_.lsn() << "\n";
+                  << " local_lsn=" << local_lsn << "\n";
     } else {
         blob = tablet_.snapshot_blob();
         hdr = "+SNAPSHOT " + std::to_string(blob.size()) + "\r\n";
@@ -233,7 +250,7 @@ inline std::string ReplicationManager::build_sync_response(uint64_t requester_ck
                   << " lsn=" << requester_lsn
                   << " -> SNAPSHOT len=" << blob.size()
                   << " local_ckpt=" << tablet_.checkpoint_version()
-                  << " local_lsn=" << tablet_.lsn() << "\n";
+                  << " local_lsn=" << local_lsn << "\n";
     }
     return hdr + blob;
 }
@@ -275,7 +292,11 @@ inline bool ReplicationManager::forward_to_replica(ReplicaInfo& r, const std::st
     if (!write_all(r.fd, msg)) {
         ::close(r.fd);
         r.fd = connect_replica(r);
-        if (r.fd < 0 || !write_all(r.fd, msg)) return false;
+        if (r.fd < 0 || !write_all(r.fd, msg)) {
+            if (r.fd >= 0) ::close(r.fd);
+            r.fd = -1;
+            return false;
+        }
     }
 
     std::string ack;
@@ -284,7 +305,11 @@ inline bool ReplicationManager::forward_to_replica(ReplicaInfo& r, const std::st
         r.fd = -1;
         return false;
     }
-    if (ack.rfind("+OK", 0) != 0) return false;
+    if (ack.rfind("+OK", 0) != 0) {
+        ::close(r.fd);
+        r.fd = -1;
+        return false;
+    }
 
     auto p = ack.find("LSN=");
     if (p != std::string::npos) {
@@ -294,19 +319,48 @@ inline bool ReplicationManager::forward_to_replica(ReplicaInfo& r, const std::st
 }
 
 inline bool ReplicationManager::forward_to_all(const std::string& msg) {
-    bool all_ok = true;
-    std::lock_guard<std::mutex> lk(replicas_mu_);
-    for (auto& r : replicas_) {
-        if (!r->alive) continue;
-        if (!forward_to_replica(*r, msg)) {
-            r->alive = false;
-            all_ok = false;
-            std::cerr << "[repl:" << cfg_.node_id << ":" << cfg_.tablet_name
-                      << "] replica " << r->id
-                      << " did not ACK; marking it inactive\n";
+    size_t acked = 0;
+    std::vector<ReplicaInfo*> replicas;
+    {
+        std::lock_guard<std::mutex> lk(replicas_mu_);
+        replicas.reserve(replicas_.size());
+        for (auto& r : replicas_) replicas.push_back(r.get());
+    }
+    const size_t total_nodes = replicas.size() + 1; // local primary + configured replicas
+    const size_t quorum = total_nodes / 2 + 1;
+    const size_t required_remote_acks = quorum > 0 ? quorum - 1 : 0;
+    if (required_remote_acks == 0) return true;
+
+    std::vector<bool> replica_acked(replicas.size(), false);
+    constexpr int kMaxAttempts = 2;
+    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+        for (size_t i = 0; i < replicas.size(); ++i) {
+            if (replica_acked[i]) continue;
+            auto& r = *replicas[i];
+            if (!forward_to_replica(r, msg)) {
+                r.alive = false;
+                std::cerr << "[repl:" << cfg_.node_id << ":" << cfg_.tablet_name
+                          << "] replica " << r.id << " did not ACK"
+                          << " on attempt " << (attempt + 1) << "\n";
+            } else {
+                r.alive = true;
+                replica_acked[i] = true;
+                ++acked;
+            }
+        }
+        if (acked >= required_remote_acks || attempt + 1 >= kMaxAttempts) break;
+        if (acked < required_remote_acks) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(25));
         }
     }
-    return all_ok;
+    if (acked < required_remote_acks) {
+        std::cerr << "[repl:" << cfg_.node_id << ":" << cfg_.tablet_name
+                  << "] write committed locally in degraded mode: remote_acks=" << acked
+                  << " required=" << required_remote_acks
+                  << " configured_replicas=" << replicas.size()
+                  << " (replicas will catch up during recovery)\n";
+    }
+    return true;
 }
 
 inline std::string ReplicationManager::make_repl_put(uint64_t lsn,
@@ -351,7 +405,7 @@ inline bool ReplicationManager::sync_from_primary(const std::string& host, int p
     ss >> kind >> len;
 
     std::string blob;
-    if (!read_exact(fd, blob, static_cast<uint32_t>(len))) {
+    if (!read_exact(fd, blob, len)) {
         ::close(fd);
         return false;
     }

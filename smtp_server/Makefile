@@ -2,7 +2,7 @@ CXX      := g++
 CXXFLAGS := -std=c++17 -O2 -Wall -Wextra -pthread -Isrc
 TARGET   := smtp_server
 SRC      := src/smtp_server.cc
-LDLIBS   := -lresolv -lcurl
+LDLIBS   := -lresolv
 
 all: $(TARGET)
 

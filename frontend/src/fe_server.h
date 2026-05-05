@@ -43,13 +43,20 @@ inline RouteMatch match_route(const std::string& pattern,
 
 inline std::string json_str(const std::string& s) {
     std::string out = "\"";
-    for (char c : s) {
+    static const char hex[] = "0123456789abcdef";
+    for (unsigned char c : s) {
         if (c == '"') out += "\\\"";
         else if (c == '\\') out += "\\\\";
         else if (c == '\n') out += "\\n";
         else if (c == '\r') out += "\\r";
         else if (c == '\t') out += "\\t";
-        else out += c;
+        else if (c < 0x20) {
+            out += "\\u00";
+            out += hex[c >> 4];
+            out += hex[c & 0x0F];
+        } else {
+            out += static_cast<char>(c);
+        }
     }
     out += "\"";
     return out;
@@ -67,6 +74,7 @@ public:
         std::string static_dir  = "./static";
         std::string server_id   = "fe1";
         std::string redirect_to = ""; // if non-empty: stub mode — 302 all browser requests here
+        bool        page_not_found_stub = false;
     };
 
     explicit FEServer(const Config& cfg);
@@ -91,13 +99,17 @@ private:
     bool handle_one_request(int fd, bool& detached);
     HttpResponse dispatch(const HttpRequest& req);
     std::string get_user(const HttpRequest& req);
+    bool admin_control_allowed(const HttpRequest& req) const;
+    bool acquire_sse_slot();
+    void release_sse_slot();
 
     HttpResponse handle_spa_shell(const HttpRequest& req);
     HttpResponse handle_static(const HttpRequest& req);
 
     HttpResponse handle_login(const HttpRequest& req);
-    HttpResponse handle_logout(const HttpRequest& req);
+    HttpResponse handle_logout(const HttpRequest& req, const std::string& user);
     HttpResponse handle_signup(const HttpRequest& req);
+    HttpResponse handle_session(const HttpRequest& req);
     HttpResponse handle_change_password(const HttpRequest& req);
 
     HttpResponse handle_inbox(const HttpRequest& req, const std::string& user);
@@ -135,6 +147,7 @@ private:
     HttpResponse handle_admin_control(const HttpRequest& req);
     HttpResponse handle_admin_control_redirect(const HttpRequest& req);
     HttpResponse handle_admin_metrics(const HttpRequest& req);
+    HttpResponse handle_admin_raw(const HttpRequest& req);
 
     std::string serve_file(const std::string& path);
     int create_listen_socket();
