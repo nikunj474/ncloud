@@ -107,6 +107,12 @@ kvstore/
     replication.h    -- primary-backup replication + B2 write coalescing
     main.cc          -- KV Server entry point
 
+coordinator/
+  src/
+    coordinator.cc   -- tablet routing, LOOKUP/READ LOOKUP, heartbeat, failover, recovery
+  *.conf             -- coordinator configs for single-node, multi-tablet, and replicated demos
+
+
 frontend/
   Makefile
   src/
@@ -120,9 +126,46 @@ frontend/
     handlers_mail.cc -- inbox, send, view, delete email handlers
     main.cc          -- frontend server entry point
 
-coordinator/
+
+smtp_server/
+  Makefile
   src/
-    coordinator.cc   -- tablet map + heartbeat + leader election
+    smtp_server.cc   -- inbound SMTP server and mail delivery into KV
+    smtp_client.h    -- SMTP client helper for outbound delivery
+
+
+frontend_lb/
+  Makefile
+  src/
+    load_balancer.cc -- simple frontend health checker and redirecting load balancer
+
+
+scripts/
+  aws_deploy_ec2.sh   -- EC2 deployment helper
+  aws_destroy_ec2.sh  -- EC2 teardown helper
+
+
+Cluster helpers and tests:
+  start_multi_group_cluster.sh      -- launches full 4-node replicated demo cluster
+  stop_multi_group_cluster.sh       -- stops full multi-group demo cluster
+  start_multi_tablet_cluster.sh     -- launches 3-node multi-tablet demo cluster
+  stop_multi_tablet_cluster.sh      -- stops multi-tablet demo cluster
+  start_abc_cluster.sh              -- launches 3-replica failover test cluster
+  stop_abc_cluster.sh               -- stops ABC failover cluster
+  start_replication_test_cluster.sh -- launches 2-node replication test cluster
+  stop_replication_test_cluster.sh  -- stops replication test cluster
+  smoke_test.sh                     -- end-to-end frontend/KV smoke test
+  test_10mb.sh                      -- large upload/download correctness test
+  *_test.py                         -- Python integration/failover/replication tests
+
+
+Docs:
+  README.md                -- build, run, and test guide
+  SYSTEM_DESIGN.md         -- detailed architecture/design reference
+  REPLICATION_TESTING.md   -- replication testing notes
+  ABC_TESTING.md           -- 3-node failover scenario notes
+  
+
 ```
 
 ## Coordinator Config (`coordinator/coordinator.conf`)
