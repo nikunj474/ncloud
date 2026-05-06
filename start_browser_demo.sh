@@ -123,8 +123,8 @@ echo "================================================================"
 echo
 if [ "$MODE" = "multi-tablet" ]; then
     echo "  Tablets and primaries (per coordinator_multi_tablet_demo.conf):"
-    echo "    tabletA  rows [a, g)       primary=node1  secondaries=node2,node3"
-    echo "    tabletB  rows [h, p)       primary=node2  secondaries=node3,node1"
+    echo "    tabletA  rows [a, h)       primary=node1  secondaries=node2,node3"
+    echo "    tabletB  rows [h, q)       primary=node2  secondaries=node3,node1"
     echo "    tabletC  rows [q, zzzzz)   primary=node3  secondaries=node1,node2"
     echo
     echo "  Open in your browser (Windows side):"

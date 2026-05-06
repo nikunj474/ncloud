@@ -79,14 +79,17 @@ node node2 127.0.0.1 6501 6601
 node node3 127.0.0.1 6502 6602
 
 # tablet <tablet_id> <row_start> <row_end> <replica1> <replica2> <replica3>
-tablet tabletA a g node1 node2 node3
-tablet tabletB h p node2 node3 node1
+# Ranges must be contiguous: previously [a,g) [h,p) [q,-) had gaps at
+# [g,h) and [p,q) -- usernames like "panda"/"goose" routed to no tablet
+# and triggered "Storage temporarily unavailable". Fixed by [a,h) [h,q) [q,-).
+tablet tabletA a h node1 node2 node3
+tablet tabletB h q node2 node3 node1
 tablet tabletC q - node3 node1 node2
 CFGEOF
 
 echo "[multi] starting node1"
 nohup ./kvstore/kvserver --port 6500 --data "$DATA_ROOT/node1" \
-  --tablet tabletA:a:g --tablet tabletB:h:p --tablet tabletC:q: \
+  --tablet tabletA:a:h --tablet tabletB:h:q --tablet tabletC:q: \
   --node-id node1 --repl-port 6600 > mt_node1.log 2>&1 &
 NODE1_PID=$!
 echo "$NODE1_PID" > "$PID_DIR/node1.pid"
@@ -95,7 +98,7 @@ wait_ready "node1 replication" "$NODE1_PID" 127.0.0.1 6600 mt_node1.log
 
 echo "[multi] starting node2"
 nohup ./kvstore/kvserver --port 6501 --data "$DATA_ROOT/node2" \
-  --tablet tabletA:a:g --tablet tabletB:h:p --tablet tabletC:q: \
+  --tablet tabletA:a:h --tablet tabletB:h:q --tablet tabletC:q: \
   --node-id node2 --repl-port 6601 > mt_node2.log 2>&1 &
 NODE2_PID=$!
 echo "$NODE2_PID" > "$PID_DIR/node2.pid"
@@ -104,7 +107,7 @@ wait_ready "node2 replication" "$NODE2_PID" 127.0.0.1 6601 mt_node2.log
 
 echo "[multi] starting node3"
 nohup ./kvstore/kvserver --port 6502 --data "$DATA_ROOT/node3" \
-  --tablet tabletA:a:g --tablet tabletB:h:p --tablet tabletC:q: \
+  --tablet tabletA:a:h --tablet tabletB:h:q --tablet tabletC:q: \
   --node-id node3 --repl-port 6602 > mt_node3.log 2>&1 &
 NODE3_PID=$!
 echo "$NODE3_PID" > "$PID_DIR/node3.pid"
