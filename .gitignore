@@ -15,7 +15,7 @@ __pycache__/
 # Local browser/session artifacts
 cookies.txt
 cookies_*.txt
-penncloud_t05 2/
+penncloud_t05\ */
 
 # Generated test payloads and reports
 *.bin
@@ -25,11 +25,11 @@ penncloud_t05 2/
 # Build outputs and executables
 build/
 */build/
-coordinator/coordinator
-frontend/feserver
-frontend_lb/frontend_lb
-kvstore/kvserver
-smtp_server/smtp_server
+**/coordinator/coordinator
+**/frontend/feserver
+**/frontend_lb/frontend_lb
+**/kvstore/kvserver
+**/smtp_server/smtp_server
 
 # Runtime scratch
 *.pid
