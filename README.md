@@ -42,10 +42,11 @@ mkdir -p /tmp/pc_data
 ./coordinator/coordinator --port 6000 --config ./coordinator/coordinator.conf
 ```
 
+## To RUN: 
 Open browser at `http://127.0.0.1:8080`
 
-## Testing
 
+## Testing
 ```bash
 # Builds/runs a local KV + frontend pair using only bash + curl and checks:
 # - SPA shell
@@ -80,30 +81,44 @@ python3 multi_group_integrated_test.py
 ./stop_multi_group_cluster.sh
 ```
 
+## Replication test cluster
+
+Use the helper script below to launch a real 2-node replicated KV pair for the replication surface tests:
+
+```bash
+./start_replication_test_cluster.sh
+python3 repl_write_surface_test.py
+python3 repl_secondary_failure_test.py
+./stop_replication_test_cluster.sh
+```
+
 Inbound SMTP receives local mail on port `2525`. External relay from the inbound SMTP server is disabled by default to avoid an open relay; set `SMTP_ALLOW_INBOUND_RELAY=1` only for a controlled demo. The course build does not depend on libcurl or any external TLS library; outbound external mail uses direct MX delivery (`SMTP_MODE=direct`). If `SMTP_MODE=relay` is present in an old local `.smtp.env`, the no-libcurl build falls back to direct MX delivery.
 
 ## Directory Structure
 
 ```
 kvstore/
+  Makefile
   src/
     protocol.h       -- shared wire protocol (KV + frontend)
     bloom.h          -- Bloom filter (B4 innovation)
     tablet.h/.cc     -- in-memory KV store + WAL + checkpoint
-    server.h/.cc     -- TCP server + thread pool + request dispatch
+    server.h/.cc     -- TCP server, thread pool, request dispatch, client ops
     replication.h    -- primary-backup replication + B2 write coalescing
-    main.cc          -- entry point
+    main.cc          -- KV Server entry point
 
 frontend/
+  Makefile
   src/
     http.h           -- HttpRequest / HttpResponse structs
-    http_reader.h    -- HTTP/1.1 parser + response writer
+    http_reader.h    -- HTTP/1.1 parser + response writer, cookies, query params
     session.h        -- session management (stored in KV, FE stateless)
-    kv_client.h      -- frontend KV client with connection pool
+    kv_client.h      -- frontend KV client with connection pool, coordinator lookup/entry
+    smtp_client.h    -- SMTP helper for frontend mail sending
     fe_server.h      -- FEServer class declaration
     fe_server.cc     -- server impl + SPA shell + auth handlers
     handlers_mail.cc -- inbox, send, view, delete email handlers
-    main.cc          -- entry point
+    main.cc          -- frontend server entry point
 
 coordinator/
   src/
@@ -122,27 +137,17 @@ tablet tablet_an_zz an   node1 node2 node3
 
 For single-node development, no config file needed — defaults to one node on port 5000.
 
-## Status (Mar 19, 2026)
+## Status (May 6, 2026)
 
 - [x] KV server: PUT/GET/CPUT/DELETE, WAL, checkpoint, recovery, Bloom filter, shared_mutex locking
 - [x] Frontend: HTTP/1.1, cookies, sessions, SPA shell, auth, webmail handlers
 - [x] Coordinator: heartbeat, fault detection, leader election, LOOKUP
 - [x] Replication: primary-backup protocol, write coalescing (B2), LSN tracking
-- [ ] Drive handlers (Yke — next)
-- [ ] Replication wired into server.cc (Rohit — next)
-- [x] SMTP inbound/outbound (Liudawei)
-- [ ] Admin console with live metrics (Yke — Phase 2)
+- [x] Drive handlers 
+- [x] Replication wired into server.cc 
+- [x] SMTP inbound/outbound 
+- [x] Admin console with live metrics 
 
 
-## Replication test cluster
-
-Use the helper script below to launch a real 2-node replicated KV pair for the replication surface tests:
-
-```bash
-./start_replication_test_cluster.sh
-python3 repl_write_surface_test.py
-python3 repl_secondary_failure_test.py
-./stop_replication_test_cluster.sh
-```
 
 Important: `--replica` expects the peer's **replication port**, not its normal client port.
