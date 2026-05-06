@@ -51,13 +51,13 @@ inline bool read_exact(int fd, void* buf, size_t n) {
     return true;
 }
 
-// Read exactly n bytes into a string.
+// Read exactly n bytes into a string, resizing it to match the payload.
 inline bool read_exact(int fd, string& out, size_t n) {
     out.resize(n);
     return read_exact(fd, &out[0], n);
 }
 
-// Write all bytes to fd.  Returns false on error.
+// Write all bytes to fd, retrying short writes until complete.
 inline bool write_all(int fd, const void* buf, size_t n) {
     const char* p = static_cast<const char*>(buf);
     size_t remaining = n;
@@ -70,6 +70,7 @@ inline bool write_all(int fd, const void* buf, size_t n) {
     return true;
 }
 
+// Convenience overload for writing a string buffer.
 inline bool write_all(int fd, const string& s) {
     return write_all(fd, s.data(), s.size());
 }
@@ -97,14 +98,17 @@ inline bool read_line(int fd, string& line) {
 // ---------------------------------------------------------------------------
 // Response builders (server side)
 // ---------------------------------------------------------------------------
+// Build a success response for commands without a value body.
 inline string ok_response() {
     return "+OK\r\n";
 }
 
+// Build a success response carrying one raw value payload.
 inline string ok_value_response(const string& val) {
     return "+OK " + to_string(val.size()) + "\r\n" + val;
 }
 
+// Build a protocol error response with a readable message.
 inline string err_response(const string& msg) {
     return "-ERR " + msg + "\r\n";
 }
@@ -112,6 +116,7 @@ inline string err_response(const string& msg) {
 // ---------------------------------------------------------------------------
 // Request sender helpers (client / FE side)
 // ---------------------------------------------------------------------------
+// Send a length-prefixed PUT request over an already-connected socket.
 inline bool send_put(int fd,
                      const string& row,
                      const string& col,
@@ -125,12 +130,14 @@ inline bool send_put(int fd,
            write_all(fd, val);
 }
 
+// Send a length-prefixed GET request over an already-connected socket.
 inline bool send_get(int fd, const string& row, const string& col) {
     string hdr = "GET " + to_string(row.size()) + " "
                              + to_string(col.size()) + "\r\n";
     return write_all(fd, hdr) && write_all(fd, row) && write_all(fd, col);
 }
 
+// Send a compare-and-put request with expected and replacement values.
 inline bool send_cput(int fd,
                       const string& row,
                       const string& col,
@@ -147,6 +154,7 @@ inline bool send_cput(int fd,
            write_all(fd, v2);
 }
 
+// Send a length-prefixed DELETE request over an already-connected socket.
 inline bool send_delete(int fd, const string& row, const string& col) {
     string hdr = "DELETE " + to_string(row.size()) + " "
                                 + to_string(col.size()) + "\r\n";
@@ -162,6 +170,7 @@ struct KVResponse {
     string error;  // populated for -ERR responses
 };
 
+// Parse one KV response, including the raw value body for GET success.
 inline KVResponse read_response(int fd) {
     KVResponse resp{false, "", ""};
     string line;

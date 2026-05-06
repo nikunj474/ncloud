@@ -6,7 +6,6 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
-
 #include <atomic>
 #include <chrono>
 #include <cstring>
@@ -48,30 +47,45 @@ public:
     ReplicationManager(Config cfg, Tablet& tablet)
         : cfg_(std::move(cfg)), tablet_(tablet) {}
 
+    // Stop replication and close cached replica sockets.
     ~ReplicationManager() { stop(); }
 
+    // Mark replication running and initialize progress from the tablet LSN.
     void start();
+    // Close outbound replica connections and mark the manager stopped.
     void stop();
 
+    // Add a secondary endpoint, or reactivate/update it if it already exists.
     void add_replica(const std::string& id, const std::string& host, int repl_port);
 
+    // Primary-side PUT: write locally, assign LSN, then forward to replicas.
     bool replicated_put(const std::string& row, const std::string& col, const std::string& val);
+    // Primary-side CPUT: commit only on compare success, then forward as PUT.
     bool replicated_cput(const std::string& row, const std::string& col,
                          const std::string& expected, const std::string& replacement);
+    // Primary-side DELETE: write locally and forward if a cell was removed.
     bool replicated_delete(const std::string& row, const std::string& col);
 
+    // Accept client writes for this hosted tablet.
     void promote_to_primary();
+    // Reject direct client writes and only accept replicated operations.
     void demote_to_secondary();
+    // Demote and, when given a primary, synchronize this tablet from it.
     bool become_secondary_and_sync(const std::string& host, int port);
+    // Report whether this tablet currently accepts primary writes.
     bool is_primary() const { return is_primary_.load(); }
 
     // Server-dispatched per-tablet replication control/data path.
+    // Apply a replicated PUT from the current primary.
     bool apply_replicate_put(uint64_t lsn, const std::string& row,
                              const std::string& col, const std::string& val);
+    // Apply a replicated DELETE from the current primary.
     bool apply_replicate_delete(uint64_t lsn, const std::string& row,
                                 const std::string& col);
+    // Return either WAL delta or full snapshot for a syncing secondary.
     std::string build_sync_response(uint64_t requester_ckpt_ver, uint64_t requester_lsn);
 
+    // Expose the tablet name used in replication protocol messages.
     const std::string& tablet_name() const { return cfg_.tablet_name; }
 
 private:
@@ -86,35 +100,46 @@ private:
     std::atomic<bool> is_primary_{true};
     std::atomic<uint64_t> last_repl_lsn_{0};
 
+    // Connect to the replica endpoint stored in ReplicaInfo.
     int connect_replica(ReplicaInfo& r);
+    // Open a TCP connection to a host/port with replication timeouts.
     int connect_host_port(const std::string& host, int port);
+    // Send one replication command to one replica and read its ACK.
     bool forward_to_replica(ReplicaInfo& r, const std::string& msg);
+    // Forward a committed write to enough replicas for quorum/degraded success.
     bool forward_to_all(const std::string& msg);
+    // Pull a snapshot or WAL delta from a primary into this secondary.
     bool sync_from_primary(const std::string& host, int port);
 
+    // Serialize a replicated PUT command for the replication port protocol.
     std::string make_repl_put(uint64_t lsn, const std::string& row,
                               const std::string& col, const std::string& val);
+    // Serialize a replicated DELETE command for the replication port protocol.
     std::string make_repl_delete(uint64_t lsn, const std::string& row,
                                  const std::string& col);
 };
 
+// Flip this tablet into primary role after coordinator promotion.
 inline void ReplicationManager::promote_to_primary() {
     is_primary_.store(true);
     std::cout << "[repl:" << cfg_.node_id << ":" << cfg_.tablet_name
               << "] promoted to PRIMARY\n";
 }
 
+// Flip this tablet into secondary role before syncing or following a primary.
 inline void ReplicationManager::demote_to_secondary() {
     is_primary_.store(false);
     std::cout << "[repl:" << cfg_.node_id << ":" << cfg_.tablet_name
               << "] demoted to SECONDARY\n";
 }
 
+// Initialize replication state after the tablet has recovered from disk.
 inline void ReplicationManager::start() {
     running_.store(true);
     last_repl_lsn_.store(tablet_.lsn());
 }
 
+// Close cached sockets so shutdown/reconfiguration does not leak descriptors.
 inline void ReplicationManager::stop() {
     running_.store(false);
     std::lock_guard<std::mutex> lk(replicas_mu_);
@@ -127,6 +152,7 @@ inline void ReplicationManager::stop() {
     }
 }
 
+// Register or refresh a downstream secondary that should receive writes.
 inline void ReplicationManager::add_replica(const std::string& id,
                                             const std::string& host,
                                             int repl_port) {
@@ -154,6 +180,7 @@ inline void ReplicationManager::add_replica(const std::string& id,
               << " at " << host << ":" << repl_port << "\n";
 }
 
+// Commit a client PUT locally and forward the exact LSN to secondaries.
 inline bool ReplicationManager::replicated_put(const std::string& row,
                                                const std::string& col,
                                                const std::string& val) {
@@ -165,6 +192,7 @@ inline bool ReplicationManager::replicated_put(const std::string& row,
     return forward_to_all(make_repl_put(lsn, row, col, val));
 }
 
+// Commit a client CPUT locally and replicate the resulting replacement value.
 inline bool ReplicationManager::replicated_cput(const std::string& row,
                                                 const std::string& col,
                                                 const std::string& expected,
@@ -177,6 +205,7 @@ inline bool ReplicationManager::replicated_cput(const std::string& row,
     return forward_to_all(make_repl_put(lsn, row, col, replacement));
 }
 
+// Commit a client DELETE locally and replicate only real deletions.
 inline bool ReplicationManager::replicated_delete(const std::string& row,
                                                   const std::string& col) {
     if (!is_primary()) return false;
@@ -189,6 +218,7 @@ inline bool ReplicationManager::replicated_delete(const std::string& row,
     return forward_to_all(make_repl_delete(lsn, row, col));
 }
 
+// Apply an incoming PUT if it is the next LSN, ignoring duplicates.
 inline bool ReplicationManager::apply_replicate_put(uint64_t lsn,
                                                     const std::string& row,
                                                     const std::string& col,
@@ -209,6 +239,7 @@ inline bool ReplicationManager::apply_replicate_put(uint64_t lsn,
     return true;
 }
 
+// Apply an incoming DELETE if it is the next LSN, ignoring duplicates.
 inline bool ReplicationManager::apply_replicate_delete(uint64_t lsn,
                                                        const std::string& row,
                                                        const std::string& col) {
@@ -228,6 +259,7 @@ inline bool ReplicationManager::apply_replicate_delete(uint64_t lsn,
     return true;
 }
 
+// Choose a lightweight WAL delta when possible, otherwise send a full snapshot.
 inline std::string ReplicationManager::build_sync_response(uint64_t requester_ckpt_ver,
                                                            uint64_t requester_lsn) {
     std::string blob;
@@ -255,6 +287,7 @@ inline std::string ReplicationManager::build_sync_response(uint64_t requester_ck
     return hdr + blob;
 }
 
+// Open a bounded-time TCP connection for replication control/data traffic.
 inline int ReplicationManager::connect_host_port(const std::string& host, int port) {
     int fd = ::socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return -1;
@@ -279,10 +312,12 @@ inline int ReplicationManager::connect_host_port(const std::string& host, int po
     return fd;
 }
 
+// Connect to one configured replica endpoint.
 inline int ReplicationManager::connect_replica(ReplicaInfo& r) {
     return connect_host_port(r.host, r.port);
 }
 
+// Send one replicated write and validate the replica's +OK acknowledgement.
 inline bool ReplicationManager::forward_to_replica(ReplicaInfo& r, const std::string& msg) {
     std::lock_guard<std::mutex> lk(r.conn_mu);
 
@@ -318,6 +353,7 @@ inline bool ReplicationManager::forward_to_replica(ReplicaInfo& r, const std::st
     return true;
 }
 
+// Try configured replicas and allow degraded success when quorum cannot ACK.
 inline bool ReplicationManager::forward_to_all(const std::string& msg) {
     size_t acked = 0;
     std::vector<ReplicaInfo*> replicas;
@@ -364,6 +400,7 @@ inline bool ReplicationManager::forward_to_all(const std::string& msg) {
     return true;
 }
 
+// Build the wire-format REPLICATE PUT message with raw row/column/value bytes.
 inline std::string ReplicationManager::make_repl_put(uint64_t lsn,
                                                      const std::string& row,
                                                      const std::string& col,
@@ -374,6 +411,7 @@ inline std::string ReplicationManager::make_repl_put(uint64_t lsn,
         + std::to_string(val.size()) + "\r\n" + row + col + val;
 }
 
+// Build the wire-format REPLICATE DELETE message with raw row/column bytes.
 inline std::string ReplicationManager::make_repl_delete(uint64_t lsn,
                                                         const std::string& row,
                                                         const std::string& col) {
@@ -382,6 +420,7 @@ inline std::string ReplicationManager::make_repl_delete(uint64_t lsn,
         + std::to_string(col.size()) + "\r\n" + row + col;
 }
 
+// Request catch-up data from a primary and apply the returned snapshot or delta.
 inline bool ReplicationManager::sync_from_primary(const std::string& host, int port) {
     int fd = connect_host_port(host, port);
     if (fd < 0) return false;
@@ -433,6 +472,7 @@ inline bool ReplicationManager::sync_from_primary(const std::string& host, int p
     return loaded;
 }
 
+// Coordinator command handler: become secondary, then catch up from primary.
 inline bool ReplicationManager::become_secondary_and_sync(const std::string& host, int port) {
     demote_to_secondary();
     if (!host.empty() && port > 0) return sync_from_primary(host, port);

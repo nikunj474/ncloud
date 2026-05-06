@@ -12,6 +12,7 @@
 #include <unistd.h>
 using namespace std;
 
+// Write a 32-bit integer in little-endian order to a binary stream.
 static void write_u32_le(ofstream& out, uint32_t v) {
     uint8_t buf[4] = {
         static_cast<uint8_t>(v),
@@ -22,6 +23,7 @@ static void write_u32_le(ofstream& out, uint32_t v) {
     out.write(reinterpret_cast<char*>(buf), 4);
 }
 
+// Read a 32-bit little-endian integer from a binary stream.
 static bool read_u32_le(ifstream& in, uint32_t& out) {
     uint8_t buf[4];
     in.read(reinterpret_cast<char*>(buf), 4);
@@ -31,12 +33,14 @@ static bool read_u32_le(ifstream& in, uint32_t& out) {
     return true;
 }
 
+// Write a 64-bit integer in little-endian order to a binary stream.
 static void write_u64_le(ofstream& out, uint64_t v) {
     uint8_t buf[8];
     for (int i = 0; i < 8; ++i) buf[i] = static_cast<uint8_t>(v >> (8 * i));
     out.write(reinterpret_cast<char*>(buf), 8);
 }
 
+// Read a 64-bit little-endian integer from a binary stream.
 static bool read_u64_le(ifstream& in, uint64_t& out) {
     uint8_t buf[8];
     in.read(reinterpret_cast<char*>(buf), 8);
@@ -47,6 +51,7 @@ static bool read_u64_le(ifstream& in, uint64_t& out) {
 }
 
 // String/stream little-endian helpers for snapshot/delta blobs
+// Append a 32-bit little-endian integer to an in-memory blob.
 static void append_u32_le(string& out, uint32_t v) {
     char buf[4] = {
         static_cast<char>(v & 0xFF),
@@ -57,12 +62,14 @@ static void append_u32_le(string& out, uint32_t v) {
     out.append(buf, 4);
 }
 
+// Append a 64-bit little-endian integer to an in-memory blob.
 static void append_u64_le(string& out, uint64_t v) {
     char buf[8];
     for (int i = 0; i < 8; ++i) buf[i] = static_cast<char>((v >> (8 * i)) & 0xFF);
     out.append(buf, 8);
 }
 
+// Read a 32-bit little-endian integer from an in-memory blob at off.
 static bool read_u32_mem(const string& s, size_t& off, uint32_t& outv) {
     if (off + 4 > s.size()) return false;
     const uint8_t* p = reinterpret_cast<const uint8_t*>(s.data() + off);
@@ -71,6 +78,7 @@ static bool read_u32_mem(const string& s, size_t& off, uint32_t& outv) {
     return true;
 }
 
+// Read a 64-bit little-endian integer from an in-memory blob at off.
 static bool read_u64_mem(const string& s, size_t& off, uint64_t& outv) {
     if (off + 8 > s.size()) return false;
     const uint8_t* p = reinterpret_cast<const uint8_t*>(s.data() + off);
@@ -80,6 +88,7 @@ static bool read_u64_mem(const string& s, size_t& off, uint64_t& outv) {
     return true;
 }
 
+// Build a safe text or hex preview for admin DUMP output.
 static string text_preview_value(const string& val,
                                       bool& is_text,
                                       bool& truncated) {
@@ -114,6 +123,7 @@ static string text_preview_value(const string& val,
     return out;
 }
 
+// Initialize paths and open the WAL for append-only writes.
 Tablet::Tablet(const string& name, const string& data_dir)
     : name_(name), data_dir_(data_dir) {
 
@@ -128,6 +138,7 @@ Tablet::Tablet(const string& name, const string& data_dir)
     }
 }
 
+// Flush and close the WAL stream during tablet destruction.
 Tablet::~Tablet() {
     if (wal_.is_open()) {
         wal_.flush();
@@ -135,6 +146,7 @@ Tablet::~Tablet() {
     }
 }
 
+// Append one PUT record to WAL and assign the next logical LSN.
 bool Tablet::write_wal_put(const string& row,
                            const string& col,
                            const string& val,
@@ -156,6 +168,7 @@ bool Tablet::write_wal_put(const string& row,
     return true;
 }
 
+// Append one DELETE record to WAL and assign the next logical LSN.
 bool Tablet::write_wal_delete(const string& row, const string& col, uint64_t* assigned_lsn) {
     if (!wal_.is_open()) return false;
     write_u32_le(wal_, WAL_MAGIC);
@@ -173,11 +186,13 @@ bool Tablet::write_wal_delete(const string& row, const string& col, uint64_t* as
     return true;
 }
 
+// Return an existing row pointer without changing tablet state.
 RowData* Tablet::find_row(const string& row) {
     auto it = rows_.find(row);
     return (it != rows_.end()) ? it->second.get() : nullptr;
 }
 
+// Return an existing row or create a new one and add it to the Bloom filter.
 RowData* Tablet::get_or_create_row(const string& row) {
     auto it = rows_.find(row);
     if (it != rows_.end()) return it->second.get();
@@ -186,6 +201,7 @@ RowData* Tablet::get_or_create_row(const string& row) {
     return ins->second.get();
 }
 
+// Convenience PUT wrapper when the caller does not need the assigned LSN.
 bool Tablet::put(const string& row,
                  const string& col,
                  const string& val) {
@@ -193,6 +209,7 @@ bool Tablet::put(const string& row,
     return put(row, col, val, &ignored_lsn);
 }
 
+// Write a value durably to WAL first, then update the row/column map.
 bool Tablet::put(const string& row,
                  const string& col,
                  const string& val,
@@ -225,6 +242,7 @@ bool Tablet::put(const string& row,
     return true;
 }
 
+// Read a value using Bloom filter and per-row shared locking.
 bool Tablet::get(const string& row,
                  const string& col,
                  string&       val_out) {
@@ -244,6 +262,7 @@ bool Tablet::get(const string& row,
     return true;
 }
 
+// Convenience CPUT wrapper when the caller does not need the assigned LSN.
 bool Tablet::cput(const string& row,
                   const string& col,
                   const string& v1,
@@ -252,6 +271,7 @@ bool Tablet::cput(const string& row,
     return cput(row, col, v1, v2, &ignored_lsn);
 }
 
+// Atomically replace a value only if it currently equals the expected value.
 bool Tablet::cput(const string& row,
                   const string& col,
                   const string& v1,
@@ -279,15 +299,18 @@ bool Tablet::cput(const string& row,
     return true;
 }
 
+// Convenience DELETE wrapper that ignores delete/no-op distinction.
 bool Tablet::del(const string& row, const string& col) {
     bool deleted = false;
     return del(row, col, &deleted, nullptr);
 }
 
+// DELETE wrapper that reports whether a cell existed and was removed.
 bool Tablet::del(const string& row, const string& col, bool* deleted_out) {
     return del(row, col, deleted_out, nullptr);
 }
 
+// Delete a cell durably, logging only when a row/column actually exists.
 bool Tablet::del(const string& row, const string& col, bool* deleted_out, uint64_t* assigned_lsn) {
     if (deleted_out) *deleted_out = false;
     if (assigned_lsn) *assigned_lsn = 0;
@@ -312,6 +335,7 @@ bool Tablet::del(const string& row, const string& col, bool* deleted_out, uint64
     return true;
 }
 
+// Apply a replicated delete while assigning a fresh local LSN.
 bool Tablet::apply_replicated_delete(const string& row,
                                      const string& col,
                                      uint64_t* assigned_lsn) {
@@ -335,6 +359,7 @@ bool Tablet::apply_replicated_delete(const string& row,
     return true;
 }
 
+// Apply a replicated PUT only when its LSN is the next expected value.
 bool Tablet::apply_replicated_put(const string& row,
                                   const string& col,
                                   const string& val,
@@ -363,6 +388,7 @@ bool Tablet::apply_replicated_put(const string& row,
     return true;
 }
 
+// Apply a replicated DELETE only when its LSN is the next expected value.
 bool Tablet::apply_replicated_delete(const string& row,
                                      const string& col,
                                      uint64_t expected_lsn) {
@@ -392,11 +418,13 @@ bool Tablet::apply_replicated_delete(const string& row,
     return true;
 }
 
+// Public checkpoint entry point that serializes with WAL writes.
 bool Tablet::checkpoint() {
     lock_guard<mutex> wal_lock(wal_mu_);
     return checkpoint_locked();
 }
 
+// Write a complete snapshot and truncate WAL; caller must hold wal_mu_.
 bool Tablet::checkpoint_locked() {
     string tmp = ckpt_path_ + ".tmp";
     uint64_t next_ckpt_ver = checkpoint_version_.load() + 1;
@@ -456,6 +484,7 @@ bool Tablet::checkpoint_locked() {
     return true;
 }
 
+// Recover durable state by loading the latest checkpoint and replaying WAL.
 bool Tablet::recover() {
     bool ok = load_checkpoint();
     if (!ok) {
@@ -465,6 +494,7 @@ bool Tablet::recover() {
     return replay_wal();
 }
 
+// Load a checkpoint file, rebuilding rows, Bloom filter, checkpoint version, and LSN.
 bool Tablet::load_checkpoint() {
     ifstream in(ckpt_path_, ios::binary);
     if (!in) {
@@ -533,6 +563,7 @@ bool Tablet::load_checkpoint() {
     return true;
 }
 
+// Replay each valid WAL entry after the checkpoint into the in-memory map.
 bool Tablet::replay_wal() {
     ifstream in(wal_path_, ios::binary);
     if (!in) return true;
@@ -591,11 +622,13 @@ bool Tablet::replay_wal() {
     return true;
 }
 
+// Return the number of rows currently resident in memory.
 size_t Tablet::row_count() const {
     shared_lock<shared_mutex> rlock(rows_mu_);
     return rows_.size();
 }
 
+// Collect sorted cell previews for admin/debug dump responses.
 vector<TabletDumpCell> Tablet::dump_cells() const {
     vector<TabletDumpCell> cells;
     {
@@ -621,6 +654,7 @@ vector<TabletDumpCell> Tablet::dump_cells() const {
     return cells;
 }
 
+// Serialize a full in-memory snapshot for secondary catch-up.
 string Tablet::snapshot_blob() const {
     string out;
     shared_lock<shared_mutex> rlock(rows_mu_);
@@ -644,6 +678,7 @@ string Tablet::snapshot_blob() const {
     return out;
 }
 
+// Replace local state from a snapshot blob and checkpoint the replacement.
 bool Tablet::load_snapshot_blob(const string& blob) {
     size_t off = 0;
     uint32_t nrows = 0;
@@ -688,6 +723,7 @@ bool Tablet::load_snapshot_blob(const string& blob) {
     return checkpoint_locked();
 }
 
+// Export WAL entries with logical LSNs greater than after_lsn.
 string Tablet::wal_delta_after(uint64_t after_lsn) const {
     lock_guard<mutex> wal_lock(wal_mu_);
     // Export WAL entries with logical LSN > after_lsn.
@@ -766,6 +802,7 @@ string Tablet::wal_delta_after(uint64_t after_lsn) const {
     return out;
 }
 
+// Apply a WAL delta blob in explicit LSN order, skipping duplicates.
 bool Tablet::apply_wal_delta_blob(const string& blob) {
     size_t off = 0;
     uint64_t base_lsn = 0;
