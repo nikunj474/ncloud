@@ -24,6 +24,8 @@ static void parse_replica_arg(const string& spec,
     string id;
     string hostport = spec;
 
+    // Support optional replica ID prefix (e.g. "replica1@host:port") 
+    // but default to "replicaN" if not provided.
     auto at = spec.find('@');
     if (at != string::npos) {
         id = spec.substr(0, at);

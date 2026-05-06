@@ -92,7 +92,7 @@ private:
         }
     }
 
-    // djb2: classic string hash by Dan Bernstein
+    // djb2: classic string hash
     static uint64_t djb2(const string& s) {
         uint64_t h = 5381;
         for (unsigned char c : s)
@@ -100,7 +100,7 @@ private:
         return h;
     }
 
-    // FNV-1a 64-bit: fast, good distribution
+    // FNV-1a 64-bit
     static uint64_t fnv1a(const string& s) {
         uint64_t h = 14695981039346656037ULL;
         for (unsigned char c : s) {
