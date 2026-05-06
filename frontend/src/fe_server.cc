@@ -4334,12 +4334,19 @@ async function uploadSingleFile(file, uploadPath, options = {}) {
     clearUploadProgressSoon(uploadId);
   } catch (err) {
     showToast('Upload failed: ' + (err && err.message ? err.message : err));
+    const hasResumeSession = !!localStorage.getItem(storageKey);
     setUploadProgress(uploadId, {
       name: file.name,
       percent: uploadProgresses[uploadId] ? uploadProgresses[uploadId].percent : 0,
       detail: `Upload paused/failed: ${err && err.message ? err.message : err}.`,
-      resumeKey: localStorage.getItem(storageKey) ? storageKey : ''
+      resumeKey: hasResumeSession ? storageKey : ''
     });
+    if (!hasResumeSession) {
+      // Permanent failure (no saved session to resume from) — auto-clear after
+      // a brief moment so the failed-upload card doesn't linger forever.
+      // Toast already displays the error message persistently for the user.
+      clearUploadProgressSoon(uploadId);
+    }
   }
 }
 
