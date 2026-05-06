@@ -158,14 +158,6 @@ Cluster helpers and tests:
   test_10mb.sh                      -- large upload/download correctness test
   *_test.py                         -- Python integration/failover/replication tests
 
-
-Docs:
-  README.md                -- build, run, and test guide
-  SYSTEM_DESIGN.md         -- detailed architecture/design reference
-  REPLICATION_TESTING.md   -- replication testing notes
-  ABC_TESTING.md           -- 3-node failover scenario notes
-  
-
 ```
 
 ## Coordinator Config (`coordinator/coordinator.conf`)
