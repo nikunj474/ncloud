@@ -1,6 +1,8 @@
 #pragma once
 #ifndef PENNCLOUD_KV_TABLET_H
 #define PENNCLOUD_KV_TABLET_H
+
+using namespace std;
 // =============================================================================
 // tablet.h  --  PennCloud KV tablet: in-memory store + WAL + checkpoint
 // =============================================================================
@@ -56,8 +58,8 @@ static constexpr uint8_t  WAL_DELETE = 2;
 static constexpr uint32_t CKPT_MAGIC = 0xC0DEFACE;
 
 struct RowData {
-    std::unordered_map<std::string, std::string> cols;
-    mutable std::shared_mutex mu;
+    unordered_map<string, string> cols;
+    mutable shared_mutex mu;
 
     RowData()                          = default;
     RowData(const RowData&)            = delete;
@@ -65,54 +67,54 @@ struct RowData {
 };
 
 struct TabletDumpCell {
-    std::string tablet;
-    std::string row;
-    std::string col;
+    string tablet;
+    string row;
+    string col;
     size_t      value_size = 0;
-    std::string value_preview;
+    string value_preview;
     bool        value_is_text = true;
     bool        truncated = false;
 };
 
 class Tablet {
 public:
-    explicit Tablet(const std::string& name, const std::string& data_dir);
+    explicit Tablet(const string& name, const string& data_dir);
     ~Tablet();
 
-    bool put(const std::string& row,
-             const std::string& col,
-             const std::string& val);
-    bool put(const std::string& row,
-             const std::string& col,
-             const std::string& val,
+    bool put(const string& row,
+             const string& col,
+             const string& val);
+    bool put(const string& row,
+             const string& col,
+             const string& val,
              uint64_t* assigned_lsn);
 
-    bool get(const std::string& row,
-             const std::string& col,
-             std::string&       val_out);
+    bool get(const string& row,
+             const string& col,
+             string&       val_out);
 
-    bool cput(const std::string& row,
-              const std::string& col,
-              const std::string& v1,
-              const std::string& v2);
-    bool cput(const std::string& row,
-              const std::string& col,
-              const std::string& v1,
-              const std::string& v2,
+    bool cput(const string& row,
+              const string& col,
+              const string& v1,
+              const string& v2);
+    bool cput(const string& row,
+              const string& col,
+              const string& v1,
+              const string& v2,
               uint64_t* assigned_lsn);
 
-    bool del(const std::string& row, const std::string& col);
-    bool del(const std::string& row, const std::string& col, bool* deleted_out);
-    bool del(const std::string& row, const std::string& col, bool* deleted_out, uint64_t* assigned_lsn);
-    bool apply_replicated_delete(const std::string& row,
-                                 const std::string& col,
+    bool del(const string& row, const string& col);
+    bool del(const string& row, const string& col, bool* deleted_out);
+    bool del(const string& row, const string& col, bool* deleted_out, uint64_t* assigned_lsn);
+    bool apply_replicated_delete(const string& row,
+                                 const string& col,
                                  uint64_t* assigned_lsn);
-    bool apply_replicated_put(const std::string& row,
-                              const std::string& col,
-                              const std::string& val,
+    bool apply_replicated_put(const string& row,
+                              const string& col,
+                              const string& val,
                               uint64_t expected_lsn);
-    bool apply_replicated_delete(const std::string& row,
-                                 const std::string& col,
+    bool apply_replicated_delete(const string& row,
+                                 const string& col,
                                  uint64_t expected_lsn);
 
     bool checkpoint();
@@ -120,52 +122,52 @@ public:
 
     uint64_t op_count() const { return op_count_.load(); }
     size_t   row_count() const;
-    std::vector<TabletDumpCell> dump_cells() const;
+    vector<TabletDumpCell> dump_cells() const;
 
-    std::string wal_path()        const { return wal_path_; }
-    std::string checkpoint_path() const { return ckpt_path_; }
+    string wal_path()        const { return wal_path_; }
+    string checkpoint_path() const { return ckpt_path_; }
 
     uint64_t lsn() const { return lsn_.load(); }
     uint64_t checkpoint_version() const { return checkpoint_version_.load(); }
 
     // Phase B / R1 snapshot helpers
-    std::string snapshot_blob() const;
-    bool        load_snapshot_blob(const std::string& blob);
+    string snapshot_blob() const;
+    bool        load_snapshot_blob(const string& blob);
 
     // Phase R2 delta helpers
     // Export WAL entries strictly AFTER the given LSN.
-    std::string wal_delta_after(uint64_t after_lsn) const;
+    string wal_delta_after(uint64_t after_lsn) const;
     // Apply a delta blob containing WAL-format entries with explicit LSNs.
-    bool        apply_wal_delta_blob(const std::string& blob);
+    bool        apply_wal_delta_blob(const string& blob);
 
 private:
-    std::string name_;
-    std::string data_dir_;
-    std::string wal_path_;
-    std::string ckpt_path_;
+    string name_;
+    string data_dir_;
+    string wal_path_;
+    string ckpt_path_;
 
-    std::unordered_map<std::string, std::unique_ptr<RowData>> rows_;
-    mutable std::shared_mutex rows_mu_;
+    unordered_map<string, unique_ptr<RowData>> rows_;
+    mutable shared_mutex rows_mu_;
 
     BloomFilter bloom_;
 
-    std::ofstream wal_;
-    mutable std::mutex wal_mu_;
+    ofstream wal_;
+    mutable mutex wal_mu_;
 
-    std::atomic<uint64_t> lsn_{0};
-    std::atomic<uint64_t> checkpoint_version_{0};
-    std::atomic<uint64_t> op_count_{0};
+    atomic<uint64_t> lsn_{0};
+    atomic<uint64_t> checkpoint_version_{0};
+    atomic<uint64_t> op_count_{0};
 
-    RowData* get_or_create_row(const std::string& row);
-    RowData* find_row(const std::string& row);
+    RowData* get_or_create_row(const string& row);
+    RowData* find_row(const string& row);
 
-    bool write_wal_put(const std::string& row,
-                       const std::string& col,
-                       const std::string& val,
+    bool write_wal_put(const string& row,
+                       const string& col,
+                       const string& val,
                        uint64_t* assigned_lsn = nullptr);
 
-    bool write_wal_delete(const std::string& row,
-                          const std::string& col,
+    bool write_wal_delete(const string& row,
+                          const string& col,
                           uint64_t* assigned_lsn = nullptr);
 
     bool checkpoint_locked();
