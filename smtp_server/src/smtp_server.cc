@@ -112,17 +112,20 @@ static bool starts_with_ci(const std::string& s, const std::string& pfx) {
     return lower_copy(s.substr(0, pfx.size())) == lower_copy(pfx);
 }
 
-static std::string strip_angle(const std::string& s) {
-    std::string t = trim(s);
-    if (!t.empty() && t.front() == '<') t.erase(t.begin());
-    if (!t.empty() && t.back() == '>') t.pop_back();
-    return trim(t);
-}
-
 static std::string extract_path_arg(const std::string& line, const std::string& key) {
     auto pos = lower_copy(line).find(lower_copy(key));
     if (pos == std::string::npos) return "";
-    return strip_angle(line.substr(pos + key.size()));
+    std::string arg = trim(line.substr(pos + key.size()));
+    if (arg.empty()) return "";
+
+    if (arg.front() == '<') {
+        auto end = arg.find('>');
+        if (end == std::string::npos || end <= 1) return "";
+        return trim(arg.substr(1, end - 1));
+    }
+
+    auto end = arg.find_first_of(" \t");
+    return trim(arg.substr(0, end));
 }
 
 static std::string new_uid() {
@@ -247,9 +250,7 @@ public:
 
     explicit SMTPServer(const Config& cfg)
         : cfg_(cfg),
-          kv_(cfg.coord_port > 0
-                  ? KVClient(cfg.kv_host, cfg.kv_port, cfg.coord_host, cfg.coord_port)
-                  : KVClient(cfg.kv_host, cfg.kv_port)) {}
+          kv_(cfg.kv_host, cfg.kv_port, cfg.coord_host, cfg.coord_port) {}
 
     void run() {
         ::signal(SIGINT, sig_handler);

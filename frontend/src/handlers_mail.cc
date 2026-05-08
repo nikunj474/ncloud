@@ -15,7 +15,7 @@
 namespace {
 
 constexpr size_t kMailAttachmentChunkSize = 1024 * 1024; // 1 MB
-constexpr size_t kMaxMailAttachmentBytes = 10ull * 1024ull * 1024ull;
+constexpr size_t kDefaultMailAttachmentBytes = 10ull * 1024ull * 1024ull;
 
 std::string new_uid_mail() {
     auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -86,8 +86,20 @@ std::string mail_row(const std::string& user) { return user + ":mail"; }
 std::string mail_folder_col(const std::string& folder) { return "folder:" + folder; }
 std::string contacts_row(const std::string& user) { return user + ":contacts"; }
 std::string contacts_col() { return "list"; }
+std::string drive_user_row_mail(const std::string& user) { return user + ":drive"; }
+std::string mail_attachment_limit_col() { return "mail_attachment_limit_bytes"; }
 std::string attachment_row(const std::string& att_id) { return "mail:att:" + att_id; }
 std::string attachment_chunk_col(size_t idx) { return "chunk:" + std::to_string(idx); }
+
+size_t parse_size_t_or_mail(const std::string& s, size_t fallback) {
+    if (s.empty()) return fallback;
+    try { return static_cast<size_t>(std::stoull(s)); } catch (...) { return fallback; }
+}
+
+size_t user_mail_attachment_limit_bytes(KVClient* kv, const std::string& user) {
+    return parse_size_t_or_mail(kv->get_str(drive_user_row_mail(user), mail_attachment_limit_col()),
+                                kDefaultMailAttachmentBytes);
+}
 
 std::string normalize_folder(const std::string& folder) {
     if (folder == "sent" || folder == "trash") return folder;
@@ -528,8 +540,11 @@ HttpResponse FEServer::handle_mail_upload_attachment(const HttpRequest& req, con
     if (!found || file_part.filename.empty()) {
         return HttpResponse::json(R"({"ok":false,"error":"missing attachment file"})");
     }
-    if (file_part.data.size() > kMaxMailAttachmentBytes) {
-        return HttpResponse::json(R"({"ok":false,"error":"attachment exceeds 10 MB limit"})");
+    const size_t attachment_limit = user_mail_attachment_limit_bytes(kv_.get(), user);
+    if (file_part.data.size() > attachment_limit) {
+        const size_t limit_mb = attachment_limit / (1024ull * 1024ull);
+        return HttpResponse::json(std::string("{\"ok\":false,\"error\":\"attachment exceeds ") +
+                                  std::to_string(limit_mb) + " MB limit\"}");
     }
 
     const std::string att_id = new_uid_mail();

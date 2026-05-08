@@ -491,20 +491,6 @@ static AdminClusterSpec configured_cluster_spec_admin(const FEServer::Config& cf
     return single_cluster_spec_admin(root);
 }
 
-static bool any_backend_listener_alive_admin(const FEServer::Config& cfg) {
-    if (cfg.kv_port > 0 &&
-        tcp_probe_admin(cfg.kv_host.empty() ? "127.0.0.1" : cfg.kv_host,
-                        cfg.kv_port, 80)) {
-        return true;
-    }
-    AdminClusterSpec cluster = detect_active_cluster_admin(cfg);
-    for (const auto& kv : cluster.backends) {
-        const auto& node = kv.second;
-        if (tcp_probe_admin("127.0.0.1", node.kv_port, 80)) return true;
-    }
-    return false;
-}
-
 static bool verify_port_up_admin(int port, int attempts = 16, int sleep_ms = 250) {
     for (int i = 0; i < attempts; ++i) {
         if (tcp_probe_admin("127.0.0.1", port, 250)) return true;
@@ -1246,9 +1232,6 @@ HttpResponse FEServer::dispatch(const HttpRequest& req) {
 
     // ---- Static / SPA shell -------------------------------------------------
     if ((method == "GET" || method == "HEAD") && is_spa_shell_route(path)) {
-        if (!any_backend_listener_alive_admin(cfg_)) {
-            return HttpResponse::not_found();
-        }
         return handle_spa_shell(req);
     }
 
@@ -1760,14 +1743,14 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
       box-shadow: var(--ring);
     }
     .contact-form-row {
-      display: grid; grid-template-columns: minmax(150px, 1fr) minmax(220px, 1.2fr) auto;
+      display: grid; grid-template-columns: 1fr;
       gap: 10px; align-items: start; margin-bottom: 14px;
     }
     .contact-form-row input {
-      height: 40px; margin-bottom: 0;
+      height: 40px; margin-bottom: 0; min-width: 0;
     }
     .contact-add-btn {
-      width: auto; height: 40px; padding: 0 20px; align-self: start;
+      width: auto; height: 40px; min-width: 84px; padding: 0 20px; align-self: start;
     }
     .contact-row {
       display: flex; align-items: center; justify-content: space-between;
@@ -1945,7 +1928,7 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
       .drive-row-actions { justify-content: flex-start; }
       .drive-kind, .drive-size, .drive-changed { padding-left: 50px; }
       .contact-form-row { grid-template-columns: 1fr; }
-      .contact-add-btn { width: 100%; }
+      .contact-add-btn { grid-column: auto; width: 100%; }
     }
   </style>
 </head>
@@ -2197,6 +2180,11 @@ async function markFrontendHealthFailure() {
   frontendHealthFailures += 1;
   const currentPort = window.location.port || (window.location.protocol === 'https:' ? '443' : '80');
   const currentId = frontendIdForPort(currentPort);
+  if (!currentId) {
+    // Public HTTP/HTTPS traffic goes through nginx; direct frontend ports are
+    // plain HTTP and cannot be probed safely from an HTTPS page.
+    return null;
+  }
   const peers = peerFrontendPorts(currentId);
 
   for (const port of peers) {
@@ -2218,18 +2206,18 @@ async function markFrontendHealthFailure() {
     return true;
   }
 
-  return false;
+  return null;
 }
 
 async function backendStorageAvailable() {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 700);
+  const timeout = setTimeout(() => controller.abort(), 2500);
   try {
     const r = await fetch('/api/admin/status', { cache: 'no-store', signal: controller.signal });
     // Public deployments protect admin status with ADMIN_TOKEN. A 403 here
     // means "health endpoint is private", not that user-facing storage is down.
     if (r.status === 403) return true;
-    if (!r.ok) return await markFrontendHealthFailure();
+    if (!r.ok) return null;
     const data = await r.json();
     frontendHealthFailures = 0;
     lastFrontendNodes = data.frontend_nodes || [];
@@ -2252,7 +2240,7 @@ async function ensureBackendStorageAvailable() {
     renderPageNotFound();
     return false;
   }
-  return available === true;
+  return true;
 }
 
 async function loadContacts(force = false) {
@@ -2858,8 +2846,10 @@ async function renderCompose(params = {}) {
 async function uploadMailAttachment(file) {
   rememberComposeDraft();
   const errBox = document.getElementById('send-error');
-  if (file.size > 10 * 1024 * 1024) {
-    errBox.textContent = 'Attachment must be 10 MB or smaller.';
+  const quota = await loadQuota(true);
+  const attachmentLimit = quota && quota.mail_attachment_limit_bytes ? quota.mail_attachment_limit_bytes : (10 * 1024 * 1024);
+  if (file.size > attachmentLimit) {
+    errBox.textContent = `Attachment must be ${formatBytes(attachmentLimit)} or smaller.`;
     errBox.style.display = 'block';
     return;
   }
@@ -3742,8 +3732,10 @@ async function renderCompose(params = {}) {
 async function uploadMailAttachment(file) {
   rememberComposeDraft();
   const errBox = document.getElementById('send-error');
-  if (file.size > 10 * 1024 * 1024) {
-    errBox.textContent = 'Attachment must be 10 MB or smaller.';
+  const quota = await loadQuota(true);
+  const attachmentLimit = quota && quota.mail_attachment_limit_bytes ? quota.mail_attachment_limit_bytes : (10 * 1024 * 1024);
+  if (file.size > attachmentLimit) {
+    errBox.textContent = `Attachment must be ${formatBytes(attachmentLimit)} or smaller.`;
     errBox.style.display = 'block';
     return;
   }
@@ -4520,17 +4512,21 @@ async function renderSettings() {
       </div>
       <div class="compose-form" style="max-width:none">
         <h3 style="margin-bottom:16px;font-size:15px">Storage quota</h3>
-        <div style="font-size:13px;color:var(--muted);margin-bottom:12px">per-user drive quota with upload enforcement.</div>
+        <div style="font-size:13px;color:var(--muted);margin-bottom:12px">per-user Drive quota and mail attachment limits.</div>
+        <label style="display:block;font-size:12px;color:var(--muted);font-weight:700;margin-bottom:6px">Drive quota (MB)</label>
         <input id="quota-mb" type="number" min="1" max="1024" value="${quota ? Math.round(quota.limit_bytes / (1024 * 1024)) : 50}">
         <div style="font-size:13px;color:var(--muted);margin-bottom:12px">Currently using ${quota ? `${formatBytes(quota.used_bytes)} of ${formatBytes(quota.limit_bytes)}` : 'unknown'}.</div>
-        <button class="btn btn-primary" style="width:auto;padding:9px 24px" onclick="updateQuota()">Save quota</button>
+        <label style="display:block;font-size:12px;color:var(--muted);font-weight:700;margin-bottom:6px">Email attachment limit (MB)</label>
+        <input id="attachment-limit-mb" type="number" min="1" max="128" value="${quota ? Math.round((quota.mail_attachment_limit_bytes || (10 * 1024 * 1024)) / (1024 * 1024)) : 10}">
+        <div style="font-size:13px;color:var(--muted);margin-top:-4px;margin-bottom:12px">Applies to each uploaded mail attachment. Maximum configurable value is 128 MB.</div>
+        <button class="btn btn-primary" style="width:auto;padding:9px 24px" onclick="updateQuota()">Save settings</button>
         <div id="quota-msg" class="error-msg"></div>
       </div>
       <div class="compose-form" style="max-width:none">
         <h3 style="margin-bottom:16px;font-size:15px">Address book</h3>
         <div class="contact-form-row">
           <input id="contact-name" type="text" placeholder="Name">
-          <input id="contact-email" type="text" placeholder="Email or PennCloud username">
+          <input id="contact-email" type="text" placeholder="Email or username">
           <button class="btn btn-primary contact-add-btn" onclick="addContact()">Add</button>
         </div>
         <div id="contacts-list-box">
@@ -4565,14 +4561,15 @@ async function changePassword() {
 
 async function updateQuota() {
   const mb = document.getElementById('quota-mb').value;
+  const attachmentMb = document.getElementById('attachment-limit-mb').value;
   const r = await fetch('/api/quota', {
     method: 'POST',
     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-    body: `limit_mb=${encodeURIComponent(mb)}`
+    body: `limit_mb=${encodeURIComponent(mb)}&attachment_limit_mb=${encodeURIComponent(attachmentMb)}`
   });
   const data = await r.json();
   const el = document.getElementById('quota-msg');
-  el.textContent = data.ok ? 'Quota updated.' : (data.error || 'Failed.');
+  el.textContent = data.ok ? 'Settings updated.' : (data.error || 'Failed.');
   el.style.display = 'block';
   if (data.ok) await loadQuota(true);
 }
@@ -6360,8 +6357,11 @@ bool ensure_drive_root(KVClient* kv, const std::string& user, std::string& root_
 
 std::string drive_quota_col() { return "quota_bytes"; }
 std::string drive_used_col() { return "used_bytes"; }
+std::string mail_attachment_limit_col() { return "mail_attachment_limit_bytes"; }
 constexpr size_t kMaxDriveFileBytes = 1024ull * 1024ull * 1024ull;
 constexpr size_t kDefaultDriveQuotaBytes = 1024ull * 1024ull * 1024ull;
+constexpr size_t kDefaultMailAttachmentBytes = 10ull * 1024ull * 1024ull;
+constexpr size_t kMaxMailAttachmentLimitMB = 128;
 
 long long elapsed_ms_since(std::chrono::steady_clock::time_point start) {
     return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -6436,6 +6436,11 @@ std::string upload_status_json(KVClient* kv, const std::string& upload_id) {
 
 size_t user_drive_quota_bytes(KVClient* kv, const std::string& user) {
     return parse_size_t_or(kv->get_str(drive_user_row(user), drive_quota_col()), kDefaultDriveQuotaBytes);
+}
+
+size_t user_mail_attachment_limit_bytes(KVClient* kv, const std::string& user) {
+    return parse_size_t_or(kv->get_str(drive_user_row(user), mail_attachment_limit_col()),
+                           kDefaultMailAttachmentBytes);
 }
 
 size_t subtree_file_bytes_inner(KVClient* kv, const std::string& uid,
@@ -7455,27 +7460,37 @@ HttpResponse FEServer::handle_quota_status(const HttpRequest&, const std::string
     size_t limit_bytes = user_drive_quota_bytes(kv_.get(), user);
     size_t used_bytes = user_drive_used_bytes(kv_.get(), user);
     size_t remaining = used_bytes >= limit_bytes ? 0 : (limit_bytes - used_bytes);
+    size_t attachment_limit_bytes = user_mail_attachment_limit_bytes(kv_.get(), user);
     std::string body = std::string("{\"ok\":true,\"limit_bytes\":") + std::to_string(limit_bytes) +
                        ",\"used_bytes\":" + std::to_string(used_bytes) +
-                       ",\"remaining_bytes\":" + std::to_string(remaining) + "}";
+                       ",\"remaining_bytes\":" + std::to_string(remaining) +
+                       ",\"mail_attachment_limit_bytes\":" + std::to_string(attachment_limit_bytes) + "}";
     return HttpResponse::json(body);
 }
 
 HttpResponse FEServer::handle_quota_update(const HttpRequest& req, const std::string& user) {
     auto params = parse_urlencoded(req.body);
     size_t limit_mb = parse_size_t_or(params["limit_mb"], 0);
+    size_t attachment_limit_mb = params.count("attachment_limit_mb")
+        ? parse_size_t_or(params["attachment_limit_mb"], 0)
+        : (user_mail_attachment_limit_bytes(kv_.get(), user) / (1024ull * 1024ull));
     // Hard cap: each user gets at most 1 GB of Drive storage.
     constexpr size_t kMaxQuotaMB = 1024;
     if (limit_mb == 0 || limit_mb > kMaxQuotaMB) {
         return HttpResponse::json(R"({"ok":false,"error":"limit must be between 1 and 1024 MB"})");
+    }
+    if (attachment_limit_mb == 0 || attachment_limit_mb > kMaxMailAttachmentLimitMB) {
+        return HttpResponse::json(R"({"ok":false,"error":"attachment limit must be between 1 and 128 MB"})");
     }
     size_t new_limit = limit_mb * 1024ull * 1024ull;
     size_t used_bytes = user_drive_used_bytes(kv_.get(), user);
     if (new_limit < used_bytes) {
         return HttpResponse::json(R"({"ok":false,"error":"new quota is below current usage"})");
     }
-    if (!kv_->put(drive_user_row(user), drive_quota_col(), std::to_string(new_limit))) {
-        return HttpResponse::json(R"({"ok":false,"error":"failed to persist quota"})");
+    const std::string row = drive_user_row(user);
+    if (!kv_->put(row, drive_quota_col(), std::to_string(new_limit)) ||
+        !kv_->put(row, mail_attachment_limit_col(), std::to_string(attachment_limit_mb * 1024ull * 1024ull))) {
+        return HttpResponse::json(R"({"ok":false,"error":"failed to persist settings"})");
     }
     return handle_quota_status(req, user);
 }
