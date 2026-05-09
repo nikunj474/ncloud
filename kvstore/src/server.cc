@@ -19,7 +19,6 @@
 #include <chrono>
 
 namespace {
-// Return true when row belongs to the half-open range [start, end).
 bool row_in_range(const std::string& row,
                   const std::string& start,
                   const std::string& end) {
@@ -28,7 +27,6 @@ bool row_in_range(const std::string& row,
     return true;
 }
 
-// Escape arbitrary KV bytes into a JSON string for the DUMP admin endpoint.
 std::string kv_json_str(const std::string& s) {
     std::string out = "\"";
     static const char hex[] = "0123456789abcdef";
@@ -51,7 +49,6 @@ std::string kv_json_str(const std::string& s) {
 }
 }
 
-// Start worker threads that wait for queued connection handlers.
 ThreadPool::ThreadPool(int n) {
     workers_.reserve(n);
     for (int i = 0; i < n; ++i) {
@@ -71,7 +68,6 @@ ThreadPool::ThreadPool(int n) {
     }
 }
 
-// Stop accepting tasks, wake workers, and join all worker threads.
 ThreadPool::~ThreadPool() {
     {
         std::lock_guard<std::mutex> lk(mu_);
@@ -81,7 +77,6 @@ ThreadPool::~ThreadPool() {
     for (auto& w : workers_) w.join();
 }
 
-// Add one task to the queue and wake a worker.
 void ThreadPool::enqueue(std::function<void()> task) {
     {
         std::lock_guard<std::mutex> lk(mu_);
@@ -91,7 +86,6 @@ void ThreadPool::enqueue(std::function<void()> task) {
     cv_.notify_one();
 }
 
-// Construct hosted tablets and per-tablet replication managers from config.
 KVServer::KVServer(const Config& cfg)
     : cfg_(cfg) {
     pool_ = std::make_unique<ThreadPool>(cfg_.threads);
@@ -120,11 +114,13 @@ KVServer::KVServer(const Config& cfg)
             rcfg.tablet_name = spec.name;
             rcfg.repl_port = cfg_.repl_port;
             hosted.repl = std::make_unique<ReplicationManager>(rcfg, *hosted.tablet);
-            hosted.repl->demote_to_secondary(); // coordinator will promote exact tablet primaries
-            for (const auto& replica : cfg_.replicas) {
-                hosted.repl->add_replica(std::get<0>(replica),
-                                         std::get<1>(replica),
-                                         std::get<2>(replica));
+            if (cfg_.replicas.empty()) {
+                hosted.repl->demote_to_secondary(); // coordinator will promote exact tablet primaries
+            } else {
+                for (const auto& [id, host, port] : cfg_.replicas) {
+                    hosted.repl->add_replica(id, host, port);
+                }
+                hosted.repl->promote_to_primary();
             }
         }
 
@@ -132,13 +128,11 @@ KVServer::KVServer(const Config& cfg)
     }
 }
 
-// Close listen sockets in case stop() did not already close them.
 KVServer::~KVServer() {
     if (listen_fd_ >= 0) ::close(listen_fd_);
     if (repl_listen_fd_ >= 0) ::close(repl_listen_fd_);
 }
 
-// Find the hosted tablet whose configured range contains the row key.
 KVServer::HostedTablet* KVServer::find_hosted_for_row(const std::string& row) {
     for (auto& hosted : hosted_) {
         if (row_in_range(row, hosted.cfg.row_start, hosted.cfg.row_end)) return &hosted;
@@ -146,7 +140,6 @@ KVServer::HostedTablet* KVServer::find_hosted_for_row(const std::string& row) {
     return nullptr;
 }
 
-// Const row-range lookup used by read-only server paths.
 const KVServer::HostedTablet* KVServer::find_hosted_for_row(const std::string& row) const {
     for (const auto& hosted : hosted_) {
         if (row_in_range(row, hosted.cfg.row_start, hosted.cfg.row_end)) return &hosted;
@@ -154,7 +147,6 @@ const KVServer::HostedTablet* KVServer::find_hosted_for_row(const std::string& r
     return nullptr;
 }
 
-// Find a hosted tablet by name for replication/control commands.
 KVServer::HostedTablet* KVServer::find_hosted_by_name(const std::string& name) {
     for (auto& hosted : hosted_) {
         if (hosted.cfg.name == name) return &hosted;
@@ -162,7 +154,6 @@ KVServer::HostedTablet* KVServer::find_hosted_by_name(const std::string& name) {
     return nullptr;
 }
 
-// Const name lookup for read-only replication/control paths.
 const KVServer::HostedTablet* KVServer::find_hosted_by_name(const std::string& name) const {
     for (const auto& hosted : hosted_) {
         if (hosted.cfg.name == name) return &hosted;
@@ -170,7 +161,6 @@ const KVServer::HostedTablet* KVServer::find_hosted_by_name(const std::string& n
     return nullptr;
 }
 
-// Create, bind, and listen on the normal client command port.
 int KVServer::create_listen_socket() {
     int fd = ::socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) throw std::runtime_error("socket(): " + std::string(strerror(errno)));
@@ -195,7 +185,6 @@ int KVServer::create_listen_socket() {
     return fd;
 }
 
-// Create, bind, and listen on the replication/control command port.
 int KVServer::create_repl_listen_socket() {
     int fd = ::socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) throw std::runtime_error("repl socket(): " + std::string(strerror(errno)));
@@ -220,7 +209,6 @@ int KVServer::create_repl_listen_socket() {
     return fd;
 }
 
-// Recover tablets, start replication, then accept client sockets forever.
 void KVServer::run() {
     ::signal(SIGPIPE, SIG_IGN);
 
@@ -271,12 +259,9 @@ void KVServer::run() {
     }
 }
 
-// Stop listeners and background threads so run() can exit cleanly.
 void KVServer::stop() {
-    bool expected = true;
-    if (!running_.compare_exchange_strong(expected, false)) return;
-
     std::cout << "[kvserver] graceful shutdown triggered\n" << std::flush;
+    running_ = false;
     if (listen_fd_ >= 0) {
         ::shutdown(listen_fd_, SHUT_RDWR);
         ::close(listen_fd_);
@@ -294,7 +279,6 @@ void KVServer::stop() {
     }
 }
 
-// Ask each hosted tablet to write a checkpoint.
 bool KVServer::checkpoint_all() {
     bool ok = true;
     for (auto& hosted : hosted_) {
@@ -303,7 +287,6 @@ bool KVServer::checkpoint_all() {
     return ok;
 }
 
-// Process requests from one persistent client connection until it closes.
 void KVServer::handle_connection(int fd) {
     struct timeval tv { .tv_sec = 5, .tv_usec = 0 };
     ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
@@ -312,7 +295,6 @@ void KVServer::handle_connection(int fd) {
     ::close(fd);
 }
 
-// Read one KV protocol command and dispatch it to the proper hosted tablet.
 bool KVServer::handle_request(int fd) {
     std::string line;
     if (!read_line(fd, line)) return false;
@@ -340,9 +322,13 @@ bool KVServer::handle_request(int fd) {
         HostedTablet* hosted = find_hosted_for_row(row);
         if (!hosted) return send(err_response("row not hosted on this server"));
 
-        bool ok = hosted->repl ? hosted->repl->replicated_put(row, col, val)
-                               : hosted->tablet->put(row, col, val);
-        return send(ok ? ok_response() : err_response("PUT failed"));
+        if (hosted->repl) {
+            KVPutStatus st = hosted->repl->replicated_put(row, col, val);
+            if (st == KVPutStatus::OK) return send(ok_response());
+            if (st == KVPutStatus::QuorumUnavailable) return send(err_response("no quorum"));
+            return send(err_response("PUT failed"));
+        }
+        return send(hosted->tablet->put(row, col, val) ? ok_response() : err_response("PUT failed"));
     }
 
     if (op == "GET") {
@@ -378,9 +364,13 @@ bool KVServer::handle_request(int fd) {
         HostedTablet* hosted = find_hosted_for_row(row);
         if (!hosted) return send(err_response("row not hosted on this server"));
 
-        bool ok = hosted->repl ? hosted->repl->replicated_cput(row, col, v1, v2)
-                               : hosted->tablet->cput(row, col, v1, v2);
-        return send(ok ? ok_response() : err_response("value mismatch"));
+        if (hosted->repl) {
+            KVPutStatus st = hosted->repl->replicated_cput(row, col, v1, v2);
+            if (st == KVPutStatus::OK) return send(ok_response());
+            if (st == KVPutStatus::QuorumUnavailable) return send(err_response("no quorum"));
+            return send(err_response("value mismatch"));
+        }
+        return send(hosted->tablet->cput(row, col, v1, v2) ? ok_response() : err_response("value mismatch"));
     }
 
     if (op == "DELETE") {
@@ -395,17 +385,27 @@ bool KVServer::handle_request(int fd) {
         HostedTablet* hosted = find_hosted_for_row(row);
         if (!hosted) return send(err_response("row not hosted on this server"));
 
-        bool ok = hosted->repl ? hosted->repl->replicated_delete(row, col)
-                               : hosted->tablet->del(row, col);
-        return send(ok ? ok_response() : err_response("DELETE failed"));
+        if (hosted->repl) {
+            KVPutStatus st = hosted->repl->replicated_delete(row, col);
+            if (st == KVPutStatus::OK) return send(ok_response());
+            if (st == KVPutStatus::QuorumUnavailable) return send(err_response("no quorum"));
+            return send(err_response("DELETE failed"));
+        }
+        return send(hosted->tablet->del(row, col) ? ok_response() : err_response("DELETE failed"));
     }
 
     if (op == "PING") {
         uint64_t max_lsn = 0;
+        std::string tablet_lsns;
         for (const auto& hosted : hosted_) max_lsn = std::max(max_lsn, hosted.tablet->lsn());
+        for (const auto& hosted : hosted_) {
+            if (!tablet_lsns.empty()) tablet_lsns += ",";
+            tablet_lsns += hosted.cfg.name + ":" + std::to_string(hosted.tablet->lsn());
+        }
         return send("+OK LSN=" + std::to_string(max_lsn) +
                     " PID=" + std::to_string(static_cast<long long>(::getpid())) +
-                    " TABLETS=" + std::to_string(hosted_.size()) + "\r\n");
+                    " TABLETS=" + std::to_string(hosted_.size()) +
+                    " TABLET_LSNS=" + tablet_lsns + "\r\n");
     }
 
     if (op == "STATS") {
@@ -482,7 +482,6 @@ bool KVServer::handle_request(int fd) {
     return send(err_response("unknown op: " + op));
 }
 
-// Accept replication/control sockets and hand each one to a detached thread.
 void KVServer::repl_accept_loop() {
     while (running_) {
         sockaddr_in addr{};
@@ -499,7 +498,6 @@ void KVServer::repl_accept_loop() {
     }
 }
 
-// Handle replication data messages and coordinator role/sync commands.
 void KVServer::handle_repl_connection(int fd) {
     struct timeval tv { .tv_sec = 5, .tv_usec = 0 };
     ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
@@ -586,6 +584,7 @@ void KVServer::handle_repl_connection(int fd) {
                 send("-ERR tablet not hosted\r\n");
                 continue;
             }
+            hosted->repl->clear_replicas();
             hosted->repl->promote_to_primary();
             send("+OK\r\n");
         } else if (cmd == "BECOME_SECONDARY") {
@@ -623,7 +622,6 @@ void KVServer::handle_repl_connection(int fd) {
     }
 }
 
-// Periodically checkpoint tablets based on cfg_.ckpt_interval.
 void KVServer::checkpoint_loop() {
     while (running_) {
         for (int i = 0; i < cfg_.ckpt_interval * 10 && running_; ++i)

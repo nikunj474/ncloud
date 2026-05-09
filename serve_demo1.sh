@@ -8,6 +8,7 @@ KV_PORT=5050
 FE_PORT=8090
 COORD_PORT=6000
 DATA_DIR=/tmp/pc_demo1_data
+export PENNCLOUD_OPEN_ADMIN="${PENNCLOUD_OPEN_ADMIN:-1}"
 
 echo "== Killing old PennCloud processes =="
 pkill -f "/kvstore/kvserver" 2>/dev/null || true

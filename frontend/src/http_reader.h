@@ -18,7 +18,7 @@
 #include <sstream>
 #include <iostream>
 #include <cctype>
-#include <cerrno>
+#include <algorithm>
 
 inline std::string http_trim_copy(const std::string& s) {
     size_t start = 0;
@@ -74,16 +74,15 @@ inline bool http_write_all(int fd, const std::string& data) {
     size_t sent = 0;
     while (sent < data.size()) {
         ssize_t n = ::send(fd, data.data() + sent, data.size() - sent, MSG_NOSIGNAL);
-        if (n < 0 && errno == EINTR) continue;
         if (n <= 0) return false;
         sent += static_cast<size_t>(n);
     }
     return true;
 }
 
-// Allows a 1 GB file plus multipart form overhead; Drive enforces the exact
-// per-file/quota limit after parsing the upload.
-static constexpr size_t kMaxRequestBodyBytes = 1030ull * 1024ull * 1024ull;
+static constexpr size_t kMaxUploadFileBytes = 1023ull * 1024ull * 1024ull;  // user-visible file cap
+static constexpr size_t kMaxMultipartOverheadBytes = 1ull * 1024ull * 1024ull;
+static constexpr size_t kMaxRequestBodyBytes = kMaxUploadFileBytes + kMaxMultipartOverheadBytes;
 
 // Read a chunked body from socket
 inline bool read_chunked_body(int fd, std::string& body) {
@@ -188,12 +187,13 @@ inline bool read_http_request(int fd, HttpRequest& req) {
             if (content_length > kMaxRequestBodyBytes) {
                 // Send a proper 413 before closing so the browser gets an error
                 // instead of a silent dropped connection.
-                static const std::string k413 =
+                const std::string body =
+                    "{\"ok\":false,\"error\":\"file exceeds 1023 MB limit\"}";
+                const std::string k413 =
                     "HTTP/1.1 413 Content Too Large\r\n"
                     "Content-Type: application/json\r\n"
-                    "Content-Length: 52\r\n"
-                    "Connection: close\r\n\r\n"
-                    "{\"ok\":false,\"error\":\"request exceeds 1030 MB limit\"}";
+                    "Content-Length: " + std::to_string(body.size()) + "\r\n"
+                    "Connection: close\r\n\r\n" + body;
                 http_write_all(fd, k413);
                 return false;
             }
@@ -208,9 +208,29 @@ inline bool read_http_request(int fd, HttpRequest& req) {
     return true;
 }
 
+inline std::string http_chunk_prefix(size_t n) {
+    std::ostringstream oss;
+    oss << std::hex << n;
+    return oss.str();
+}
+
+inline bool send_http_chunked_body(int fd, const std::string& body) {
+    static constexpr size_t kChunkSize = 16 * 1024;
+    size_t off = 0;
+    while (off < body.size()) {
+        size_t take = std::min(kChunkSize, body.size() - off);
+        std::string chunk = http_chunk_prefix(take) + "\r\n";
+        chunk.append(body.data() + off, take);
+        chunk += "\r\n";
+        if (!http_write_all(fd, chunk)) return false;
+        off += take;
+    }
+    return http_write_all(fd, "0\r\n\r\n");
+}
+
 // send_http_response: serialize HttpResponse to socket
 // Supports: Content-Length for normal responses,
-//           Transfer-Encoding: chunked for streaming (SSE)
+//           Transfer-Encoding: chunked for streaming/larger responses.
 
 inline bool send_http_response(int fd, const HttpResponse& resp,
                                 bool is_head = false) {
@@ -234,9 +254,7 @@ inline bool send_http_response(int fd, const HttpResponse& resp,
     }
 
     // Custom headers (Content-Type, Location, Set-Cookie, etc.)
-    for (const auto& header : resp.headers) {
-        const std::string& k = header.first;
-        const std::string& v = header.second;
+    for (auto& [k, v] : resp.headers) {
         if (k == "Connection") continue;
         out += k + ": " + v + "\r\n";
     }
@@ -249,18 +267,19 @@ inline bool send_http_response(int fd, const HttpResponse& resp,
 
     out += "\r\n";  // end of headers
 
-    // Body (omit for HEAD requests)
-    if (!is_head && !resp.chunked) {
+    if (is_head) return http_write_all(fd, out);
+
+    if (resp.chunked) {
+        if (!http_write_all(fd, out)) return false;
+        return send_http_chunked_body(fd, resp.body);
+    }
+
+    // Body
+    if (!resp.chunked) {
         out += resp.body;
     }
 
     return http_write_all(fd, out);
-}
-
-inline std::string http_chunk_prefix(size_t n) {
-    std::ostringstream oss;
-    oss << std::hex << n;
-    return oss.str();
 }
 
 // Send a single SSE event (for F1 -- live inbox)

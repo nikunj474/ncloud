@@ -48,6 +48,12 @@ enum class KVReadStatus {
     Unavailable
 };
 
+enum class KVWriteStatus {
+    OK,
+    QuorumUnavailable,  // server returned "-ERR no quorum"
+    Error
+};
+
 class ConnectionPool {
 public:
     explicit ConnectionPool(const NodeInfo& node, int pool_size = 2)
@@ -157,27 +163,61 @@ public:
         }, timeout_ms);
     }
 
+    bool put_bytes(const std::string& row,
+                   const std::string& col,
+                   const char* val,
+                   size_t len) {
+        const int timeout_ms = len >= kLargeValueThresholdBytes
+                                 ? kLargeValueSocketTimeoutMs
+                                 : kDefaultSocketTimeoutMs;
+        return exec_row(row, [&](int fd) {
+            if (!send_put_bytes(fd, row, col, val, len)) return false;
+            KVResponse resp = read_response(fd);
+            return resp.ok;
+        }, timeout_ms);
+    }
+
+    // Like put(), but returns KVWriteStatus so the caller can distinguish a
+    // quorum-unavailable condition from a transient connection failure.
+    // On QuorumUnavailable the connection is still healthy — no retry needed.
+    KVWriteStatus put_status(const std::string& row,
+                             const std::string& col,
+                             const std::string& val) {
+        const int timeout_ms = val.size() >= kLargeValueThresholdBytes
+                                 ? kLargeValueSocketTimeoutMs
+                                 : kDefaultSocketTimeoutMs;
+        return exec_row_write(row, [&](int fd) -> KVWriteStatus {
+            if (!send_put(fd, row, col, val)) return KVWriteStatus::Error;
+            KVResponse resp = read_response(fd);
+            if (resp.ok) return KVWriteStatus::OK;
+            if (resp.error == "no quorum") return KVWriteStatus::QuorumUnavailable;
+            return KVWriteStatus::Error;
+        }, timeout_ms);
+    }
+
     KVReadStatus get_status(const std::string& row,
                             const std::string& col,
                             std::string& val_out) {
-        constexpr int kAttempts = 4;
-        constexpr int kSleepMs[kAttempts] = {0, 75, 150, 250};
+        constexpr int kAttempts = 8;
+        constexpr int kSleepMs[kAttempts] = {0, 75, 150, 250, 400, 600, 900, 1200};
+
+        // Resolve every logical row before using a pooled socket. Drive and
+        // mail workflows touch several tablets in quick succession; a single
+        // global target cache can otherwise send a large value to the wrong
+        // tablet before the server rejects it.
+        if (use_coordinator_) {
+            NodeInfo primary_node;
+            if (lookup_primary(row, primary_node)) install_target(primary_node, false);
+        }
 
         for (int attempt = 0; attempt < kAttempts; ++attempt) {
-            // Always read from primary to avoid returning stale data from a
-            // lagging secondary (which would hide recently-written drive children,
-            // session tokens, etc. until replication catches up).
-            if (use_coordinator_) {
-                NodeInfo primary_node;
-                if (lookup_primary(row, primary_node)) {
-                    install_target(primary_node, false);
-                }
-            }
-
             auto pool = snapshot_pool();
             int fd = pool ? pool->borrow() : -1;
             if (fd < 0) {
-                if (use_coordinator_) refresh_target_for_row(row, false);
+                if (use_coordinator_) {
+                    NodeInfo primary_node;
+                    if (lookup_primary(row, primary_node)) install_target(primary_node, false);
+                }
                 std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs[attempt]));
                 continue;
             }
@@ -189,10 +229,13 @@ public:
                 return st;
             }
 
-            // Unavailable — primary unreachable, retry with fresh target
+            // Unavailable — primary unreachable, force a fresh lookup before retrying
             ::close(fd);
             rebuild_current_pool();
-            if (use_coordinator_) refresh_target_for_row(row, false);
+            if (use_coordinator_) {
+                NodeInfo primary_node;
+                if (lookup_primary(row, primary_node)) install_target(primary_node, false);
+            }
             std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs[attempt]));
         }
 
@@ -209,11 +252,19 @@ public:
               const std::string& col,
               const std::string& v1,
               const std::string& v2) {
+        // Use the same size-aware timeout as put()/put_bytes(): when the
+        // combined old+new value payload is large (e.g. a folder's children
+        // CSV grown by many uploads) the KV WAL fsync + replication can
+        // exceed the 350 ms default, causing spurious timeouts that make
+        // append_child() report "failed to update folder listing".
+        const int timeout_ms = (v1.size() + v2.size()) >= kLargeValueThresholdBytes
+                                 ? kLargeValueSocketTimeoutMs
+                                 : kDefaultSocketTimeoutMs;
         return exec_row(row, [&](int fd) {
             if (!send_cput(fd, row, col, v1, v2)) return false;
             KVResponse resp = read_response(fd);
             return resp.ok;
-        });
+        }, timeout_ms);
     }
 
     bool del(const std::string& row, const std::string& col) {
@@ -263,8 +314,12 @@ public:
     }
 
 private:
-    static constexpr int kDefaultSocketTimeoutMs = 350;
-    static constexpr int kLargeValueSocketTimeoutMs = 30000;
+    // 3 s covers WAL fdatasync + replication ACK round-trip even under heavy
+    // disk I/O load (macOS F_FULLFSYNC + replica ack_timeout_ms=500ms + slack).
+    // The old 350 ms value was shorter than the replica ack_timeout_ms (500 ms),
+    // causing spurious timeouts on tiny writes when the disk was busy.
+    static constexpr int kDefaultSocketTimeoutMs = 3000;
+    static constexpr int kLargeValueSocketTimeoutMs = 300000;  // 5 min — covers disk write + replication of large chunks
     static constexpr size_t kLargeValueThresholdBytes = 256 * 1024;
 
     std::mutex                      mu_;
@@ -274,14 +329,58 @@ private:
     int                             coord_port_ = 0;
     bool                            use_coordinator_ = false;
 
+    // Like exec_row but returns KVWriteStatus. Stops retrying immediately on
+    // QuorumUnavailable (definitive server response — retrying won't help).
+    template <typename Op>
+    KVWriteStatus exec_row_write(const std::string& row, Op op,
+                                 int socket_timeout_ms = kDefaultSocketTimeoutMs) {
+        constexpr int kAttempts = 8;
+        constexpr int kSleepMs[kAttempts] = {0, 75, 150, 250, 400, 600, 900, 1200};
+
+        if (use_coordinator_ && !refresh_target_for_row(row, false))
+            return KVWriteStatus::QuorumUnavailable;
+
+        for (int attempt = 0; attempt < kAttempts; ++attempt) {
+            auto pool = snapshot_pool();
+            int fd = pool ? pool->borrow() : -1;
+
+            if (fd >= 0) {
+                set_socket_timeout(fd, socket_timeout_ms);
+                KVWriteStatus st = op(fd);
+                if (st == KVWriteStatus::OK) {
+                    if (socket_timeout_ms != kDefaultSocketTimeoutMs)
+                        set_socket_timeout(fd, kDefaultSocketTimeoutMs);
+                    pool->release(fd);
+                    return KVWriteStatus::OK;
+                }
+                if (st == KVWriteStatus::QuorumUnavailable) {
+                    // Connection is healthy; return immediately — retrying won't
+                    // restore quorum, and the caller should surface the error now.
+                    if (socket_timeout_ms != kDefaultSocketTimeoutMs)
+                        set_socket_timeout(fd, kDefaultSocketTimeoutMs);
+                    pool->release(fd);
+                    return KVWriteStatus::QuorumUnavailable;
+                }
+                ::close(fd);
+                rebuild_current_pool();
+            }
+
+            if (use_coordinator_ && !refresh_target_for_row(row, false)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs[attempt]));
+                continue;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs[attempt]));
+        }
+        return KVWriteStatus::Error;
+    }
+
     template <typename Op>
     bool exec_row(const std::string& row, Op op, int socket_timeout_ms = kDefaultSocketTimeoutMs) {
-        constexpr int kAttempts = 4;
-        constexpr int kSleepMs[kAttempts] = {0, 75, 150, 250};
+        constexpr int kAttempts = 8;
+        constexpr int kSleepMs[kAttempts] = {0, 75, 150, 250, 400, 600, 900, 1200};
 
-        if (use_coordinator_) {
-            refresh_target_for_row(row, true);
-        }
+        if (use_coordinator_ && !refresh_target_for_row(row, false))
+            return false;
 
         for (int attempt = 0; attempt < kAttempts; ++attempt) {
             auto pool = snapshot_pool();
@@ -302,8 +401,11 @@ private:
                 rebuild_current_pool();
             }
 
-            if (use_coordinator_) {
-                refresh_target_for_row(row, true);
+            // After a failure, force a fresh coordinator lookup before retrying.
+            // If the coordinator has no live primary, stop retrying with a stale target.
+            if (use_coordinator_ && !refresh_target_for_row(row, false)) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs[attempt]));
+                continue;
             }
 
             std::this_thread::sleep_for(std::chrono::milliseconds(kSleepMs[attempt]));
@@ -407,8 +509,8 @@ private:
         if (!use_coordinator_ || coord_host_.empty() || coord_port_ <= 0)
             return false;
 
-        constexpr int kLookupAttempts = 4;
-        constexpr int kSleepMs[kLookupAttempts] = {0, 75, 150, 250};
+        constexpr int kLookupAttempts = 8;
+        constexpr int kSleepMs[kLookupAttempts] = {0, 75, 150, 250, 400, 600, 900, 1200};
 
         NodeInfo node;
         for (int i = 0; i < kLookupAttempts; ++i) {
@@ -435,9 +537,10 @@ private:
             return false;
         }
 
+        // 5 s is generous for a local LOOKUP round-trip but guards against
+        // the coordinator being briefly busy with an election or sync.
         timeval tv{};
-        tv.tv_sec = 0;
-        tv.tv_usec = 500000; // 500 ms
+        tv.tv_sec = 5;
         ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
         ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
@@ -491,8 +594,7 @@ private:
         }
 
         timeval tv{};
-        tv.tv_sec = 0;
-        tv.tv_usec = 500000;
+        tv.tv_sec = 5;
         ::setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
         ::setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 

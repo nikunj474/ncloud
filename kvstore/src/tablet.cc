@@ -1,4 +1,3 @@
-
 #include "tablet.h"
 #include <cstring>
 #include <filesystem>
@@ -8,12 +7,11 @@
 #include <stdexcept>
 #include <algorithm>
 #include <cctype>
+#include <system_error>
 #include <sys/stat.h>
 #include <unistd.h>
-using namespace std;
 
-// Write a 32-bit integer in little-endian order to a binary stream.
-static void write_u32_le(ofstream& out, uint32_t v) {
+static void write_u32_le(std::ofstream& out, uint32_t v) {
     uint8_t buf[4] = {
         static_cast<uint8_t>(v),
         static_cast<uint8_t>(v >> 8),
@@ -23,8 +21,7 @@ static void write_u32_le(ofstream& out, uint32_t v) {
     out.write(reinterpret_cast<char*>(buf), 4);
 }
 
-// Read a 32-bit little-endian integer from a binary stream.
-static bool read_u32_le(ifstream& in, uint32_t& out) {
+static bool read_u32_le(std::ifstream& in, uint32_t& out) {
     uint8_t buf[4];
     in.read(reinterpret_cast<char*>(buf), 4);
     if (in.gcount() != 4) return false;
@@ -33,15 +30,13 @@ static bool read_u32_le(ifstream& in, uint32_t& out) {
     return true;
 }
 
-// Write a 64-bit integer in little-endian order to a binary stream.
-static void write_u64_le(ofstream& out, uint64_t v) {
+static void write_u64_le(std::ofstream& out, uint64_t v) {
     uint8_t buf[8];
     for (int i = 0; i < 8; ++i) buf[i] = static_cast<uint8_t>(v >> (8 * i));
     out.write(reinterpret_cast<char*>(buf), 8);
 }
 
-// Read a 64-bit little-endian integer from a binary stream.
-static bool read_u64_le(ifstream& in, uint64_t& out) {
+static bool read_u64_le(std::ifstream& in, uint64_t& out) {
     uint8_t buf[8];
     in.read(reinterpret_cast<char*>(buf), 8);
     if (in.gcount() != 8) return false;
@@ -51,8 +46,7 @@ static bool read_u64_le(ifstream& in, uint64_t& out) {
 }
 
 // String/stream little-endian helpers for snapshot/delta blobs
-// Append a 32-bit little-endian integer to an in-memory blob.
-static void append_u32_le(string& out, uint32_t v) {
+static void append_u32_le(std::string& out, uint32_t v) {
     char buf[4] = {
         static_cast<char>(v & 0xFF),
         static_cast<char>((v >> 8) & 0xFF),
@@ -62,15 +56,13 @@ static void append_u32_le(string& out, uint32_t v) {
     out.append(buf, 4);
 }
 
-// Append a 64-bit little-endian integer to an in-memory blob.
-static void append_u64_le(string& out, uint64_t v) {
+static void append_u64_le(std::string& out, uint64_t v) {
     char buf[8];
     for (int i = 0; i < 8; ++i) buf[i] = static_cast<char>((v >> (8 * i)) & 0xFF);
     out.append(buf, 8);
 }
 
-// Read a 32-bit little-endian integer from an in-memory blob at off.
-static bool read_u32_mem(const string& s, size_t& off, uint32_t& outv) {
+static bool read_u32_mem(const std::string& s, size_t& off, uint32_t& outv) {
     if (off + 4 > s.size()) return false;
     const uint8_t* p = reinterpret_cast<const uint8_t*>(s.data() + off);
     outv = p[0] | (uint32_t(p[1]) << 8) | (uint32_t(p[2]) << 16) | (uint32_t(p[3]) << 24);
@@ -78,8 +70,7 @@ static bool read_u32_mem(const string& s, size_t& off, uint32_t& outv) {
     return true;
 }
 
-// Read a 64-bit little-endian integer from an in-memory blob at off.
-static bool read_u64_mem(const string& s, size_t& off, uint64_t& outv) {
+static bool read_u64_mem(const std::string& s, size_t& off, uint64_t& outv) {
     if (off + 8 > s.size()) return false;
     const uint8_t* p = reinterpret_cast<const uint8_t*>(s.data() + off);
     outv = 0;
@@ -88,15 +79,14 @@ static bool read_u64_mem(const string& s, size_t& off, uint64_t& outv) {
     return true;
 }
 
-// Build a safe text or hex preview for admin DUMP output.
-static string text_preview_value(const string& val,
+static std::string text_preview_value(const std::string& val,
                                       bool& is_text,
                                       bool& truncated) {
     constexpr size_t kTextPreviewBytes = 120;
     constexpr size_t kHexPreviewBytes = 48;
     truncated = val.size() > kTextPreviewBytes;
     is_text = true;
-    const size_t inspect = min(val.size(), kTextPreviewBytes);
+    const size_t inspect = std::min(val.size(), kTextPreviewBytes);
     for (size_t i = 0; i < inspect; ++i) {
         unsigned char c = static_cast<unsigned char>(val[i]);
         if (c == '\0' || (c < 0x20 && c != '\n' && c != '\r' && c != '\t')) {
@@ -106,12 +96,12 @@ static string text_preview_value(const string& val,
     }
 
     if (is_text) {
-        return val.substr(0, min(val.size(), kTextPreviewBytes));
+        return val.substr(0, std::min(val.size(), kTextPreviewBytes));
     }
 
     static const char hex[] = "0123456789abcdef";
-    const size_t n = min(val.size(), kHexPreviewBytes);
-    string out;
+    const size_t n = std::min(val.size(), kHexPreviewBytes);
+    std::string out;
     out.reserve(n * 3);
     for (size_t i = 0; i < n; ++i) {
         if (i) out.push_back(' ');
@@ -123,33 +113,36 @@ static string text_preview_value(const string& val,
     return out;
 }
 
-// Initialize paths and open the WAL for append-only writes.
-Tablet::Tablet(const string& name, const string& data_dir)
+Tablet::Tablet(const std::string& name, const std::string& data_dir)
     : name_(name), data_dir_(data_dir) {
 
-    filesystem::create_directories(data_dir_);
+    std::filesystem::create_directories(data_dir_);
 
     wal_path_  = data_dir_ + "/" + name_ + ".wal";
     ckpt_path_ = data_dir_ + "/" + name_ + ".ckpt";
 
-    wal_.open(wal_path_, ios::binary | ios::app);
+    wal_.open(wal_path_, std::ios::binary | std::ios::app);
     if (!wal_) {
-        throw runtime_error("Cannot open WAL: " + wal_path_);
+        throw std::runtime_error("Cannot open WAL: " + wal_path_);
     }
+    // Keep a raw fd open solely for fdatasync() calls; O_APPEND matches wal_ mode.
+    wal_fd_ = ::open(wal_path_.c_str(), O_WRONLY | O_APPEND | O_CREAT, 0644);
 }
 
-// Flush and close the WAL stream during tablet destruction.
 Tablet::~Tablet() {
     if (wal_.is_open()) {
         wal_.flush();
         wal_.close();
     }
+    if (wal_fd_ >= 0) {
+        ::close(wal_fd_);
+        wal_fd_ = -1;
+    }
 }
 
-// Append one PUT record to WAL and assign the next logical LSN.
-bool Tablet::write_wal_put(const string& row,
-                           const string& col,
-                           const string& val,
+bool Tablet::write_wal_put(const std::string& row,
+                           const std::string& col,
+                           const std::string& val,
                            uint64_t* assigned_lsn) {
     if (!wal_.is_open()) return false;
     write_u32_le(wal_, WAL_MAGIC);
@@ -162,14 +155,24 @@ bool Tablet::write_wal_put(const string& row,
     wal_.write(val.data(), val.size());
     wal_.flush();
     if (!wal_.good()) return false;
+    // Guarantee the WAL entry reaches durable storage before we increment LSN
+    // and acknowledge the write to the caller. Without this, a kernel crash
+    // after flush() but before the dirty page is written can silently drop
+    // WAL entries even though we already returned success.
+    if (wal_fd_ >= 0) {
+#ifdef F_FULLFSYNC
+        ::fcntl(wal_fd_, F_FULLFSYNC);  // macOS: bypasses write cache to physical media
+#else
+        ::fdatasync(wal_fd_);           // Linux: skips metadata sync for speed
+#endif
+    }
 
     uint64_t new_lsn = lsn_.fetch_add(1) + 1;
     if (assigned_lsn) *assigned_lsn = new_lsn;
     return true;
 }
 
-// Append one DELETE record to WAL and assign the next logical LSN.
-bool Tablet::write_wal_delete(const string& row, const string& col, uint64_t* assigned_lsn) {
+bool Tablet::write_wal_delete(const std::string& row, const std::string& col, uint64_t* assigned_lsn) {
     if (!wal_.is_open()) return false;
     write_u32_le(wal_, WAL_MAGIC);
     wal_.put(static_cast<char>(WAL_DELETE));
@@ -180,50 +183,53 @@ bool Tablet::write_wal_delete(const string& row, const string& col, uint64_t* as
     wal_.write(col.data(), col.size());
     wal_.flush();
     if (!wal_.good()) return false;
+    if (wal_fd_ >= 0) {
+#ifdef F_FULLFSYNC
+        ::fcntl(wal_fd_, F_FULLFSYNC);  // macOS: bypasses write cache to physical media
+#else
+        ::fdatasync(wal_fd_);           // Linux: skips metadata sync for speed
+#endif
+    }
 
     uint64_t new_lsn = lsn_.fetch_add(1) + 1;
     if (assigned_lsn) *assigned_lsn = new_lsn;
     return true;
 }
 
-// Return an existing row pointer without changing tablet state.
-RowData* Tablet::find_row(const string& row) {
+RowData* Tablet::find_row(const std::string& row) {
     auto it = rows_.find(row);
     return (it != rows_.end()) ? it->second.get() : nullptr;
 }
 
-// Return an existing row or create a new one and add it to the Bloom filter.
-RowData* Tablet::get_or_create_row(const string& row) {
+RowData* Tablet::get_or_create_row(const std::string& row) {
     auto it = rows_.find(row);
     if (it != rows_.end()) return it->second.get();
-    auto [ins, ok] = rows_.emplace(row, make_unique<RowData>());
+    auto [ins, ok] = rows_.emplace(row, std::make_unique<RowData>());
     bloom_.add(row);
     return ins->second.get();
 }
 
-// Convenience PUT wrapper when the caller does not need the assigned LSN.
-bool Tablet::put(const string& row,
-                 const string& col,
-                 const string& val) {
+bool Tablet::put(const std::string& row,
+                 const std::string& col,
+                 const std::string& val) {
     uint64_t ignored_lsn = 0;
     return put(row, col, val, &ignored_lsn);
 }
 
-// Write a value durably to WAL first, then update the row/column map.
-bool Tablet::put(const string& row,
-                 const string& col,
-                 const string& val,
+bool Tablet::put(const std::string& row,
+                 const std::string& col,
+                 const std::string& val,
                  uint64_t* assigned_lsn) {
     if (assigned_lsn) *assigned_lsn = 0;
-    lock_guard<mutex> wal_lock(wal_mu_);
+    std::lock_guard<std::mutex> wal_lock(wal_mu_);
     uint64_t new_lsn = 0;
     if (!write_wal_put(row, col, val, &new_lsn)) return false;
 
     {
-        shared_lock<shared_mutex> rlock(rows_mu_);
+        std::shared_lock<std::shared_mutex> rlock(rows_mu_);
         RowData* rd = find_row(row);
         if (rd) {
-            unique_lock<shared_mutex> wlock(rd->mu);
+            std::unique_lock<std::shared_mutex> wlock(rd->mu);
             rd->cols[col] = val;
             if (assigned_lsn) *assigned_lsn = new_lsn;
             op_count_.fetch_add(1);
@@ -232,9 +238,9 @@ bool Tablet::put(const string& row,
     }
 
     {
-        unique_lock<shared_mutex> wlock(rows_mu_);
+        std::unique_lock<std::shared_mutex> wlock(rows_mu_);
         RowData* rd = get_or_create_row(row);
-        unique_lock<shared_mutex> rdlock(rd->mu);
+        std::unique_lock<std::shared_mutex> rdlock(rd->mu);
         rd->cols[col] = val;
     }
     if (assigned_lsn) *assigned_lsn = new_lsn;
@@ -242,18 +248,17 @@ bool Tablet::put(const string& row,
     return true;
 }
 
-// Read a value using Bloom filter and per-row shared locking.
-bool Tablet::get(const string& row,
-                 const string& col,
-                 string&       val_out) {
+bool Tablet::get(const std::string& row,
+                 const std::string& col,
+                 std::string&       val_out) {
     {
-        shared_lock<shared_mutex> rlock(rows_mu_);
+        std::shared_lock<std::shared_mutex> rlock(rows_mu_);
         if (!bloom_.may_contain(row)) return false;
 
         RowData* rd = find_row(row);
         if (!rd) return false;
 
-        shared_lock<shared_mutex> rdlock(rd->mu);
+        std::shared_lock<std::shared_mutex> rdlock(rd->mu);
         auto it = rd->cols.find(col);
         if (it == rd->cols.end()) return false;
         val_out = it->second;
@@ -262,31 +267,29 @@ bool Tablet::get(const string& row,
     return true;
 }
 
-// Convenience CPUT wrapper when the caller does not need the assigned LSN.
-bool Tablet::cput(const string& row,
-                  const string& col,
-                  const string& v1,
-                  const string& v2) {
+bool Tablet::cput(const std::string& row,
+                  const std::string& col,
+                  const std::string& v1,
+                  const std::string& v2) {
     uint64_t ignored_lsn = 0;
     return cput(row, col, v1, v2, &ignored_lsn);
 }
 
-// Atomically replace a value only if it currently equals the expected value.
-bool Tablet::cput(const string& row,
-                  const string& col,
-                  const string& v1,
-                  const string& v2,
+bool Tablet::cput(const std::string& row,
+                  const std::string& col,
+                  const std::string& v1,
+                  const std::string& v2,
                   uint64_t* assigned_lsn) {
     if (assigned_lsn) *assigned_lsn = 0;
-    lock_guard<mutex> wal_lock(wal_mu_);
-    shared_lock<shared_mutex> rlock(rows_mu_);
+    std::lock_guard<std::mutex> wal_lock(wal_mu_);
+    std::shared_lock<std::shared_mutex> rlock(rows_mu_);
 
     if (!bloom_.may_contain(row)) return false;
 
     RowData* rd = find_row(row);
     if (!rd) return false;
 
-    unique_lock<shared_mutex> wlock(rd->mu);
+    std::unique_lock<std::shared_mutex> wlock(rd->mu);
     auto it = rd->cols.find(col);
     if (it == rd->cols.end() || it->second != v1) return false;
 
@@ -299,29 +302,26 @@ bool Tablet::cput(const string& row,
     return true;
 }
 
-// Convenience DELETE wrapper that ignores delete/no-op distinction.
-bool Tablet::del(const string& row, const string& col) {
+bool Tablet::del(const std::string& row, const std::string& col) {
     bool deleted = false;
     return del(row, col, &deleted, nullptr);
 }
 
-// DELETE wrapper that reports whether a cell existed and was removed.
-bool Tablet::del(const string& row, const string& col, bool* deleted_out) {
+bool Tablet::del(const std::string& row, const std::string& col, bool* deleted_out) {
     return del(row, col, deleted_out, nullptr);
 }
 
-// Delete a cell durably, logging only when a row/column actually exists.
-bool Tablet::del(const string& row, const string& col, bool* deleted_out, uint64_t* assigned_lsn) {
+bool Tablet::del(const std::string& row, const std::string& col, bool* deleted_out, uint64_t* assigned_lsn) {
     if (deleted_out) *deleted_out = false;
     if (assigned_lsn) *assigned_lsn = 0;
-    lock_guard<mutex> wal_lock(wal_mu_);
-    shared_lock<shared_mutex> rlock(rows_mu_);
+    std::lock_guard<std::mutex> wal_lock(wal_mu_);
+    std::shared_lock<std::shared_mutex> rlock(rows_mu_);
     if (!bloom_.may_contain(row)) return true;
 
     RowData* rd = find_row(row);
     if (!rd) return true;
 
-    unique_lock<shared_mutex> wlock(rd->mu);
+    std::unique_lock<std::shared_mutex> wlock(rd->mu);
     auto it = rd->cols.find(col);
     if (it == rd->cols.end()) return true;
 
@@ -335,21 +335,20 @@ bool Tablet::del(const string& row, const string& col, bool* deleted_out, uint64
     return true;
 }
 
-// Apply a replicated delete while assigning a fresh local LSN.
-bool Tablet::apply_replicated_delete(const string& row,
-                                     const string& col,
+bool Tablet::apply_replicated_delete(const std::string& row,
+                                     const std::string& col,
                                      uint64_t* assigned_lsn) {
     if (assigned_lsn) *assigned_lsn = 0;
-    lock_guard<mutex> wal_lock(wal_mu_);
+    std::lock_guard<std::mutex> wal_lock(wal_mu_);
 
     uint64_t new_lsn = 0;
     if (!write_wal_delete(row, col, &new_lsn)) return false;
 
     {
-        unique_lock<shared_mutex> wlock(rows_mu_);
+        std::unique_lock<std::shared_mutex> wlock(rows_mu_);
         RowData* rd = find_row(row);
         if (rd) {
-            unique_lock<shared_mutex> rdlock(rd->mu);
+            std::unique_lock<std::shared_mutex> rdlock(rd->mu);
             rd->cols.erase(col);
         }
     }
@@ -359,16 +358,15 @@ bool Tablet::apply_replicated_delete(const string& row,
     return true;
 }
 
-// Apply a replicated PUT only when its LSN is the next expected value.
-bool Tablet::apply_replicated_put(const string& row,
-                                  const string& col,
-                                  const string& val,
+bool Tablet::apply_replicated_put(const std::string& row,
+                                  const std::string& col,
+                                  const std::string& val,
                                   uint64_t expected_lsn) {
-    lock_guard<mutex> wal_lock(wal_mu_);
+    std::lock_guard<std::mutex> wal_lock(wal_mu_);
     uint64_t current_lsn = lsn_.load();
     if (expected_lsn <= current_lsn) return true;
     if (expected_lsn != current_lsn + 1) {
-        cerr << "[tablet:" << name_ << "] replicated PUT gap: have="
+        std::cerr << "[tablet:" << name_ << "] replicated PUT gap: have="
                   << current_lsn << " incoming=" << expected_lsn << "\n";
         return false;
     }
@@ -378,9 +376,9 @@ bool Tablet::apply_replicated_put(const string& row,
     if (assigned_lsn != expected_lsn) return false;
 
     {
-        unique_lock<shared_mutex> rows_lock(rows_mu_);
+        std::unique_lock<std::shared_mutex> rows_lock(rows_mu_);
         RowData* rd = get_or_create_row(row);
-        unique_lock<shared_mutex> rdlock(rd->mu);
+        std::unique_lock<std::shared_mutex> rdlock(rd->mu);
         rd->cols[col] = val;
     }
 
@@ -388,15 +386,14 @@ bool Tablet::apply_replicated_put(const string& row,
     return true;
 }
 
-// Apply a replicated DELETE only when its LSN is the next expected value.
-bool Tablet::apply_replicated_delete(const string& row,
-                                     const string& col,
+bool Tablet::apply_replicated_delete(const std::string& row,
+                                     const std::string& col,
                                      uint64_t expected_lsn) {
-    lock_guard<mutex> wal_lock(wal_mu_);
+    std::lock_guard<std::mutex> wal_lock(wal_mu_);
     uint64_t current_lsn = lsn_.load();
     if (expected_lsn <= current_lsn) return true;
     if (expected_lsn != current_lsn + 1) {
-        cerr << "[tablet:" << name_ << "] replicated DELETE gap: have="
+        std::cerr << "[tablet:" << name_ << "] replicated DELETE gap: have="
                   << current_lsn << " incoming=" << expected_lsn << "\n";
         return false;
     }
@@ -406,10 +403,10 @@ bool Tablet::apply_replicated_delete(const string& row,
     if (assigned_lsn != expected_lsn) return false;
 
     {
-        unique_lock<shared_mutex> rows_lock(rows_mu_);
+        std::unique_lock<std::shared_mutex> rows_lock(rows_mu_);
         RowData* rd = find_row(row);
         if (rd) {
-            unique_lock<shared_mutex> rdlock(rd->mu);
+            std::unique_lock<std::shared_mutex> rdlock(rd->mu);
             rd->cols.erase(col);
         }
     }
@@ -418,23 +415,21 @@ bool Tablet::apply_replicated_delete(const string& row,
     return true;
 }
 
-// Public checkpoint entry point that serializes with WAL writes.
 bool Tablet::checkpoint() {
-    lock_guard<mutex> wal_lock(wal_mu_);
+    std::lock_guard<std::mutex> wal_lock(wal_mu_);
     return checkpoint_locked();
 }
 
-// Write a complete snapshot and truncate WAL; caller must hold wal_mu_.
 bool Tablet::checkpoint_locked() {
-    string tmp = ckpt_path_ + ".tmp";
+    std::string tmp = ckpt_path_ + ".tmp";
     uint64_t next_ckpt_ver = checkpoint_version_.load() + 1;
     uint64_t ckpt_lsn = 0;
 
     {
-        unique_lock<shared_mutex> wlock(rows_mu_);
+        std::unique_lock<std::shared_mutex> wlock(rows_mu_);
         ckpt_lsn = lsn_.load();
 
-        ofstream out(tmp, ios::binary | ios::trunc);
+        std::ofstream out(tmp, std::ios::binary | std::ios::trunc);
         if (!out) return false;
 
         write_u32_le(out, CKPT_MAGIC);
@@ -448,7 +443,7 @@ bool Tablet::checkpoint_locked() {
             write_u32_le(out, static_cast<uint32_t>(rkey.size()));
             out.write(rkey.data(), rkey.size());
 
-            shared_lock<shared_mutex> rdlock(rd->mu);
+            std::shared_lock<std::shared_mutex> rdlock(rd->mu);
             uint32_t ncols = static_cast<uint32_t>(rd->cols.size());
             write_u32_le(out, ncols);
             for (auto& [ckey, val] : rd->cols) {
@@ -467,39 +462,40 @@ bool Tablet::checkpoint_locked() {
     if (::rename(tmp.c_str(), ckpt_path_.c_str()) != 0) return false;
 
     wal_.close();
-    wal_.open(wal_path_, ios::binary | ios::trunc);
+    wal_.open(wal_path_, std::ios::binary | std::ios::trunc);
     if (!wal_) {
-        cerr << "[tablet:" << name_ << "] checkpoint wrote, but failed to reopen WAL\n";
+        std::cerr << "[tablet:" << name_ << "] checkpoint wrote, but failed to reopen WAL\n";
         wal_.clear();
-        wal_.open(wal_path_, ios::binary | ios::app);
+        wal_.open(wal_path_, std::ios::binary | std::ios::app);
         return false;
     }
+    // Keep wal_fd_ in sync with the newly truncated WAL file.
+    if (wal_fd_ >= 0) { ::close(wal_fd_); wal_fd_ = -1; }
+    wal_fd_ = ::open(wal_path_.c_str(), O_WRONLY | O_APPEND, 0644);
 
     checkpoint_version_.store(next_ckpt_ver);
     lsn_.store(ckpt_lsn);
 
-    cout << "[tablet:" << name_ << "] checkpoint written, ver="
+    std::cout << "[tablet:" << name_ << "] checkpoint written, ver="
               << checkpoint_version_.load() << ", LSN=" << lsn_.load()
               << ", WAL truncated, " << row_count() << " rows\n";
     return true;
 }
 
-// Recover durable state by loading the latest checkpoint and replaying WAL.
 bool Tablet::recover() {
     bool ok = load_checkpoint();
     if (!ok) {
-        cerr << "[tablet:" << name_ << "] checkpoint load failed; refusing WAL replay\n";
+        std::cerr << "[tablet:" << name_ << "] checkpoint load failed; refusing WAL replay\n";
         return false;
     }
     return replay_wal();
 }
 
-// Load a checkpoint file, rebuilding rows, Bloom filter, checkpoint version, and LSN.
 bool Tablet::load_checkpoint() {
-    ifstream in(ckpt_path_, ios::binary);
+    std::ifstream in(ckpt_path_, std::ios::binary);
     if (!in) {
         checkpoint_version_.store(0);
-        cout << "[tablet:" << name_ << "] no checkpoint, starting fresh\n";
+        std::cout << "[tablet:" << name_ << "] no checkpoint, starting fresh\n";
         return true;
     }
 
@@ -526,11 +522,11 @@ bool Tablet::load_checkpoint() {
     for (uint32_t i = 0; i < nrows; ++i) {
         uint32_t rowlen = 0;
         if (!read_u32_le(in, rowlen)) return false;
-        string row(rowlen, '\0');
+        std::string row(rowlen, '\0');
         in.read(&row[0], rowlen);
         if (static_cast<uint32_t>(in.gcount()) != rowlen) return false;
 
-        auto rd = make_unique<RowData>();
+        auto rd = std::make_unique<RowData>();
         bloom_.add(row);
 
         uint32_t ncols = 0;
@@ -538,42 +534,42 @@ bool Tablet::load_checkpoint() {
         for (uint32_t j = 0; j < ncols; ++j) {
             uint32_t clen = 0;
             if (!read_u32_le(in, clen)) return false;
-            string col(clen, '\0');
+            std::string col(clen, '\0');
             in.read(&col[0], clen);
             if (static_cast<uint32_t>(in.gcount()) != clen) return false;
 
             uint32_t vlen = 0;
             if (!read_u32_le(in, vlen)) return false;
-            string val(vlen, '\0');
+            std::string val(vlen, '\0');
             in.read(&val[0], vlen);
             if (static_cast<uint32_t>(in.gcount()) != vlen) return false;
 
-            rd->cols[col] = move(val);
+            rd->cols[col] = std::move(val);
         }
-        rows_[row] = move(rd);
+        rows_[row] = std::move(rd);
     }
 
     bloom_.deserialize(in);
     checkpoint_version_.store(loaded_ckpt_ver);
     lsn_.store(loaded_ckpt_lsn);
 
-    cout << "[tablet:" << name_ << "] checkpoint loaded, ver="
+    std::cout << "[tablet:" << name_ << "] checkpoint loaded, ver="
               << checkpoint_version_.load() << ", LSN=" << lsn_.load()
               << ", rows=" << rows_.size() << "\n";
     return true;
 }
 
-// Replay each valid WAL entry after the checkpoint into the in-memory map.
 bool Tablet::replay_wal() {
-    ifstream in(wal_path_, ios::binary);
+    std::ifstream in(wal_path_, std::ios::binary);
     if (!in) return true;
 
     uint64_t replayed = 0;
+    std::streamoff last_good_pos = 0;
     while (true) {
         uint32_t magic = 0;
         if (!read_u32_le(in, magic)) break;
         if (magic != WAL_MAGIC) {
-            cerr << "[tablet:" << name_
+            std::cerr << "[tablet:" << name_
                       << "] WAL: bad magic, stopping replay at entry "
                       << replayed << "\n";
             break;
@@ -588,7 +584,7 @@ bool Tablet::replay_wal() {
         if (!read_u32_le(in, collen)) break;
         if (!read_u32_le(in, vallen)) break;
 
-        string row(rowlen, '\0'), col(collen, '\0'), val(vallen, '\0');
+        std::string row(rowlen, '\0'), col(collen, '\0'), val(vallen, '\0');
         in.read(&row[0], rowlen);
         if (static_cast<uint32_t>(in.gcount()) != rowlen) break;
         in.read(&col[0], collen);
@@ -601,10 +597,10 @@ bool Tablet::replay_wal() {
         if (op == WAL_PUT) {
             auto it = rows_.find(row);
             if (it == rows_.end()) {
-                auto rd = make_unique<RowData>();
+                auto rd = std::make_unique<RowData>();
                 rd->cols[col] = val;
                 bloom_.add(row);
-                rows_[row] = move(rd);
+                rows_[row] = std::move(rd);
             } else {
                 it->second->cols[col] = val;
             }
@@ -615,26 +611,36 @@ bool Tablet::replay_wal() {
 
         lsn_.fetch_add(1);
         ++replayed;
+        last_good_pos = static_cast<std::streamoff>(in.tellg());
     }
 
-    cout << "[tablet:" << name_ << "] replayed " << replayed
+    std::error_code ec;
+    const auto wal_size = std::filesystem::file_size(wal_path_, ec);
+    if (!ec && static_cast<uintmax_t>(last_good_pos) < wal_size) {
+        in.close();
+        std::filesystem::resize_file(wal_path_, static_cast<uintmax_t>(last_good_pos), ec);
+        if (!ec) {
+            std::cerr << "[tablet:" << name_ << "] truncated incomplete WAL tail from "
+                      << wal_size << " to " << last_good_pos << " bytes\n";
+        }
+    }
+
+    std::cout << "[tablet:" << name_ << "] replayed " << replayed
               << " WAL entries, current LSN=" << lsn_.load() << "\n";
     return true;
 }
 
-// Return the number of rows currently resident in memory.
 size_t Tablet::row_count() const {
-    shared_lock<shared_mutex> rlock(rows_mu_);
+    std::shared_lock<std::shared_mutex> rlock(rows_mu_);
     return rows_.size();
 }
 
-// Collect sorted cell previews for admin/debug dump responses.
-vector<TabletDumpCell> Tablet::dump_cells() const {
-    vector<TabletDumpCell> cells;
+std::vector<TabletDumpCell> Tablet::dump_cells() const {
+    std::vector<TabletDumpCell> cells;
     {
-        shared_lock<shared_mutex> rlock(rows_mu_);
+        std::shared_lock<std::shared_mutex> rlock(rows_mu_);
         for (const auto& [row, rd] : rows_) {
-            shared_lock<shared_mutex> rdlock(rd->mu);
+            std::shared_lock<std::shared_mutex> rdlock(rd->mu);
             for (const auto& [col, val] : rd->cols) {
                 TabletDumpCell cell;
                 cell.tablet = name_;
@@ -642,11 +648,11 @@ vector<TabletDumpCell> Tablet::dump_cells() const {
                 cell.col = col;
                 cell.value_size = val.size();
                 cell.value_preview = text_preview_value(val, cell.value_is_text, cell.truncated);
-                cells.push_back(move(cell));
+                cells.push_back(std::move(cell));
             }
         }
     }
-    sort(cells.begin(), cells.end(), [](const TabletDumpCell& a, const TabletDumpCell& b) {
+    std::sort(cells.begin(), cells.end(), [](const TabletDumpCell& a, const TabletDumpCell& b) {
         if (a.tablet != b.tablet) return a.tablet < b.tablet;
         if (a.row != b.row) return a.row < b.row;
         return a.col < b.col;
@@ -654,10 +660,9 @@ vector<TabletDumpCell> Tablet::dump_cells() const {
     return cells;
 }
 
-// Serialize a full in-memory snapshot for secondary catch-up.
-string Tablet::snapshot_blob() const {
-    string out;
-    shared_lock<shared_mutex> rlock(rows_mu_);
+std::string Tablet::snapshot_blob() const {
+    std::string out;
+    std::shared_lock<std::shared_mutex> rlock(rows_mu_);
 
     append_u32_le(out, static_cast<uint32_t>(rows_.size()));
     append_u64_le(out, lsn_.load());
@@ -666,7 +671,7 @@ string Tablet::snapshot_blob() const {
     for (const auto& [rkey, rd] : rows_) {
         append_u32_le(out, static_cast<uint32_t>(rkey.size()));
         out.append(rkey.data(), rkey.size());
-        shared_lock<shared_mutex> rdlock(rd->mu);
+        std::shared_lock<std::shared_mutex> rdlock(rd->mu);
         append_u32_le(out, static_cast<uint32_t>(rd->cols.size()));
         for (const auto& [ckey, val] : rd->cols) {
             append_u32_le(out, static_cast<uint32_t>(ckey.size()));
@@ -678,8 +683,7 @@ string Tablet::snapshot_blob() const {
     return out;
 }
 
-// Replace local state from a snapshot blob and checkpoint the replacement.
-bool Tablet::load_snapshot_blob(const string& blob) {
+bool Tablet::load_snapshot_blob(const std::string& blob) {
     size_t off = 0;
     uint32_t nrows = 0;
     uint64_t new_lsn = 0;
@@ -688,34 +692,34 @@ bool Tablet::load_snapshot_blob(const string& blob) {
     if (!read_u64_mem(blob, off, new_lsn)) return false;
     if (!read_u64_mem(blob, off, new_ckpt_ver)) return false;
 
-    unordered_map<string, unique_ptr<RowData>> new_rows;
+    std::unordered_map<std::string, std::unique_ptr<RowData>> new_rows;
     BloomFilter new_bloom;
     for (uint32_t i = 0; i < nrows; ++i) {
         uint32_t rlen = 0, ncols = 0;
         if (!read_u32_mem(blob, off, rlen) || off + rlen > blob.size()) return false;
-        string rkey = blob.substr(off, rlen);
+        std::string rkey = blob.substr(off, rlen);
         off += rlen;
         if (!read_u32_mem(blob, off, ncols)) return false;
-        auto rd = make_unique<RowData>();
+        auto rd = std::make_unique<RowData>();
         for (uint32_t j = 0; j < ncols; ++j) {
             uint32_t clen = 0, vlen = 0;
             if (!read_u32_mem(blob, off, clen) || off + clen > blob.size()) return false;
-            string ckey = blob.substr(off, clen);
+            std::string ckey = blob.substr(off, clen);
             off += clen;
             if (!read_u32_mem(blob, off, vlen) || off + vlen > blob.size()) return false;
-            string val = blob.substr(off, vlen);
+            std::string val = blob.substr(off, vlen);
             off += vlen;
             rd->cols[ckey] = val;
         }
         new_bloom.add(rkey);
-        new_rows.emplace(rkey, move(rd));
+        new_rows.emplace(rkey, std::move(rd));
     }
 
-    lock_guard<mutex> wal_lock(wal_mu_);
+    std::lock_guard<std::mutex> wal_lock(wal_mu_);
     {
-        unique_lock<shared_mutex> wlock(rows_mu_);
+        std::unique_lock<std::shared_mutex> wlock(rows_mu_);
         rows_.swap(new_rows);
-        bloom_ = move(new_bloom);
+        bloom_ = std::move(new_bloom);
         lsn_.store(new_lsn);
         checkpoint_version_.store(new_ckpt_ver);
     }
@@ -723,9 +727,8 @@ bool Tablet::load_snapshot_blob(const string& blob) {
     return checkpoint_locked();
 }
 
-// Export WAL entries with logical LSNs greater than after_lsn.
-string Tablet::wal_delta_after(uint64_t after_lsn) const {
-    lock_guard<mutex> wal_lock(wal_mu_);
+std::string Tablet::wal_delta_after(uint64_t after_lsn) const {
+    std::lock_guard<std::mutex> wal_lock(wal_mu_);
     // Export WAL entries with logical LSN > after_lsn.
     // Blob format:
     //   [8 bytes base_lsn]
@@ -741,8 +744,8 @@ string Tablet::wal_delta_after(uint64_t after_lsn) const {
     // We rebuild entry LSNs by scanning the WAL in order from the latest
     // checkpoint boundary. This is sufficient for the current single-tablet,
     // truncated-WAL design.
-    ifstream in(wal_path_, ios::binary);
-    string out;
+    std::ifstream in(wal_path_, std::ios::binary);
+    std::string out;
     append_u64_le(out, after_lsn);
 
     if (!in) return out;
@@ -752,7 +755,7 @@ string Tablet::wal_delta_after(uint64_t after_lsn) const {
     // is total durable LSN and checkpoint_lsn is stored in checkpoint file,
     // replayed WAL entries count from there. We approximate the first WAL entry
     // LSN by scanning and counting entries, then derive each entry's LSN.
-    vector<string> entries;
+    std::vector<std::string> entries;
     while (true) {
         uint32_t magic = 0;
         if (!read_u32_le(in, magic)) break;
@@ -767,7 +770,7 @@ string Tablet::wal_delta_after(uint64_t after_lsn) const {
         if (!read_u32_le(in, collen)) break;
         if (!read_u32_le(in, vallen)) break;
 
-        string row(rowlen, '\0'), col(collen, '\0'), val(vallen, '\0');
+        std::string row(rowlen, '\0'), col(collen, '\0'), val(vallen, '\0');
         in.read(&row[0], rowlen);
         if (static_cast<uint32_t>(in.gcount()) != rowlen) break;
         in.read(&col[0], collen);
@@ -777,7 +780,7 @@ string Tablet::wal_delta_after(uint64_t after_lsn) const {
             if (static_cast<uint32_t>(in.gcount()) != vallen) break;
         }
 
-        string entry;
+        std::string entry;
         append_u32_le(entry, magic);
         entry.push_back(op);
         append_u32_le(entry, rowlen);
@@ -786,7 +789,7 @@ string Tablet::wal_delta_after(uint64_t after_lsn) const {
         entry.append(row);
         entry.append(col);
         entry.append(val);
-        entries.push_back(move(entry));
+        entries.push_back(std::move(entry));
     }
 
     uint64_t total_lsn = lsn_.load();
@@ -802,13 +805,12 @@ string Tablet::wal_delta_after(uint64_t after_lsn) const {
     return out;
 }
 
-// Apply a WAL delta blob in explicit LSN order, skipping duplicates.
-bool Tablet::apply_wal_delta_blob(const string& blob) {
+bool Tablet::apply_wal_delta_blob(const std::string& blob) {
     size_t off = 0;
     uint64_t base_lsn = 0;
     if (!read_u64_mem(blob, off, base_lsn)) return false;
 
-    lock_guard<mutex> wal_lock(wal_mu_);
+    std::lock_guard<std::mutex> wal_lock(wal_mu_);
     while (off < blob.size()) {
         uint64_t entry_lsn = 0;
         if (!read_u64_mem(blob, off, entry_lsn)) return false;
@@ -833,7 +835,7 @@ bool Tablet::apply_wal_delta_blob(const string& blob) {
         }
 
         if (entry_lsn != current_lsn + 1) {
-            cerr << "[tablet:" << name_ << "] WAL delta gap: have="
+            std::cerr << "[tablet:" << name_ << "] WAL delta gap: have="
                       << current_lsn << " incoming=" << entry_lsn << "\n";
             return false;
         }
@@ -848,9 +850,9 @@ bool Tablet::apply_wal_delta_blob(const string& blob) {
         if (!read_u32_mem(blob, off, vallen)) return false;
 
         if (off + rowlen + collen + vallen > blob.size()) return false;
-        string row = blob.substr(off, rowlen); off += rowlen;
-        string col = blob.substr(off, collen); off += collen;
-        string val = blob.substr(off, vallen); off += vallen;
+        std::string row = blob.substr(off, rowlen); off += rowlen;
+        std::string col = blob.substr(off, collen); off += collen;
+        std::string val = blob.substr(off, vallen); off += vallen;
 
         uint64_t assigned_lsn = 0;
         if (op == WAL_PUT) {
@@ -861,21 +863,21 @@ bool Tablet::apply_wal_delta_blob(const string& blob) {
             return false;
         }
         if (assigned_lsn != entry_lsn) {
-            cerr << "[tablet:" << name_ << "] WAL delta LSN mismatch: assigned="
+            std::cerr << "[tablet:" << name_ << "] WAL delta LSN mismatch: assigned="
                       << assigned_lsn << " incoming=" << entry_lsn << "\n";
             return false;
         }
 
         {
-            unique_lock<shared_mutex> rows_lock(rows_mu_);
+            std::unique_lock<std::shared_mutex> rows_lock(rows_mu_);
             if (op == WAL_PUT) {
                 RowData* rd = get_or_create_row(row);
-                unique_lock<shared_mutex> rdlock(rd->mu);
+                std::unique_lock<std::shared_mutex> rdlock(rd->mu);
                 rd->cols[col] = val;
             } else if (op == WAL_DELETE) {
                 RowData* rd = find_row(row);
                 if (rd) {
-                    unique_lock<shared_mutex> rdlock(rd->mu);
+                    std::unique_lock<std::shared_mutex> rdlock(rd->mu);
                     rd->cols.erase(col);
                 }
             }

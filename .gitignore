@@ -1,35 +1,33 @@
-.DS_Store
+# Build artifacts
+kvstore/build/
+kvstore/kvserver
+frontend/build/
+frontend/feserver
+frontend_lb/frontend_lb
+smtp_server/smtp_server
+coordinator/coordinator
+
+# Runtime data
+data/
+.penncloud_data/
+*.wal
+*.ckpt
+*.ckpt.tmp
 *.log
-__pycache__/
-*.pyc
-
-# Local secrets / environment overrides
-.env
-.env.*
-*.env
-!.env.example
-!*.env.example
-.smtp.env
-.aws-deploy/
-
-# Local browser/session artifacts
-cookies.txt
-cookies_*.txt
-penncloud_t05\ */
-
-# Generated test payloads and reports
-*.bin
-*.pdf
-!README*.pdf
-
-# Build outputs and executables
-build/
-*/build/
-**/coordinator/coordinator
-**/frontend/feserver
-**/frontend_lb/frontend_lb
-**/kvstore/kvserver
-**/smtp_server/smtp_server
-
-# Runtime scratch
 *.pid
+
+# Credentials
+.smtp.env
+.env
+
+# Tool / IDE dirs
+.vscode/
+.claude/
+.sixth/
+_extras/
+
+# macOS
+.DS_Store
+*.swp
+*.swo
+*~

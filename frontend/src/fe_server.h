@@ -96,7 +96,7 @@ private:
     std::unique_ptr<ThreadPool> pool_;
 
     void handle_connection(int fd);
-    bool handle_one_request(int fd, bool& detached);
+    bool handle_one_request(int fd);
     HttpResponse dispatch(const HttpRequest& req);
     std::string get_user(const HttpRequest& req);
     bool admin_control_allowed(const HttpRequest& req) const;
@@ -107,7 +107,7 @@ private:
     HttpResponse handle_static(const HttpRequest& req);
 
     HttpResponse handle_login(const HttpRequest& req);
-    HttpResponse handle_logout(const HttpRequest& req, const std::string& user);
+    HttpResponse handle_logout(const HttpRequest& req);
     HttpResponse handle_signup(const HttpRequest& req);
     HttpResponse handle_session(const HttpRequest& req);
     HttpResponse handle_change_password(const HttpRequest& req);
@@ -123,7 +123,6 @@ private:
     HttpResponse handle_mail_upload_attachment(const HttpRequest& req, const std::string& user);
     HttpResponse handle_mail_download_attachment(const HttpRequest& req, const std::string& user);
     HttpResponse handle_chat_rooms(const HttpRequest& req, const std::string& user);
-    HttpResponse handle_chat_create_room(const HttpRequest& req, const std::string& user);
     HttpResponse handle_chat_messages(const HttpRequest& req, const std::string& user);
     HttpResponse handle_chat_send(const HttpRequest& req, const std::string& user);
     HttpResponse handle_chat_dms(const HttpRequest& req, const std::string& user);
@@ -132,11 +131,6 @@ private:
 
     HttpResponse handle_drive_list(const HttpRequest& req, const std::string& user);
     HttpResponse handle_upload(const HttpRequest& req, const std::string& user);
-    HttpResponse handle_upload_start(const HttpRequest& req, const std::string& user);
-    HttpResponse handle_upload_chunk(const HttpRequest& req, const std::string& user);
-    HttpResponse handle_upload_status(const HttpRequest& req, const std::string& user);
-    HttpResponse handle_upload_finish(const HttpRequest& req, const std::string& user);
-    HttpResponse handle_upload_cancel(const HttpRequest& req, const std::string& user);
     HttpResponse handle_download(const HttpRequest& req, const std::string& user, const std::string& uid);
     HttpResponse handle_rename(const HttpRequest& req, const std::string& user);
     HttpResponse handle_move(const HttpRequest& req, const std::string& user);

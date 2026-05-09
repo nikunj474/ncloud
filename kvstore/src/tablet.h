@@ -1,8 +1,6 @@
 #pragma once
 #ifndef PENNCLOUD_KV_TABLET_H
 #define PENNCLOUD_KV_TABLET_H
-
-using namespace std;
 // =============================================================================
 // tablet.h  --  PennCloud KV tablet: in-memory store + WAL + checkpoint
 // =============================================================================
@@ -58,8 +56,8 @@ static constexpr uint8_t  WAL_DELETE = 2;
 static constexpr uint32_t CKPT_MAGIC = 0xC0DEFACE;
 
 struct RowData {
-    unordered_map<string, string> cols;
-    mutable shared_mutex mu;
+    std::unordered_map<std::string, std::string> cols;
+    mutable std::shared_mutex mu;
 
     RowData()                          = default;
     RowData(const RowData&)            = delete;
@@ -67,141 +65,113 @@ struct RowData {
 };
 
 struct TabletDumpCell {
-    string tablet;
-    string row;
-    string col;
+    std::string tablet;
+    std::string row;
+    std::string col;
     size_t      value_size = 0;
-    string value_preview;
+    std::string value_preview;
     bool        value_is_text = true;
     bool        truncated = false;
 };
 
 class Tablet {
 public:
-    // Create a tablet object backed by files under data_dir.
-    explicit Tablet(const string& name, const string& data_dir);
-    // Flush and close the WAL stream.
+    explicit Tablet(const std::string& name, const std::string& data_dir);
     ~Tablet();
 
-    // Store a value and assign an internal LSN.
-    bool put(const string& row,
-             const string& col,
-             const string& val);
-    // Store a value and return the assigned LSN to replication callers.
-    bool put(const string& row,
-             const string& col,
-             const string& val,
+    bool put(const std::string& row,
+             const std::string& col,
+             const std::string& val);
+    bool put(const std::string& row,
+             const std::string& col,
+             const std::string& val,
              uint64_t* assigned_lsn);
 
-    // Read one cell value if the row/column exists.
-    bool get(const string& row,
-             const string& col,
-             string&       val_out);
+    bool get(const std::string& row,
+             const std::string& col,
+             std::string&       val_out);
 
-    // Compare-and-put using the tablet's internal LSN assignment.
-    bool cput(const string& row,
-              const string& col,
-              const string& v1,
-              const string& v2);
-    // Compare-and-put and expose the assigned LSN for replication.
-    bool cput(const string& row,
-              const string& col,
-              const string& v1,
-              const string& v2,
+    bool cput(const std::string& row,
+              const std::string& col,
+              const std::string& v1,
+              const std::string& v2);
+    bool cput(const std::string& row,
+              const std::string& col,
+              const std::string& v1,
+              const std::string& v2,
               uint64_t* assigned_lsn);
 
-    // Delete a cell if it exists.
-    bool del(const string& row, const string& col);
-    // Delete a cell and report whether anything was actually removed.
-    bool del(const string& row, const string& col, bool* deleted_out);
-    // Delete a cell and expose the assigned LSN when a delete is logged.
-    bool del(const string& row, const string& col, bool* deleted_out, uint64_t* assigned_lsn);
-    // Apply a delete received from replication while assigning a local LSN.
-    bool apply_replicated_delete(const string& row,
-                                 const string& col,
+    bool del(const std::string& row, const std::string& col);
+    bool del(const std::string& row, const std::string& col, bool* deleted_out);
+    bool del(const std::string& row, const std::string& col, bool* deleted_out, uint64_t* assigned_lsn);
+    bool apply_replicated_delete(const std::string& row,
+                                 const std::string& col,
                                  uint64_t* assigned_lsn);
-    // Apply a replicated put only if its expected LSN is the next operation.
-    bool apply_replicated_put(const string& row,
-                              const string& col,
-                              const string& val,
+    bool apply_replicated_put(const std::string& row,
+                              const std::string& col,
+                              const std::string& val,
                               uint64_t expected_lsn);
-    // Apply a replicated delete only if its expected LSN is the next operation.
-    bool apply_replicated_delete(const string& row,
-                                 const string& col,
+    bool apply_replicated_delete(const std::string& row,
+                                 const std::string& col,
                                  uint64_t expected_lsn);
 
-    // Serialize current memory state to checkpoint and truncate WAL.
     bool checkpoint();
-    // Restore tablet state from checkpoint plus WAL replay.
     bool recover();
 
-    // Return count of logical operations seen by this tablet.
     uint64_t op_count() const { return op_count_.load(); }
-    // Count rows currently present in memory.
     size_t   row_count() const;
-    // Return a sorted, preview-safe view of cells for admin/debug DUMP.
-    vector<TabletDumpCell> dump_cells() const;
+    std::vector<TabletDumpCell> dump_cells() const;
 
-    // Expose the WAL path for diagnostics.
-    string wal_path()        const { return wal_path_; }
-    // Expose the checkpoint path for diagnostics.
-    string checkpoint_path() const { return ckpt_path_; }
+    std::string wal_path()        const { return wal_path_; }
+    std::string checkpoint_path() const { return ckpt_path_; }
 
-    // Return the latest logical sequence number applied to this tablet.
     uint64_t lsn() const { return lsn_.load(); }
-    // Return the current checkpoint generation used for sync decisions.
     uint64_t checkpoint_version() const { return checkpoint_version_.load(); }
 
-    // Serialize the full tablet state for replica catch-up.
-    string snapshot_blob() const;
-    // Replace local state with a snapshot received from a primary.
-    bool        load_snapshot_blob(const string& blob);
+    // Phase B / R1 snapshot helpers
+    std::string snapshot_blob() const;
+    bool        load_snapshot_blob(const std::string& blob);
 
-    // Export WAL entries strictly after the given LSN.
-    string wal_delta_after(uint64_t after_lsn) const;
+    // Phase R2 delta helpers
+    // Export WAL entries strictly AFTER the given LSN.
+    std::string wal_delta_after(uint64_t after_lsn) const;
     // Apply a delta blob containing WAL-format entries with explicit LSNs.
-    bool        apply_wal_delta_blob(const string& blob);
+    bool        apply_wal_delta_blob(const std::string& blob);
 
 private:
-    string name_;
-    string data_dir_;
-    string wal_path_;
-    string ckpt_path_;
+    std::string name_;
+    std::string data_dir_;
+    std::string wal_path_;
+    std::string ckpt_path_;
 
-    unordered_map<string, unique_ptr<RowData>> rows_;
-    mutable shared_mutex rows_mu_;
+    std::unordered_map<std::string, std::unique_ptr<RowData>> rows_;
+    mutable std::shared_mutex rows_mu_;
 
     BloomFilter bloom_;
 
-    ofstream wal_;
-    mutable mutex wal_mu_;
+    std::ofstream wal_;
+    int           wal_fd_{-1};   // raw fd kept open for fdatasync after each WAL write
+    mutable std::mutex wal_mu_;
 
-    atomic<uint64_t> lsn_{0};
-    atomic<uint64_t> checkpoint_version_{0};
-    atomic<uint64_t> op_count_{0};
+    std::atomic<uint64_t> lsn_{0};
+    std::atomic<uint64_t> checkpoint_version_{0};
+    std::atomic<uint64_t> op_count_{0};
 
-    // Find an existing row or create an empty row and update the Bloom filter.
-    RowData* get_or_create_row(const string& row);
-    // Look up a row pointer without creating it.
-    RowData* find_row(const string& row);
+    RowData* get_or_create_row(const std::string& row);
+    RowData* find_row(const std::string& row);
 
-    // Append a PUT entry to the WAL and assign the next LSN.
-    bool write_wal_put(const string& row,
-                       const string& col,
-                       const string& val,
+    bool write_wal_put(const std::string& row,
+                       const std::string& col,
+                       const std::string& val,
                        uint64_t* assigned_lsn = nullptr);
 
-    // Append a DELETE entry to the WAL and assign the next LSN.
-    bool write_wal_delete(const string& row,
-                          const string& col,
+    bool write_wal_delete(const std::string& row,
+                          const std::string& col,
                           uint64_t* assigned_lsn = nullptr);
 
-    // Checkpoint while wal_mu_ is already held.
     bool checkpoint_locked();
 
-    // Load checkpoint contents into memory.
     bool load_checkpoint();
-    // Replay WAL entries written after the last checkpoint.
     bool replay_wal();
 };
 

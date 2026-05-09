@@ -1,8 +1,6 @@
 #pragma once
 #ifndef PENNCLOUD_KV_PROTOCOL_H
 #define PENNCLOUD_KV_PROTOCOL_H
-
-using namespace std;
 // =============================================================================
 // protocol.h  --  PennCloud KV wire protocol (shared by KV server + FE server)
 // =============================================================================
@@ -51,13 +49,13 @@ inline bool read_exact(int fd, void* buf, size_t n) {
     return true;
 }
 
-// Read exactly n bytes into a string, resizing it to match the payload.
-inline bool read_exact(int fd, string& out, size_t n) {
+// Read exactly n bytes into a std::string.
+inline bool read_exact(int fd, std::string& out, size_t n) {
     out.resize(n);
     return read_exact(fd, &out[0], n);
 }
 
-// Write all bytes to fd, retrying short writes until complete.
+// Write all bytes to fd.  Returns false on error.
 inline bool write_all(int fd, const void* buf, size_t n) {
     const char* p = static_cast<const char*>(buf);
     size_t remaining = n;
@@ -70,15 +68,14 @@ inline bool write_all(int fd, const void* buf, size_t n) {
     return true;
 }
 
-// Convenience overload for writing a string buffer.
-inline bool write_all(int fd, const string& s) {
+inline bool write_all(int fd, const std::string& s) {
     return write_all(fd, s.data(), s.size());
 }
 
 // ---------------------------------------------------------------------------
 // Read one \r\n-terminated header line from fd (max 8KB)
 // ---------------------------------------------------------------------------
-inline bool read_line(int fd, string& line) {
+inline bool read_line(int fd, std::string& line) {
     line.clear();
     char c;
     while (true) {
@@ -98,55 +95,63 @@ inline bool read_line(int fd, string& line) {
 // ---------------------------------------------------------------------------
 // Response builders (server side)
 // ---------------------------------------------------------------------------
-// Build a success response for commands without a value body.
-inline string ok_response() {
+inline std::string ok_response() {
     return "+OK\r\n";
 }
 
-// Build a success response carrying one raw value payload.
-inline string ok_value_response(const string& val) {
-    return "+OK " + to_string(val.size()) + "\r\n" + val;
+inline std::string ok_value_response(const std::string& val) {
+    return "+OK " + std::to_string(val.size()) + "\r\n" + val;
 }
 
-// Build a protocol error response with a readable message.
-inline string err_response(const string& msg) {
+inline std::string err_response(const std::string& msg) {
     return "-ERR " + msg + "\r\n";
 }
 
 // ---------------------------------------------------------------------------
 // Request sender helpers (client / FE side)
 // ---------------------------------------------------------------------------
-// Send a length-prefixed PUT request over an already-connected socket.
 inline bool send_put(int fd,
-                     const string& row,
-                     const string& col,
-                     const string& val) {
-    string hdr = "PUT " + to_string(row.size()) + " "
-                             + to_string(col.size()) + " "
-                             + to_string(val.size()) + "\r\n";
+                     const std::string& row,
+                     const std::string& col,
+                     const std::string& val) {
+    std::string hdr = "PUT " + std::to_string(row.size()) + " "
+                             + std::to_string(col.size()) + " "
+                             + std::to_string(val.size()) + "\r\n";
     return write_all(fd, hdr) &&
            write_all(fd, row) &&
            write_all(fd, col) &&
            write_all(fd, val);
 }
 
-// Send a length-prefixed GET request over an already-connected socket.
-inline bool send_get(int fd, const string& row, const string& col) {
-    string hdr = "GET " + to_string(row.size()) + " "
-                             + to_string(col.size()) + "\r\n";
+inline bool send_put_bytes(int fd,
+                           const std::string& row,
+                           const std::string& col,
+                           const char* val,
+                           size_t vallen) {
+    std::string hdr = "PUT " + std::to_string(row.size()) + " "
+                             + std::to_string(col.size()) + " "
+                             + std::to_string(vallen) + "\r\n";
+    return write_all(fd, hdr) &&
+           write_all(fd, row) &&
+           write_all(fd, col) &&
+           write_all(fd, val, vallen);
+}
+
+inline bool send_get(int fd, const std::string& row, const std::string& col) {
+    std::string hdr = "GET " + std::to_string(row.size()) + " "
+                             + std::to_string(col.size()) + "\r\n";
     return write_all(fd, hdr) && write_all(fd, row) && write_all(fd, col);
 }
 
-// Send a compare-and-put request with expected and replacement values.
 inline bool send_cput(int fd,
-                      const string& row,
-                      const string& col,
-                      const string& v1,
-                      const string& v2) {
-    string hdr = "CPUT " + to_string(row.size()) + " "
-                              + to_string(col.size()) + " "
-                              + to_string(v1.size())  + " "
-                              + to_string(v2.size())  + "\r\n";
+                      const std::string& row,
+                      const std::string& col,
+                      const std::string& v1,
+                      const std::string& v2) {
+    std::string hdr = "CPUT " + std::to_string(row.size()) + " "
+                              + std::to_string(col.size()) + " "
+                              + std::to_string(v1.size())  + " "
+                              + std::to_string(v2.size())  + "\r\n";
     return write_all(fd, hdr) &&
            write_all(fd, row) &&
            write_all(fd, col) &&
@@ -154,10 +159,9 @@ inline bool send_cput(int fd,
            write_all(fd, v2);
 }
 
-// Send a length-prefixed DELETE request over an already-connected socket.
-inline bool send_delete(int fd, const string& row, const string& col) {
-    string hdr = "DELETE " + to_string(row.size()) + " "
-                                + to_string(col.size()) + "\r\n";
+inline bool send_delete(int fd, const std::string& row, const std::string& col) {
+    std::string hdr = "DELETE " + std::to_string(row.size()) + " "
+                                + std::to_string(col.size()) + "\r\n";
     return write_all(fd, hdr) && write_all(fd, row) && write_all(fd, col);
 }
 
@@ -166,14 +170,13 @@ inline bool send_delete(int fd, const string& row, const string& col) {
 // ---------------------------------------------------------------------------
 struct KVResponse {
     bool ok;            // true = +OK, false = -ERR
-    string value;  // populated for GET responses
-    string error;  // populated for -ERR responses
+    std::string value;  // populated for GET responses
+    std::string error;  // populated for -ERR responses
 };
 
-// Parse one KV response, including the raw value body for GET success.
 inline KVResponse read_response(int fd) {
     KVResponse resp{false, "", ""};
-    string line;
+    std::string line;
     if (!read_line(fd, line)) {
         resp.error = "connection closed";
         return resp;
@@ -185,8 +188,8 @@ inline KVResponse read_response(int fd) {
             size_t vallen = 0;
             try {
                 size_t pos = 0;
-                string len_s = line.substr(4);
-                vallen = stoul(len_s, &pos);
+                std::string len_s = line.substr(4);
+                vallen = std::stoul(len_s, &pos);
                 if (pos != len_s.size()) {
                     resp.ok = false;
                     resp.error = "bad value length";

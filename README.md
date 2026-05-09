@@ -1,188 +1,89 @@
-# PennCloud — Team T05
-CIS 5050 Software Systems, Spring 2026, University of Pennsylvania
+Full name:  Team_T_05
 
-## Team
-| Member | Email | Role |
-|---|---|---|
-| Nikunj | nikunj@seas.upenn.edu | Backend: KV store, WAL, Bloom filter |
-| Rohit | rohit57@seas.upenn.edu | Backend: Coordinator, replication, recovery |
-| Liudawei | liudawei@seas.upenn.edu | Frontend: HTTP server, webmail, SSE |
-| Yke | yke@seas.upenn.edu | Frontend: Drive, admin console |
+Which features did you implement?
+  Entire Project
 
-## Build
+  Here is a breakdown of what was built:
 
-```bash
-# Build KV store server
-cd kvstore && make
+  KV Storage Layer
+  - Custom key-value store with (row, column) -> value data model
+  - PUT, GET, CPUT (compare-and-swap), and DELETE operations
+  - Write-ahead log (WAL) for crash durability
+  - Checkpoint + WAL replay for fast recovery on restart
+  - Bloom filter to skip disk reads for missing keys
+  - Per-row shared_mutex locking for concurrent access
 
-# Build frontend server
-cd frontend && make
+  Replication and Fault Tolerance
+  - Primary-backup replication with synchronous write forwarding to secondaries
+  - LSN (Log Sequence Number) tracking on every write
+  - Secondary gap detection: if a replica misses writes it triggers a resync
+  - Full snapshot + WAL delta resync so a restarted node can rejoin in seconds
+  - Coordinator-driven failover: picks the secondary with the highest LSN as new primary
 
-# Build inbound SMTP server
-cd smtp_server && make
+  Coordinator
+  - Heartbeat-based failure detection (500ms interval, 3 misses = node dead)
+  - LOOKUP protocol: frontend asks coordinator which node is primary for a given row key
+  - Leader election on primary failure (highest-LSN secondary is promoted)
+  - Automatic recovery: re-syncs a rejoining node and adds it back as a secondary
+  - Tablet-based sharding: keyspace divided into row-key ranges, each range served by its own replica group
 
-# Build coordinator
-cd coordinator && make
-```
+  Frontend HTTP Servers
+  - Three stateless HTTP server instances (fe1, fe2, fe3) on ports 8090/8091/8092
+  - Custom HTTP/1.1 parser (no external library), supports chunked transfer encoding
+  - 32-thread pool per server, 64 MB request body limit
+  - Cookie-based sessions stored in the KV layer (frontend holds no state)
+  - Authentication: login, signup, logout, change password
 
-## Run
+  Email (Webmail + SMTP)
+  - Inbox, sent, and trash views
+  - Compose and send email (to local users and external SMTP)
+  - Move to trash and restore from trash
+  - File attachments on emails
+  - Contacts list (add/delete)
+  - Inbound SMTP server (port 2525) accepts mail from external senders
+  - SSE (Server-Sent Events) push so inbox updates in the browser without polling
 
-```bash
-# Terminal 1: KV store (port 5000)
-mkdir -p /tmp/pc_data
-./kvstore/kvserver --port 5000 --data /tmp/pc_data --tablet main
+  Drive (File Storage)
+  - Upload and download files
+  - Create folders, rename, move, and delete files and folders
+  - Storage quota per user with quota status and update endpoints
 
-# Terminal 2: Frontend (port 8080)
-./frontend/feserver --port 8080 --kv-host 127.0.0.1 --kv-port 5000 --id fe1
+  Chat
+  - Group chat rooms with message history
+  - Direct messages (DMs) between users
+  - All messages persisted in the KV store
 
-# Terminal 3: Inbound SMTP server (port 2525)
-./smtp_server/smtp_server --port 2525 --kv-host 127.0.0.1 --kv-port 5000
+  Admin Console
+  - Dashboard showing live cluster status (which nodes are up/down, which is primary)
+  - Kill and restart individual KV nodes from the browser for demo/testing
 
-# Terminal 4: Coordinator (port 6000)
-./coordinator/coordinator --port 6000 --config ./coordinator/coordinator.conf
-```
+Did you complete any extra-credit tasks? If so, which ones?
+  - Bloom filter on the KV storage layer (avoids disk reads for keys that do not exist)
+  - Write coalescing on the replication path (batches replicated writes to reduce round-trips)
+  - Multi-tablet sharding across multiple replica groups (tablet_aa_am, tablet_an_zz, etc.)
+  - Multiple stateless frontend servers with automatic failover
 
-## To RUN: 
-Open browser at `http://127.0.0.1:8080`
+Did you personally write all the code you are submitting
+(other than code from the course web page)?
+  [x] Yes
 
+Did you copy any code from the Internet, or from classmates?
+  [ ] Yes
+  [x] No
 
-## Testing
-```bash
-# Builds/runs a local KV + frontend pair using only bash + curl and checks:
-# - SPA shell
-# - HTTP/1.1 keep-alive
-# - malformed chunked request rejection
-# - signup/session/auth
-# - local webmail send/read/delete
-# - SSE new_email streaming
-# - drive upload/download/rename/delete
-bash smoke_test.sh
+Did you collaborate with anyone on this project?
+  [x] Yes
+  [ ] No
 
-# 10 MB binary upload/download correctness and timing.
-bash test_10mb.sh
+  This was a four-person team project (Team T05):
+  - Nikunj  (nikunj@seas.upenn.edu)  -- KV store, WAL, Bloom filter
+  - Rohit   (rohit57@seas.upenn.edu) -- Coordinator, replication, recovery
+  - Liudawei (liudawei@seas.upenn.edu) -- Frontend HTTP server, webmail, SSE
+  - Yke     (yke@seas.upenn.edu)     -- Drive, admin console
 
-# Replication surface tests
-./start_replication_test_cluster.sh
-python3 repl_write_surface_test.py
-python3 repl_secondary_failure_test.py
-./stop_replication_test_cluster.sh
+Did you use any AI tool such as ChatGPT for this assignment?
+  [] Yes
+  [X] No
 
-# 3-replica primary failure/recovery scenario
-./stop_abc_cluster.sh
-rm -rf /tmp/pc_abc_cluster
-./start_abc_cluster.sh
-python3 abc_kill_scenario_test.py
-./stop_abc_cluster.sh
-
-# Multi-tablet/multi-group placement check
-./stop_multi_group_cluster.sh
-./start_multi_group_cluster.sh
-python3 multi_group_integrated_test.py
-./stop_multi_group_cluster.sh
-```
-
-## Replication test cluster
-
-Use the helper script below to launch a real 2-node replicated KV pair for the replication surface tests:
-
-```bash
-./start_replication_test_cluster.sh
-python3 repl_write_surface_test.py
-python3 repl_secondary_failure_test.py
-./stop_replication_test_cluster.sh
-```
-
-Inbound SMTP receives local mail on port `2525`. External relay from the inbound SMTP server is disabled by default to avoid an open relay; set `SMTP_ALLOW_INBOUND_RELAY=1` only for a controlled demo. The course build does not depend on libcurl or any external TLS library; outbound external mail uses direct MX delivery (`SMTP_MODE=direct`). If `SMTP_MODE=relay` is present in an old local `.smtp.env`, the no-libcurl build falls back to direct MX delivery.
-
-## Directory Structure
-
-```
-kvstore/
-  Makefile
-  src/
-    protocol.h       -- shared wire protocol (KV + frontend)
-    bloom.h          -- Bloom filter (B4 innovation)
-    tablet.h/.cc     -- in-memory KV store + WAL + checkpoint
-    server.h/.cc     -- TCP server, thread pool, request dispatch, client ops
-    replication.h    -- primary-backup replication + B2 write coalescing
-    main.cc          -- KV Server entry point
-
-coordinator/
-  src/
-    coordinator.cc   -- tablet routing, LOOKUP/READ LOOKUP, heartbeat, failover, recovery
-  *.conf             -- coordinator configs for single-node, multi-tablet, and replicated demos
-
-
-frontend/
-  Makefile
-  src/
-    http.h           -- HttpRequest / HttpResponse structs
-    http_reader.h    -- HTTP/1.1 parser + response writer, cookies, query params
-    session.h        -- session management (stored in KV, FE stateless)
-    kv_client.h      -- frontend KV client with connection pool, coordinator lookup/entry
-    smtp_client.h    -- SMTP helper for frontend mail sending
-    fe_server.h      -- FEServer class declaration
-    fe_server.cc     -- server impl + SPA shell + auth handlers
-    handlers_mail.cc -- inbox, send, view, delete email handlers
-    main.cc          -- frontend server entry point
-
-
-smtp_server/
-  Makefile
-  src/
-    smtp_server.cc   -- inbound SMTP server and mail delivery into KV
-    smtp_client.h    -- SMTP client helper for outbound delivery
-
-
-frontend_lb/
-  Makefile
-  src/
-    load_balancer.cc -- simple frontend health checker and redirecting load balancer
-
-
-scripts/
-  aws_deploy_ec2.sh   -- EC2 deployment helper
-  aws_destroy_ec2.sh  -- EC2 teardown helper
-
-
-Cluster helpers and tests:
-  start_multi_group_cluster.sh      -- launches full 4-node replicated demo cluster
-  stop_multi_group_cluster.sh       -- stops full multi-group demo cluster
-  start_multi_tablet_cluster.sh     -- launches 3-node multi-tablet demo cluster
-  stop_multi_tablet_cluster.sh      -- stops multi-tablet demo cluster
-  start_abc_cluster.sh              -- launches 3-replica failover test cluster
-  stop_abc_cluster.sh               -- stops ABC failover cluster
-  start_replication_test_cluster.sh -- launches 2-node replication test cluster
-  stop_replication_test_cluster.sh  -- stops replication test cluster
-  smoke_test.sh                     -- end-to-end frontend/KV smoke test
-  test_10mb.sh                      -- large upload/download correctness test
-  *_test.py                         -- Python integration/failover/replication tests
-
-```
-
-## Coordinator Config (`coordinator/coordinator.conf`)
-
-```
-node node1 127.0.0.1 5001
-node node2 127.0.0.1 5002
-node node3 127.0.0.1 5003
-tablet tablet_aa_am aa am node1 node2 node3
-tablet tablet_an_zz an   node1 node2 node3
-```
-
-For single-node development, no config file needed — defaults to one node on port 5000.
-
-## Status (May 6, 2026)
-
-- [x] KV server: PUT/GET/CPUT/DELETE, WAL, checkpoint, recovery, Bloom filter, shared_mutex locking
-- [x] Frontend: HTTP/1.1, cookies, sessions, SPA shell, auth, webmail handlers
-- [x] Coordinator: heartbeat, fault detection, leader election, LOOKUP
-- [x] Replication: primary-backup protocol, write coalescing (B2), LSN tracking
-- [x] Drive handlers 
-- [x] Replication wired into server.cc 
-- [x] SMTP inbound/outbound 
-- [x] Admin console with live metrics 
-
-
-
-Important: `--replica` expects the peer's **replication port**, not its normal client port.
+How many hours did you spend on this assignment?
+  Approximately 320 hours total across the team (roughly 80 hours per person).

@@ -1,0 +1,332 @@
+name: penncloud
+
+services:
+
+  # ── coordinator ──────────────────────────────────────────────────────────────
+  coordinator:
+    image: penncloud
+    build: .
+    command: ["./coordinator", "--port", "7110", "--config", "/conf/coordinator.conf"]
+    volumes:
+      - ./docker:/conf:ro
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "7110"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+      start_period: 5s
+    networks:
+      - penncloud
+    restart: unless-stopped
+
+  # ── kv backend nodes ──────────────────────────────────────────────────────────
+  node1:
+    image: penncloud
+    command:
+      - ./kvserver
+      - --port
+      - "7500"
+      - --repl-port
+      - "7600"
+      - --node-id
+      - node1
+      - --tablet
+      - tabletA:a:g
+      - --tablet
+      - tabletC:m:s
+      - --tablet
+      - "tabletD:s:"
+      - --data
+      - /data
+    volumes:
+      - kvdata1:/data
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "7500"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+      start_period: 5s
+    depends_on:
+      coordinator:
+        condition: service_healthy
+    networks:
+      - penncloud
+    restart: unless-stopped
+
+  node2:
+    image: penncloud
+    command:
+      - ./kvserver
+      - --port
+      - "7501"
+      - --repl-port
+      - "7601"
+      - --node-id
+      - node2
+      - --tablet
+      - tabletA:a:g
+      - --tablet
+      - tabletB:g:m
+      - --tablet
+      - "tabletD:s:"
+      - --data
+      - /data
+    volumes:
+      - kvdata2:/data
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "7501"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+      start_period: 5s
+    depends_on:
+      coordinator:
+        condition: service_healthy
+    networks:
+      - penncloud
+    restart: unless-stopped
+
+  node3:
+    image: penncloud
+    command:
+      - ./kvserver
+      - --port
+      - "7502"
+      - --repl-port
+      - "7602"
+      - --node-id
+      - node3
+      - --tablet
+      - tabletA:a:g
+      - --tablet
+      - tabletB:g:m
+      - --tablet
+      - tabletC:m:s
+      - --data
+      - /data
+    volumes:
+      - kvdata3:/data
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "7502"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+      start_period: 5s
+    depends_on:
+      coordinator:
+        condition: service_healthy
+    networks:
+      - penncloud
+    restart: unless-stopped
+
+  node4:
+    image: penncloud
+    command:
+      - ./kvserver
+      - --port
+      - "7503"
+      - --repl-port
+      - "7603"
+      - --node-id
+      - node4
+      - --tablet
+      - tabletB:g:m
+      - --tablet
+      - tabletC:m:s
+      - --tablet
+      - "tabletD:s:"
+      - --data
+      - /data
+    volumes:
+      - kvdata4:/data
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "7503"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+      start_period: 5s
+    depends_on:
+      coordinator:
+        condition: service_healthy
+    networks:
+      - penncloud
+    restart: unless-stopped
+
+  # ── frontend servers ──────────────────────────────────────────────────────────
+  fe1:
+    image: penncloud
+    command:
+      - ./feserver
+      - --port
+      - "8090"
+      - --id
+      - fe1
+      - --kv-host
+      - node1
+      - --kv-port
+      - "7500"
+      - --coord-host
+      - coordinator
+      - --coord-port
+      - "7110"
+    environment:
+      PENNCLOUD_OPEN_ADMIN: "1"
+      PENNCLOUD_MAIL_DOMAIN: "${PENNCLOUD_MAIL_DOMAIN:-penncloud.local}"
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "8090"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+      start_period: 5s
+    depends_on:
+      coordinator:
+        condition: service_healthy
+      node1:
+        condition: service_healthy
+      node2:
+        condition: service_healthy
+      node3:
+        condition: service_healthy
+      node4:
+        condition: service_healthy
+    networks:
+      - penncloud
+    restart: unless-stopped
+
+  fe2:
+    image: penncloud
+    command:
+      - ./feserver
+      - --port
+      - "8091"
+      - --id
+      - fe2
+      - --kv-host
+      - node1
+      - --kv-port
+      - "7500"
+      - --coord-host
+      - coordinator
+      - --coord-port
+      - "7110"
+    environment:
+      PENNCLOUD_OPEN_ADMIN: "1"
+      PENNCLOUD_MAIL_DOMAIN: "${PENNCLOUD_MAIL_DOMAIN:-penncloud.local}"
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "8091"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+      start_period: 5s
+    depends_on:
+      coordinator:
+        condition: service_healthy
+      node1:
+        condition: service_healthy
+      node2:
+        condition: service_healthy
+      node3:
+        condition: service_healthy
+      node4:
+        condition: service_healthy
+    networks:
+      - penncloud
+    restart: unless-stopped
+
+  fe3:
+    image: penncloud
+    command:
+      - ./feserver
+      - --port
+      - "8092"
+      - --id
+      - fe3
+      - --kv-host
+      - node1
+      - --kv-port
+      - "7500"
+      - --coord-host
+      - coordinator
+      - --coord-port
+      - "7110"
+    environment:
+      PENNCLOUD_OPEN_ADMIN: "1"
+      PENNCLOUD_MAIL_DOMAIN: "${PENNCLOUD_MAIL_DOMAIN:-penncloud.local}"
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "8092"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+      start_period: 5s
+    depends_on:
+      coordinator:
+        condition: service_healthy
+      node1:
+        condition: service_healthy
+      node2:
+        condition: service_healthy
+      node3:
+        condition: service_healthy
+      node4:
+        condition: service_healthy
+    networks:
+      - penncloud
+    restart: unless-stopped
+
+  # ── load balancer ─────────────────────────────────────────────────────────────
+  lb:
+    image: penncloud
+    command: ["./frontend_lb", "--port", "8088", "--config", "/conf/frontend_lb.conf"]
+    volumes:
+      - ./docker:/conf:ro
+    ports:
+      - "${LB_PORT:-8088}:8088"
+    depends_on:
+      fe1:
+        condition: service_healthy
+      fe2:
+        condition: service_healthy
+      fe3:
+        condition: service_healthy
+    networks:
+      - penncloud
+    restart: unless-stopped
+
+  # ── smtp server ───────────────────────────────────────────────────────────────
+  smtp:
+    image: penncloud
+    command:
+      - ./smtp_server
+      - --port
+      - "2525"
+      - --kv-host
+      - node1
+      - --kv-port
+      - "7500"
+      - --coord-host
+      - coordinator
+      - --coord-port
+      - "7110"
+    ports:
+      - "${SMTP_PORT:-2525}:2525"
+    env_file:
+      - path: .smtp.env
+        required: false
+    depends_on:
+      coordinator:
+        condition: service_healthy
+      node1:
+        condition: service_healthy
+    networks:
+      - penncloud
+    restart: unless-stopped
+
+volumes:
+  kvdata1:
+  kvdata2:
+  kvdata3:
+  kvdata4:
+
+networks:
+  penncloud:
+    driver: bridge

@@ -112,20 +112,17 @@ static bool starts_with_ci(const std::string& s, const std::string& pfx) {
     return lower_copy(s.substr(0, pfx.size())) == lower_copy(pfx);
 }
 
+static std::string strip_angle(const std::string& s) {
+    std::string t = trim(s);
+    if (!t.empty() && t.front() == '<') t.erase(t.begin());
+    if (!t.empty() && t.back() == '>') t.pop_back();
+    return trim(t);
+}
+
 static std::string extract_path_arg(const std::string& line, const std::string& key) {
     auto pos = lower_copy(line).find(lower_copy(key));
     if (pos == std::string::npos) return "";
-    std::string arg = trim(line.substr(pos + key.size()));
-    if (arg.empty()) return "";
-
-    if (arg.front() == '<') {
-        auto end = arg.find('>');
-        if (end == std::string::npos || end <= 1) return "";
-        return trim(arg.substr(1, end - 1));
-    }
-
-    auto end = arg.find_first_of(" \t");
-    return trim(arg.substr(0, end));
+    return strip_angle(line.substr(pos + key.size()));
 }
 
 static std::string new_uid() {
@@ -142,12 +139,12 @@ static std::string now_str() {
     auto t = std::time(nullptr);
     std::tm tm{};
 #if defined(_WIN32)
-    gmtime_s(&tm, &t);
+    localtime_s(&tm, &t);
 #else
-    gmtime_r(&t, &tm);
+    localtime_r(&t, &tm);
 #endif
     char buf[64];
-    std::strftime(buf, sizeof(buf), "%b %d, %Y %H:%M UTC", &tm);
+    std::strftime(buf, sizeof(buf), "%b %d, %Y %H:%M", &tm);
     return buf;
 }
 
@@ -201,11 +198,6 @@ static bool is_external_recipient(const std::string& addr) {
     return !is_local_penncloud_domain(domain);
 }
 
-static bool inbound_relay_enabled() {
-    const char* v = std::getenv("SMTP_ALLOW_INBOUND_RELAY");
-    return v && (std::string(v) == "1" || lower_copy(v) == "true");
-}
-
 static bool parse_subject_and_body(const std::string& raw_data,
                                    std::string& subject_out,
                                    std::string& body_out) {
@@ -250,7 +242,9 @@ public:
 
     explicit SMTPServer(const Config& cfg)
         : cfg_(cfg),
-          kv_(cfg.kv_host, cfg.kv_port, cfg.coord_host, cfg.coord_port) {}
+          kv_(cfg.coord_port > 0
+                  ? KVClient(cfg.kv_host, cfg.kv_port, cfg.coord_host, cfg.coord_port)
+                  : KVClient(cfg.kv_host, cfg.kv_port)) {}
 
     void run() {
         ::signal(SIGINT, sig_handler);
@@ -377,11 +371,7 @@ private:
                     break;
                 }
             } else {
-                if (kv_.put(row, folder_col, new_index)) {
-                    final_index = new_index;
-                    indexed = true;
-                    break;
-                }
+                (void)kv_.put(row, folder_col, new_index);
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
@@ -465,7 +455,7 @@ private:
                     continue;
                 }
                 std::string addr = extract_path_arg(line, "MAIL FROM:");
-                if (addr.empty() || !smtp_client_detail::is_safe_mailbox(addr)) {
+                if (addr.empty()) {
                     write_all_fd(fd, "501 Bad MAIL FROM\r\n");
                     continue;
                 }
@@ -480,13 +470,8 @@ private:
                 }
                 std::string addr = extract_path_arg(line, "RCPT TO:");
                 std::string user = extract_local_user(addr);
-                if (addr.empty() || !smtp_client_detail::is_safe_mailbox(addr) ||
-                    (user.empty() && !is_external_recipient(addr))) {
+                if (addr.empty() || (user.empty() && !is_external_recipient(addr))) {
                     write_all_fd(fd, "550 Bad recipient\r\n");
-                    continue;
-                }
-                if (user.empty() && is_external_recipient(addr) && !inbound_relay_enabled()) {
-                    write_all_fd(fd, "550 Relay denied\r\n");
                     continue;
                 }
                 if (!user.empty()) {

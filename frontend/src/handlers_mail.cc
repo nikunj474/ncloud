@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cctype>
 #include <ctime>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <random>
@@ -15,7 +16,7 @@
 namespace {
 
 constexpr size_t kMailAttachmentChunkSize = 1024 * 1024; // 1 MB
-constexpr size_t kDefaultMailAttachmentBytes = 10ull * 1024ull * 1024ull;
+constexpr size_t kMaxMailAttachmentBytes = 10ull * 1024ull * 1024ull;
 
 std::string new_uid_mail() {
     auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -32,12 +33,12 @@ std::string now_str_mail() {
     auto t = std::time(nullptr);
     std::tm tm{};
 #if defined(_WIN32)
-    gmtime_s(&tm, &t);
+    localtime_s(&tm, &t);
 #else
-    gmtime_r(&t, &tm);
+    localtime_r(&t, &tm);
 #endif
     char buf[64];
-    std::strftime(buf, sizeof(buf), "%b %d, %Y %H:%M UTC", &tm);
+    std::strftime(buf, sizeof(buf), "%b %d, %Y %H:%M", &tm);
     return buf;
 }
 
@@ -86,20 +87,8 @@ std::string mail_row(const std::string& user) { return user + ":mail"; }
 std::string mail_folder_col(const std::string& folder) { return "folder:" + folder; }
 std::string contacts_row(const std::string& user) { return user + ":contacts"; }
 std::string contacts_col() { return "list"; }
-std::string drive_user_row_mail(const std::string& user) { return user + ":drive"; }
-std::string mail_attachment_limit_col() { return "mail_attachment_limit_bytes"; }
 std::string attachment_row(const std::string& att_id) { return "mail:att:" + att_id; }
 std::string attachment_chunk_col(size_t idx) { return "chunk:" + std::to_string(idx); }
-
-size_t parse_size_t_or_mail(const std::string& s, size_t fallback) {
-    if (s.empty()) return fallback;
-    try { return static_cast<size_t>(std::stoull(s)); } catch (...) { return fallback; }
-}
-
-size_t user_mail_attachment_limit_bytes(KVClient* kv, const std::string& user) {
-    return parse_size_t_or_mail(kv->get_str(drive_user_row_mail(user), mail_attachment_limit_col()),
-                                kDefaultMailAttachmentBytes);
-}
 
 std::string normalize_folder(const std::string& folder) {
     if (folder == "sent" || folder == "trash") return folder;
@@ -350,6 +339,37 @@ std::string attachments_json_from_ids(KVClient* kv, const std::vector<std::strin
     return json;
 }
 
+std::vector<SMTPAttachment> load_smtp_attachments_for_send(KVClient* kv,
+                                                           const std::string& user,
+                                                           const std::vector<std::string>& ids,
+                                                           std::string& err) {
+    std::vector<SMTPAttachment> out;
+    out.reserve(ids.size());
+    for (const auto& id : ids) {
+        if (!user_can_access_attachment(kv, user, id)) {
+            err = "attachment access denied";
+            return {};
+        }
+
+        const std::string row = attachment_row(id);
+        std::string name = kv->get_str(row, "name");
+        std::string mime = kv->get_str(row, "mime");
+        std::string size = kv->get_str(row, "size");
+        std::string bytes = get_attachment_bytes(kv, id);
+        if (bytes.empty() && size != "0") {
+            err = "attachment data missing";
+            return {};
+        }
+
+        SMTPAttachment attachment;
+        attachment.filename = name.empty() ? "attachment" : name;
+        attachment.content_type = mime.empty() ? "application/octet-stream" : mime;
+        attachment.data = bytes;
+        out.push_back(attachment);
+    }
+    return out;
+}
+
 std::string make_meta_json(const std::string& from,
                            const std::string& to,
                            const std::string& subject,
@@ -414,37 +434,6 @@ bool meta_contains_attachment(const std::string& meta, const std::string& att_id
     return meta.find(std::string("\"id\":\"") + att_id + "\"") != std::string::npos;
 }
 
-std::vector<std::string> attachment_ids_from_meta(const std::string& meta) {
-    std::vector<std::string> ids;
-    const std::string needle = "\"id\":\"";
-    size_t pos = 0;
-    while ((pos = meta.find(needle, pos)) != std::string::npos) {
-        pos += needle.size();
-        size_t end = meta.find('"', pos);
-        if (end == std::string::npos) break;
-        ids.push_back(meta.substr(pos, end - pos));
-        pos = end + 1;
-    }
-    return ids;
-}
-
-void delete_self_owned_attachment(KVClient* kv, const std::string& user, const std::string& att_id) {
-    const std::string row = attachment_row(att_id);
-    if (kv->get_str(row, "owner") != user || kv->get_str(row, "recipient") != user) {
-        return;
-    }
-    size_t chunks = 0;
-    try { chunks = static_cast<size_t>(std::stoull(kv->get_str(row, "chunks"))); }
-    catch (...) { chunks = 0; }
-    for (size_t i = 0; i < chunks; ++i) kv->del(row, attachment_chunk_col(i));
-    kv->del(row, "chunks");
-    kv->del(row, "name");
-    kv->del(row, "mime");
-    kv->del(row, "size");
-    kv->del(row, "owner");
-    kv->del(row, "recipient");
-}
-
 std::string local_recipient_from_to(const std::string& to, bool& is_external) {
     is_external = false;
     if (to.find('@') == std::string::npos) return to;
@@ -469,15 +458,6 @@ bool store_message(KVClient* kv,
         return false;
     }
     return true;
-}
-
-void delete_stored_message(KVClient* kv,
-                           const std::string& owner_user,
-                           const std::string& folder,
-                           const std::string& uid) {
-    remove_uid_from_folder(kv, owner_user, folder, uid);
-    kv->del(mail_row(owner_user), mail_meta_col(uid));
-    kv->del(mail_row(owner_user), mail_body_col(uid));
 }
 
 } // namespace
@@ -513,12 +493,9 @@ HttpResponse FEServer::handle_get_email(const HttpRequest& req,
     std::string meta = kv_->get_str(row, mail_meta_col(uid));
     std::string body = kv_->get_str(row, mail_body_col(uid));
     if (meta.empty()) return HttpResponse::json("{\"ok\":false,\"error\":\"not found\"}");
-    if (meta.front() != '{' || meta.back() != '}') {
-        return HttpResponse::json("{\"ok\":false,\"error\":\"corrupt metadata\"}");
-    }
 
     std::string full = meta;
-    full.pop_back();
+    if (!full.empty() && full.back() == '}') full.pop_back();
     full += ",\"body\":\"" + esc_json_mail(body) + "\"}";
     return HttpResponse::json("{\"ok\":true,\"email\":" + full + "}");
 }
@@ -540,11 +517,8 @@ HttpResponse FEServer::handle_mail_upload_attachment(const HttpRequest& req, con
     if (!found || file_part.filename.empty()) {
         return HttpResponse::json(R"({"ok":false,"error":"missing attachment file"})");
     }
-    const size_t attachment_limit = user_mail_attachment_limit_bytes(kv_.get(), user);
-    if (file_part.data.size() > attachment_limit) {
-        const size_t limit_mb = attachment_limit / (1024ull * 1024ull);
-        return HttpResponse::json(std::string("{\"ok\":false,\"error\":\"attachment exceeds ") +
-                                  std::to_string(limit_mb) + " MB limit\"}");
+    if (file_part.data.size() > kMaxMailAttachmentBytes) {
+        return HttpResponse::json(R"({"ok":false,"error":"attachment exceeds 10 MB limit"})");
     }
 
     const std::string att_id = new_uid_mail();
@@ -557,6 +531,7 @@ HttpResponse FEServer::handle_mail_upload_attachment(const HttpRequest& req, con
         !kv_->put(row, "owner", user) ||
         !kv_->put(row, "recipient", "") ||
         !put_attachment_bytes(kv_.get(), att_id, file_part.data)) {
+        delete_attachment_record(kv_.get(), att_id);
         return HttpResponse::json(R"({"ok":false,"error":"failed to store attachment"})");
     }
 
@@ -610,12 +585,15 @@ HttpResponse FEServer::handle_send_email(const HttpRequest& req, const std::stri
     std::string recipient = local_recipient_from_to(to, is_external);
     std::vector<std::string> requested_attachment_ids = parse_attachment_ids_csv(attachment_ids_csv);
 
-    if (is_external && !requested_attachment_ids.empty()) {
-        return HttpResponse::json(R"({"ok":false,"error":"attachments are supported only for local PennCloud recipients"})");
-    }
-
     if (is_external) {
-        SMTPExternalResult delivery = smtp_send_external(from_addr, to, subject, body);
+        std::string att_err;
+        std::vector<SMTPAttachment> smtp_attachments =
+            load_smtp_attachments_for_send(kv_.get(), user, requested_attachment_ids, att_err);
+        if (!requested_attachment_ids.empty() && smtp_attachments.empty() && !att_err.empty()) {
+            return HttpResponse::json("{\"ok\":false,\"error\":" + json_str(att_err) + "}");
+        }
+
+        SMTPExternalResult delivery = smtp_send_external(from_addr, to, subject, body, smtp_attachments);
         if (!delivery.ok) {
             std::cerr << "[smtp-out] failed to " << to << " error=" << delivery.error << "\n";
             return HttpResponse::json("{\"ok\":false,\"error\":" +
@@ -624,7 +602,8 @@ HttpResponse FEServer::handle_send_email(const HttpRequest& req, const std::stri
         std::cerr << "[smtp-out] delivered to " << to << "\n";
 
         std::string sent_uid = new_uid_mail();
-        std::string sent_meta = make_meta_json(from_addr, to, subject, time_str, sent_uid, "[]");
+        std::string sent_attachments_json = attachments_json_from_ids(kv_.get(), requested_attachment_ids);
+        std::string sent_meta = make_meta_json(from_addr, to, subject, time_str, sent_uid, sent_attachments_json);
         if (!store_message(kv_.get(), user, "sent", sent_uid, sent_meta, body)) {
             return HttpResponse::json("{\"ok\":true,\"uid\":\"" + esc_json_mail(sent_uid) +
                                       "\",\"external\":true,\"delivered\":true," +
@@ -645,32 +624,31 @@ HttpResponse FEServer::handle_send_email(const HttpRequest& req, const std::stri
     }
 
     std::string att_err;
-    std::vector<std::string> inbox_attachment_ids = finalize_attachment_ids_for_send(kv_.get(), user, recipient, requested_attachment_ids, att_err);
-    if (!requested_attachment_ids.empty() && inbox_attachment_ids.empty() && !att_err.empty()) {
-        return HttpResponse::json("{\"ok\":false,\"error\":" + json_str(att_err) + "}");
-    }
-    std::vector<std::string> sent_attachment_ids = finalize_attachment_ids_for_send(kv_.get(), user, user, requested_attachment_ids, att_err);
-    if (!requested_attachment_ids.empty() && sent_attachment_ids.empty() && !att_err.empty()) {
+    std::vector<std::string> final_attachment_ids = finalize_attachment_ids_for_send(kv_.get(), user, recipient, requested_attachment_ids, att_err);
+    if (!requested_attachment_ids.empty() && final_attachment_ids.empty() && !att_err.empty()) {
         return HttpResponse::json("{\"ok\":false,\"error\":" + json_str(att_err) + "}");
     }
 
-    std::string inbox_attachments_json = attachments_json_from_ids(kv_.get(), inbox_attachment_ids);
-    std::string sent_attachments_json = attachments_json_from_ids(kv_.get(), sent_attachment_ids);
+    std::string attachments_json = attachments_json_from_ids(kv_.get(), final_attachment_ids);
     std::string inbox_uid = new_uid_mail();
     std::string sent_uid = new_uid_mail();
 
-    std::string inbox_meta = make_meta_json(from_addr, to, subject, time_str, inbox_uid, inbox_attachments_json);
-    std::string sent_meta = make_meta_json(from_addr, to, subject, time_str, sent_uid, sent_attachments_json);
+    std::string inbox_meta = make_meta_json(from_addr, to, subject, time_str, inbox_uid, attachments_json);
+    std::string sent_meta = make_meta_json(from_addr, to, subject, time_str, sent_uid, attachments_json);
 
-    if (!store_message(kv_.get(), user, "sent", sent_uid, sent_meta, body)) {
-        return HttpResponse::json(R"({"ok":false,"error":"mail delivery failed"})");
-    }
+    // Deliver to recipient inbox first — delivery is primary, sent copy is secondary.
+    // If the sent copy fails we still consider the send successful (recipient got the message).
+    // This ordering eliminates the orphaned-sent-copy scenario that existed when sent was written
+    // first and then inbox failed, requiring a rollback that could itself fail.
     if (!store_message(kv_.get(), recipient, "inbox", inbox_uid, inbox_meta, body)) {
-        delete_stored_message(kv_.get(), user, "sent", sent_uid);
         return HttpResponse::json(R"({"ok":false,"error":"mail delivery failed"})");
     }
-
     kv_->put("notify:" + recipient, "latest", "uid:" + inbox_uid);
+    if (!store_message(kv_.get(), user, "sent", sent_uid, sent_meta, body)) {
+        return HttpResponse::json("{\"ok\":true,\"uid\":\"" + esc_json_mail(sent_uid) +
+                                  "\",\"inbox_uid\":\"" + esc_json_mail(inbox_uid) +
+                                  "\",\"warning\":\"delivered but failed to save sent copy\"}");
+    }
     return HttpResponse::json("{\"ok\":true,\"uid\":\"" + esc_json_mail(sent_uid) + "\",\"inbox_uid\":\"" + esc_json_mail(inbox_uid) + "\"}");
 }
 
@@ -685,16 +663,12 @@ HttpResponse FEServer::handle_delete_email(const HttpRequest& req, const std::st
     }
 
     if (folder == "trash") {
-        std::string meta = kv_->get_str(mail_row(user), mail_meta_col(uid));
         if (!remove_uid_from_folder(kv_.get(), user, "trash", uid)) {
             return HttpResponse::json(R"({"ok":false,"error":"delete failed"})");
         }
         if (!kv_->del(mail_row(user), mail_meta_col(uid)) ||
             !kv_->del(mail_row(user), mail_body_col(uid))) {
             return HttpResponse::json(R"({"ok":false,"error":"delete failed"})");
-        }
-        for (const auto& att_id : attachment_ids_from_meta(meta)) {
-            delete_self_owned_attachment(kv_.get(), user, att_id);
         }
         return HttpResponse::json(R"({"ok":true,"deleted":true})");
     }

@@ -1,55 +1,54 @@
 // main.cc  --  PennCloud KV server entry point
 
+
 #include "server.h"
 #include <iostream>
 #include <csignal>
 #include <cstdlib>
 #include <string>
 #include <stdexcept>
-using namespace std;
+#include <atomic>
 
 static KVServer* g_server = nullptr;
+static std::atomic<bool> g_shutdown_started{false};
 
-// Convert SIGINT/SIGTERM into KVServer::stop() so shutdown checkpoints run.
 static void signal_handler(int sig) {
-    cout << "\n[main] caught signal " << sig
+    if (g_shutdown_started.exchange(true)) return;
+    std::cout << "\n[main] caught signal " << sig
               << ", shutting down cleanly...\n";
     if (g_server) g_server->stop();
 }
 
-// Parse --replica id@host:repl_port and add it to the outbound peer list.
-static void parse_replica_arg(const string& spec,
+static void parse_replica_arg(const std::string& spec,
                               KVServer::Config& cfg,
                               int& replica_index) {
-    string id;
-    string hostport = spec;
+    std::string id;
+    std::string hostport = spec;
 
-    // Support optional replica ID prefix (e.g. "replica1@host:port") 
-    // but default to "replicaN" if not provided.
     auto at = spec.find('@');
-    if (at != string::npos) {
+    if (at != std::string::npos) {
         id = spec.substr(0, at);
         hostport = spec.substr(at + 1);
     }
 
     auto colon = hostport.rfind(':');
-    if (colon == string::npos || colon == 0 || colon == hostport.size() - 1) {
-        throw runtime_error("invalid --replica spec: " + spec);
+    if (colon == std::string::npos || colon == 0 || colon == hostport.size() - 1) {
+        throw std::runtime_error("invalid --replica spec: " + spec);
     }
 
-    string host = hostport.substr(0, colon);
-    int port = stoi(hostport.substr(colon + 1));
-    if (id.empty()) id = "replica" + to_string(replica_index++);
+    std::string host = hostport.substr(0, colon);
+    int port = std::stoi(hostport.substr(colon + 1));
+    if (id.empty()) id = "replica" + std::to_string(replica_index++);
 
     cfg.replicas.emplace_back(id, host, port);
     cfg.enable_replication = true;
 }
 
-// Parse --tablet name:row_start:row_end or --tablet name into a hosted tablet.
-static void parse_tablet_arg(const string& spec, KVServer::Config& cfg) {
+// Parse --tablet name:row_start:row_end  or  --tablet name  (legacy, full range)
+static void parse_tablet_arg(const std::string& spec, KVServer::Config& cfg) {
     KVServer::HostedTabletConfig ht;
     auto first = spec.find(':');
-    if (first == string::npos) {
+    if (first == std::string::npos) {
         // Legacy single-tablet: just a name, full row range.
         ht.name      = spec;
         ht.row_start = "";
@@ -57,7 +56,7 @@ static void parse_tablet_arg(const string& spec, KVServer::Config& cfg) {
     } else {
         ht.name = spec.substr(0, first);
         auto second = spec.find(':', first + 1);
-        if (second == string::npos) {
+        if (second == std::string::npos) {
             // name:row_start  (no end bound)
             ht.row_start = spec.substr(first + 1);
             ht.row_end   = "";
@@ -71,15 +70,14 @@ static void parse_tablet_arg(const string& spec, KVServer::Config& cfg) {
     cfg.hosted_tablets.push_back(ht);
 }
 
-// Convert CLI flags into a KVServer::Config used by the server constructor.
 static KVServer::Config parse_args(int argc, char* argv[]) {
     KVServer::Config cfg;
     int replica_index = 1;
     bool saw_node_id = false;
     for (int i = 1; i < argc; i++) {
-        string arg = argv[i];
+        std::string arg = argv[i];
         if (arg == "--help" || arg == "-h") {
-            cout
+            std::cout
                 << "Usage: ./kvserver [options]\n"
                 << "  --port <client_port>\n"
                 << "  --threads <num_threads>\n"
@@ -89,19 +87,19 @@ static KVServer::Config parse_args(int argc, char* argv[]) {
                 << "  --node-id <id>\n"
                 << "  --repl-port <replication_port>\n"
                 << "  --replica <id@host:repl_port>\n";
-            exit(0);
+            std::exit(0);
         }
-        else if (arg == "--port"         && i+1 < argc) cfg.port = stoi(argv[++i]);
-        else if (arg == "--threads"      && i+1 < argc) cfg.threads = stoi(argv[++i]);
+        else if (arg == "--port"         && i+1 < argc) cfg.port = std::stoi(argv[++i]);
+        else if (arg == "--threads"      && i+1 < argc) cfg.threads = std::stoi(argv[++i]);
         else if (arg == "--data"         && i+1 < argc) cfg.data_dir = argv[++i];
         else if (arg == "--tablet"       && i+1 < argc) parse_tablet_arg(argv[++i], cfg);
-        else if (arg == "--ckpt-interval"&& i+1 < argc) cfg.ckpt_interval = stoi(argv[++i]);
+        else if (arg == "--ckpt-interval"&& i+1 < argc) cfg.ckpt_interval = std::stoi(argv[++i]);
         else if (arg == "--node-id"      && i+1 < argc) { cfg.node_id = argv[++i]; saw_node_id = true; }
-        else if (arg == "--repl-port"    && i+1 < argc) cfg.repl_port = stoi(argv[++i]);
+        else if (arg == "--repl-port"    && i+1 < argc) cfg.repl_port = std::stoi(argv[++i]);
         else if (arg == "--replica"      && i+1 < argc) parse_replica_arg(argv[++i], cfg, replica_index);
         else {
-            cerr << "Unknown argument: " << arg << "\n";
-            exit(1);
+            std::cerr << "Unknown argument: " << arg << "\n";
+            std::exit(1);
         }
     }
 
@@ -109,19 +107,18 @@ static KVServer::Config parse_args(int argc, char* argv[]) {
     return cfg;
 }
 
-// Program entry point: parse config, install signals, run server, checkpoint on exit.
 int main(int argc, char* argv[]) {
     KVServer::Config cfg = parse_args(argc, argv);
 
-    cout << "=== PennCloud KV Server ===\n"
+    std::cout << "=== PennCloud KV Server ===\n"
               << "  port:          " << cfg.port << "\n"
               << "  threads:       " << cfg.threads << "\n"
               << "  data_dir:      " << cfg.data_dir << "\n"
               << "  tablets:       " << cfg.hosted_tablets.size()
               <<   (cfg.hosted_tablets.empty() ? " (legacy: " + cfg.tablet_name + ")" : "") << "\n";
     for (const auto& ht : cfg.hosted_tablets)
-        cout << "    " << ht.name << " [" << ht.row_start << ", " << ht.row_end << ")\n";
-    cout << "  ckpt_interval: " << cfg.ckpt_interval << "s\n"
+        std::cout << "    " << ht.name << " [" << ht.row_start << ", " << ht.row_end << ")\n";
+    std::cout << "  ckpt_interval: " << cfg.ckpt_interval << "s\n"
               << "  node_id:       " << cfg.node_id << "\n"
               << "  repl_port:     " << cfg.repl_port << "\n"
               << "  replication:   " << (cfg.enable_replication ? "enabled" : "standalone") << "\n\n";
@@ -130,17 +127,20 @@ int main(int argc, char* argv[]) {
         KVServer server(cfg);
         g_server = &server;
 
-        signal(SIGINT,  signal_handler);
-        signal(SIGTERM, signal_handler);
+        std::signal(SIGINT,  signal_handler);
+        std::signal(SIGTERM, signal_handler);
 
         server.run();
 
-        cout << "[main] final checkpoint on shutdown...\n";
+        if (!g_shutdown_started.exchange(true)) {
+            server.stop();
+        }
+        std::cout << "[main] final checkpoint on shutdown...\n";
         server.checkpoint_all();
-        cout << "[main] done. goodbye.\n";
+        std::cout << "[main] done. goodbye.\n";
 
-    } catch (const exception& e) {
-        cerr << "[main] fatal: " << e.what() << "\n";
+    } catch (const std::exception& e) {
+        std::cerr << "[main] fatal: " << e.what() << "\n";
         return 1;
     }
     return 0;
