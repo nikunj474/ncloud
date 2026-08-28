@@ -21,13 +21,13 @@ set -euo pipefail
 #   2. Make sure the AWS CLI works:
 #        aws sts get-caller-identity
 #   3. If using HTTPS, point your DNS name to the Elastic IP before running.
-#      Example: liudawei.cis5550.net -> 100.22.215.193
+#      Example: penncloud.example.com -> 203.0.113.10
 #   4. If using external email relay, create a local .smtp.env first and run
 #      with INCLUDE_SMTP_ENV=1. The file is uploaded to EC2 but not committed.
 #
 # Recommended full deployment:
 #   INCLUDE_SMTP_ENV=1 AWS_REGION=us-west-2 \
-#   DNS_NAME=liudawei.cis5550.net DOMAIN_NAME=liudawei.cis5550.net \
+#   DNS_NAME=penncloud.example.com DOMAIN_NAME=penncloud.example.com \
 #   CERTBOT_EMAIL=your-email@example.com ENABLE_HTTPS=1 \
 #   USE_ELASTIC_IP=1 PERSIST_DATA=1 \
 #   bash scripts/aws_deploy_ec2.sh
@@ -38,7 +38,7 @@ set -euo pipefail
 # Reuse the previous admin token when redeploying:
 #   set -a; . .aws-deploy/last-deploy.env; set +a
 #   INCLUDE_SMTP_ENV=1 AWS_REGION=us-west-2 \
-#   DNS_NAME=liudawei.cis5550.net DOMAIN_NAME=liudawei.cis5550.net \
+#   DNS_NAME=penncloud.example.com DOMAIN_NAME=penncloud.example.com \
 #   CERTBOT_EMAIL=your-email@example.com ENABLE_HTTPS=1 \
 #   USE_ELASTIC_IP=1 PERSIST_DATA=1 ADMIN_TOKEN="$ADMIN_TOKEN" \
 #   bash scripts/aws_deploy_ec2.sh
@@ -62,7 +62,7 @@ set -euo pipefail
 #   APP_CIDR            default 0.0.0.0/0 for HTTP/HTTPS/demo ports
 #   INCLUDE_SMTP_ENV    set to 1 to upload local .smtp.env to EC2
 #   ADMIN_TOKEN         admin token for /admin; random hex if omitted
-#   DNS_NAME            optional DNS name / nginx server_name, e.g. liudawei.cis5550.net
+#   DNS_NAME            optional DNS name / nginx server_name, e.g. penncloud.example.com
 #   USE_ELASTIC_IP      set to 1 to allocate/reuse and associate an Elastic IP
 #   PERSIST_DATA        set to 1 to keep KV data under /opt/penncloud-data
 #   ENABLE_HTTPS        set to 1 to request/configure Let's Encrypt HTTPS
@@ -129,7 +129,7 @@ if [ "$ACCOUNT_ID" != "$EXPECTED_ACCOUNT" ]; then
 fi
 if [ "$ENABLE_HTTPS" = "1" ]; then
   if [ -z "$DOMAIN_NAME" ]; then
-    echo "[deploy] ENABLE_HTTPS=1 requires DOMAIN_NAME or DNS_NAME, e.g. liudawei.cis5550.net" >&2
+    echo "[deploy] ENABLE_HTTPS=1 requires DOMAIN_NAME or DNS_NAME, e.g. penncloud.example.com" >&2
     exit 1
   fi
   if [ -z "$CERTBOT_EMAIL" ]; then

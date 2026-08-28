@@ -3,6 +3,7 @@
 // =============================================================================
 
 #include "fe_server.h"
+#include "password.h"
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -4052,8 +4053,18 @@ HttpResponse FEServer::handle_login(const HttpRequest& req) {
         return HttpResponse::json(
             R"({"ok":false,"error":"Storage temporarily unavailable, please try again"})");
     }
-    if (st != KVReadStatus::Found || stored_pwd != password)
+    bool needs_rehash = false;
+    if (st != KVReadStatus::Found ||
+        !pcpw::verify_password(password, stored_pwd, &needs_rehash))
         return HttpResponse::json(R"({"ok":false,"error":"Invalid username or password"})");
+
+    // Transparently upgrade credentials still stored in the pre-hashing format
+    // (or hashed with a now-lower cost factor).  A failure here is not fatal --
+    // the user is already authenticated and the next login will retry.
+    if (needs_rehash) {
+        const std::string upgraded = pcpw::hash_password(password);
+        if (!upgraded.empty()) (void)kv_->put(username, "pwd", upgraded);
+    }
 
     // Create session -- must succeed before returning ok:true.
     std::string sid = sessions_->create(username);
@@ -4112,8 +4123,15 @@ HttpResponse FEServer::handle_signup(const HttpRequest& req) {
     if (st == KVReadStatus::Found)
         return HttpResponse::json(R"({"ok":false,"error":"Username already taken"})");
 
-    // Persist password -- must succeed before returning ok:true.
-    if (!kv_->put(username, "pwd", password)) {
+    // Persist password -- must succeed before returning ok:true.  Only the
+    // salted PBKDF2 digest is ever written; the plaintext never reaches the
+    // KV layer, its write-ahead log, or a checkpoint on disk.
+    const std::string pwd_hash = pcpw::hash_password(password);
+    if (pwd_hash.empty()) {
+        return HttpResponse::json(
+            R"({"ok":false,"error":"Could not securely store password, please try again"})");
+    }
+    if (!kv_->put(username, "pwd", pwd_hash)) {
         return HttpResponse::json(
             R"({"ok":false,"error":"Storage temporarily unavailable, please try again"})");
     }
@@ -4139,6 +4157,9 @@ HttpResponse FEServer::handle_change_password(const HttpRequest& req) {
     std::string old_pw = params["old_password"];
     std::string new_pw = params["new_password"];
 
+    if (new_pw.empty())
+        return HttpResponse::json(R"({"ok":false,"error":"New password cannot be empty"})");
+
     std::string stored;
     KVReadStatus st = kv_->get_status(user, "pwd", stored);
     if (st == KVReadStatus::Unavailable) {
@@ -4148,10 +4169,15 @@ HttpResponse FEServer::handle_change_password(const HttpRequest& req) {
     if (st == KVReadStatus::NotFound) {
         return HttpResponse::error(401, "Unauthorized");
     }
-    if (stored != old_pw)
+    if (!pcpw::verify_password(old_pw, stored))
         return HttpResponse::json(R"({"ok":false,"error":"Wrong current password"})");
 
-    if (!kv_->put(user, "pwd", new_pw)) {
+    const std::string new_hash = pcpw::hash_password(new_pw);
+    if (new_hash.empty()) {
+        return HttpResponse::json(
+            R"({"ok":false,"error":"Could not securely store password, please try again"})");
+    }
+    if (!kv_->put(user, "pwd", new_hash)) {
         return HttpResponse::json(
             R"({"ok":false,"error":"Storage temporarily unavailable, please try again"})");
     }

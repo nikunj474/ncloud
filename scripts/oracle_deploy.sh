@@ -15,8 +15,8 @@ set -euo pipefail
 #
 # Recommended usage:
 #   INCLUDE_SMTP_ENV=1 \
-#   DOMAIN_NAME=liudawei.cis5550.net \
-#   CERTBOT_EMAIL=liudawei@seas.upenn.edu \
+#   DOMAIN_NAME=penncloud.example.com \
+#   CERTBOT_EMAIL=you@example.com \
 #   PERSIST_DATA=1 \
 #   bash scripts/oracle_deploy.sh
 #
@@ -24,7 +24,7 @@ set -euo pipefail
 #   SSH_HOST          hostname/IP of the VM, default 146.235.197.133
 #   SSH_USER          SSH user, default ubuntu
 #   SSH_KEY           SSH private key, default ~/.ssh/oracle_arm
-#   DOMAIN_NAME       public DNS name, default liudawei.cis5550.net
+#   DOMAIN_NAME       public DNS name, default penncloud.example.com
 #   CERTBOT_EMAIL     email for Let's Encrypt
 #   INCLUDE_SMTP_ENV  set to 1 to upload local .smtp.env
 #   PERSIST_DATA      set to 1 to keep KV data under /opt/penncloud-data
@@ -37,7 +37,7 @@ set -euo pipefail
 #   2525    SMTP demo
 #   8088    Frontend load-balancer (not used in multi-tablet mode)
 #
-# The notgoogle.cis5550.net services are expected to use a separate nginx
+# The other.example.com services are expected to use a separate nginx
 # server_name block or a different port range; we write our config only to
 # /etc/nginx/conf.d/penncloud.conf and do not touch other vhosts.
 
@@ -48,8 +48,8 @@ mkdir -p "$STATE_DIR"
 SSH_HOST="${SSH_HOST:-146.235.197.133}"
 SSH_USER="${SSH_USER:-ubuntu}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/oracle_arm}"
-DOMAIN_NAME="${DOMAIN_NAME:-liudawei.cis5550.net}"
-CERTBOT_EMAIL="${CERTBOT_EMAIL:-liudawei@seas.upenn.edu}"
+DOMAIN_NAME="${DOMAIN_NAME:-penncloud.example.com}"
+CERTBOT_EMAIL="${CERTBOT_EMAIL:-you@example.com}"
 INCLUDE_SMTP_ENV="${INCLUDE_SMTP_ENV:-0}"
 PERSIST_DATA="${PERSIST_DATA:-1}"
 FORCE_HTTPS="${FORCE_HTTPS:-1}"

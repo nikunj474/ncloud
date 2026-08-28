@@ -380,11 +380,21 @@ server discovers new mail by polling a notification key. True end-to-end push wo
 a pub/sub path from the SMTP server through the KV layer to the frontend holding the
 connection.
 
-**Current limitations.** Credentials are stored unhashed in the KV layer and the storage
-and coordinator ports assume a trusted network — both are on the roadmap ahead of any
-real-world deployment. Replicated multi-tablet hosting is limited to one tablet per
-process; lifting it needs the replication protocol to identify tablets explicitly in sync
-and recovery messages.
+**Password storage.** Credentials are stored as PBKDF2-HMAC-SHA256 with a per-user 16-byte
+salt from `/dev/urandom` and 120,000 iterations — about 100 ms per verification, a cost an
+offline guessing attack pays for every candidate. The plaintext never reaches the KV layer,
+its write-ahead log, or a checkpoint. SHA-256, HMAC, and PBKDF2 are implemented in
+[password.h](frontend/src/password.h) rather than pulled from a crypto library, keeping
+libcurl the only third-party dependency; `password_selftest()` checks them against the
+published FIPS 180-4, RFC 4231, and RFC 7914 vectors. Comparisons are constant-time, and
+accounts predating the change are transparently re-hashed on their next successful login.
+
+**Current limitations.** The storage and coordinator ports carry no authentication and
+assume a trusted network — anything internet-facing belongs behind the nginx gateway the
+deploy scripts configure, never exposed directly. `PENNCLOUD_OPEN_ADMIN=1` disables admin
+authentication outright and is for local demos only. Replicated multi-tablet hosting is
+limited to one tablet per process; lifting it needs the replication protocol to identify
+tablets explicitly in sync and recovery messages.
 
 Full design documentation — on-disk formats, wire protocols, per-service KV schemas, and
 a longer discussion of bottlenecks — is in **[SYSTEM_DESIGN.md](SYSTEM_DESIGN.md)**.
