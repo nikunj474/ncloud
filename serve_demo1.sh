@@ -8,9 +8,9 @@ KV_PORT=5050
 FE_PORT=8090
 COORD_PORT=6000
 DATA_DIR=/tmp/pc_demo1_data
-export PENNCLOUD_OPEN_ADMIN="${PENNCLOUD_OPEN_ADMIN:-1}"
+export NCLOUD_OPEN_ADMIN="${NCLOUD_OPEN_ADMIN:-1}"
 
-echo "== Killing old PennCloud processes =="
+echo "== Killing old NCloud processes =="
 pkill -f "/kvstore/kvserver" 2>/dev/null || true
 pkill -f "/frontend/feserver" 2>/dev/null || true
 pkill -f "/coordinator/coordinator" 2>/dev/null || true

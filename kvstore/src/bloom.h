@@ -1,8 +1,8 @@
 #pragma once
-#ifndef PENNCLOUD_KV_BLOOM_H
-#define PENNCLOUD_KV_BLOOM_H
+#ifndef NCLOUD_KV_BLOOM_H
+#define NCLOUD_KV_BLOOM_H
 // =============================================================================
-// bloom.h  --  Bloom filter for PennCloud tablet key membership
+// bloom.h  --  Bloom filter for NCloud tablet key membership
 // =============================================================================
 //
 // WHY: On GET, before hitting the std::unordered_map, we check the Bloom
@@ -111,4 +111,4 @@ private:
     }
 };
 
-#endif  // PENNCLOUD_KV_BLOOM_H
+#endif  // NCLOUD_KV_BLOOM_H

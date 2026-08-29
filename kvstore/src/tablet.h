@@ -1,8 +1,8 @@
 #pragma once
-#ifndef PENNCLOUD_KV_TABLET_H
-#define PENNCLOUD_KV_TABLET_H
+#ifndef NCLOUD_KV_TABLET_H
+#define NCLOUD_KV_TABLET_H
 // =============================================================================
-// tablet.h  --  PennCloud KV tablet: in-memory store + WAL + checkpoint
+// tablet.h  --  NCloud KV tablet: in-memory store + WAL + checkpoint
 // =============================================================================
 //
 // A Tablet is one horizontal slice of the key-value table.
@@ -175,4 +175,4 @@ private:
     bool replay_wal();
 };
 
-#endif  // PENNCLOUD_KV_TABLET_H
+#endif  // NCLOUD_KV_TABLET_H

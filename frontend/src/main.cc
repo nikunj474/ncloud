@@ -1,4 +1,4 @@
-// main.cc  --  PennCloud Frontend entry point
+// main.cc  --  NCloud Frontend entry point
 
 // Usage:
 //   ./feserver [--port 8080] [--kv-host 127.0.0.1] [--kv-port 5000]
@@ -46,7 +46,7 @@ int main(int argc, char* argv[]) {
         std::cout << "[feserver] redirect-stub: port " << cfg.port
                   << " -> " << cfg.redirect_to << "\n";
     } else {
-        std::cout << "=== PennCloud Frontend Server ===\n"
+        std::cout << "=== NCloud Frontend Server ===\n"
                   << "  port:    " << cfg.port     << "\n"
                   << "  kv:      " << cfg.kv_host << ":" << cfg.kv_port << "\n"
                   << "  threads: " << cfg.threads   << "\n"

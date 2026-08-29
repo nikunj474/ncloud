@@ -1,8 +1,8 @@
 #pragma once
-#ifndef PENNCLOUD_KV_PROTOCOL_H
-#define PENNCLOUD_KV_PROTOCOL_H
+#ifndef NCLOUD_KV_PROTOCOL_H
+#define NCLOUD_KV_PROTOCOL_H
 // =============================================================================
-// protocol.h  --  PennCloud KV wire protocol (shared by KV server + FE server)
+// protocol.h  --  NCloud KV wire protocol (shared by KV server + FE server)
 // =============================================================================
 //
 // Every message is LENGTH-PREFIXED so binary values (PDFs, images, video)
@@ -211,4 +211,4 @@ inline KVResponse read_response(int fd) {
     return resp;
 }
 
-#endif  // PENNCLOUD_KV_PROTOCOL_H
+#endif  // NCLOUD_KV_PROTOCOL_H

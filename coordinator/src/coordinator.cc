@@ -1,5 +1,5 @@
 
-// coordinator.cc PennCloud Backend Coordinator (Phase B recovery/rejoin)
+// coordinator.cc NCloud Backend Coordinator (Phase B recovery/rejoin)
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -1551,7 +1551,7 @@ int main(int argc, char* argv[]) {
         else if (a == "--config" && i + 1 < argc) cfg.config_file = argv[++i];
     }
 
-    std::cout << "=== PennCloud Coordinator ===\n"
+    std::cout << "=== NCloud Coordinator ===\n"
               << "  port:   " << cfg.port << "\n"
               << "  config: " << cfg.config_file << "\n\n";
 

@@ -9,7 +9,7 @@ FE_PORT=8090
 COORD_PORT=6000
 DATA_DIR=/tmp/pc_demo1_data
 
-echo "== Killing old PennCloud processes =="
+echo "== Killing old NCloud processes =="
 pkill -f "/kvstore/kvserver" 2>/dev/null || true
 pkill -f "/frontend/feserver" 2>/dev/null || true
 pkill -f "/coordinator/coordinator" 2>/dev/null || true

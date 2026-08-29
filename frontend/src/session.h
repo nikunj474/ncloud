@@ -1,4 +1,4 @@
-// session.h  --  Session management for PennCloud frontend
+// session.h  --  Session management for NCloud frontend
 
 
 #include <array>

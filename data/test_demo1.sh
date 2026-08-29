@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT_DIR"
 
-echo "== Killing old PennCloud processes =="
+echo "== Killing old NCloud processes =="
 pkill -f "/kvstore/kvserver" 2>/dev/null || true
 pkill -f "/frontend/feserver" 2>/dev/null || true
 pkill -f "/coordinator/coordinator" 2>/dev/null || true

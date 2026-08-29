@@ -1,4 +1,4 @@
-# PennCloud System Design — Complete Reference
+# NCloud System Design — Complete Reference
 
 ---
 
@@ -24,7 +24,7 @@
 
 ## 1. System Overview
 
-PennCloud is a distributed cloud platform providing email, file storage, and chat services. It is built entirely in C++17 with no external frameworks. The system is partitioned into four independent tiers:
+NCloud is a distributed cloud platform providing email, file storage, and chat services. It is built entirely in C++17 with no external frameworks. The system is partitioned into four independent tiers:
 
 ```
 Browser
@@ -133,7 +133,7 @@ Every write increments a monotonically increasing `uint64_t lsn_`. The LSN is:
 
 ### Replication Model
 
-PennCloud uses **primary-backup (1-primary, N-secondary) replication** with synchronous forwarding.
+NCloud uses **primary-backup (1-primary, N-secondary) replication** with synchronous forwarding.
 
 When a frontend writes to the primary:
 1. Primary writes to its own WAL and in-memory map
@@ -360,14 +360,14 @@ The `sid` cookie is set with `HttpOnly` and a matching `Max-Age`. It is not mark
 
 Two separate email paths:
 
-**Inbound** (external → PennCloud inbox):
-- External SMTP server connects to PennCloud SMTP server on port 2525
+**Inbound** (external → NCloud inbox):
+- External SMTP server connects to NCloud SMTP server on port 2525
 - SMTP server parses the message, extracts recipient username
 - Validates recipient exists in KV (`pwd` column)
 - Writes email body and metadata to KV
 - Updates inbox index
 
-**Outbound** (PennCloud → external):
+**Outbound** (NCloud → external):
 - Frontend calls `smtp_send_external()` via the SMTP client library
 - Supports two modes: **relay** (authenticated SMTP via Gmail/etc. using libcurl) or **direct** (MX lookup + direct SMTP delivery)
 - Mode configured via environment variables (`SMTP_MODE`, `SMTP_RELAY_HOST`, etc.)

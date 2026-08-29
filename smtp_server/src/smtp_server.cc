@@ -66,25 +66,25 @@ static std::string lower_copy(std::string s) {
     return s;
 }
 
-static std::string penncloud_mail_domain() {
-    const char* env = std::getenv("PENNCLOUD_MAIL_DOMAIN");
-    std::string domain = env && *env ? env : "penncloud.local";
+static std::string ncloud_mail_domain() {
+    const char* env = std::getenv("NCLOUD_MAIL_DOMAIN");
+    std::string domain = env && *env ? env : "ncloud.local";
     domain = lower_copy(domain);
     if (domain.empty() || domain.find('@') != std::string::npos ||
         domain.find('/') != std::string::npos ||
         domain.find('\r') != std::string::npos ||
         domain.find('\n') != std::string::npos) {
-        return "penncloud.local";
+        return "ncloud.local";
     }
     return domain;
 }
 
-static bool is_local_penncloud_domain(const std::string& domain_raw) {
+static bool is_local_ncloud_domain(const std::string& domain_raw) {
     std::string domain = lower_copy(domain_raw);
-    return domain == "penncloud" ||
-           domain == "penncloud.com" ||
-           domain == "penncloud.local" ||
-           domain == penncloud_mail_domain();
+    return domain == "ncloud" ||
+           domain == "ncloud.com" ||
+           domain == "ncloud.local" ||
+           domain == ncloud_mail_domain();
 }
 
 static std::vector<std::string> split_csv(const std::string& s) {
@@ -187,7 +187,7 @@ static std::string extract_local_user(const std::string& addr) {
     if (at == std::string::npos) return trim(addr);
     std::string local = addr.substr(0, at);
     std::string domain = lower_copy(addr.substr(at + 1));
-    if (!is_local_penncloud_domain(domain)) return "";
+    if (!is_local_ncloud_domain(domain)) return "";
     return trim(local);
 }
 
@@ -195,7 +195,7 @@ static bool is_external_recipient(const std::string& addr) {
     auto at = addr.find('@');
     if (at == std::string::npos || at == 0 || at + 1 >= addr.size()) return false;
     std::string domain = lower_copy(addr.substr(at + 1));
-    return !is_local_penncloud_domain(domain);
+    return !is_local_ncloud_domain(domain);
 }
 
 static bool parse_subject_and_body(const std::string& raw_data,
@@ -252,7 +252,7 @@ public:
         ::signal(SIGPIPE, SIG_IGN);
 
         listen_fd_ = create_listen_socket();
-        std::cout << "=== PennCloud SMTP Server ===\n"
+        std::cout << "=== NCloud SMTP Server ===\n"
                   << "  port:    " << cfg_.port << "\n"
                   << "  kv:      " << cfg_.kv_host << ":" << cfg_.kv_port << "\n"
                   << "  coord:   "
@@ -432,7 +432,7 @@ private:
 
     void handle_client(int fd) {
         Session s;
-        if (!write_all_fd(fd, "220 PennCloud SMTP Ready\r\n")) return;
+        if (!write_all_fd(fd, "220 NCloud SMTP Ready\r\n")) return;
 
         std::string line;
         while (g_running && read_line_fd(fd, line)) {
@@ -445,7 +445,7 @@ private:
                 s.greeted = true;
                 s.helo_name = trim(line.substr(5));
                 write_all_fd(fd,
-                    "250-PennCloud\r\n"
+                    "250-NCloud\r\n"
                     "250-8BITMIME\r\n"
                     "250 HELP\r\n");
 

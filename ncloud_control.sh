@@ -8,29 +8,29 @@ cd "$PROJECT_DIR"
 COORD_PORT="${COORD_PORT:-7110}"
 SMTP_PORT="${SMTP_PORT:-2525}"
 LB_PORT="${LB_PORT:-8088}"
-DATA_ROOT="${DATA_ROOT:-$PROJECT_DIR/.penncloud_data/pc_multi_group_demo}"
+DATA_ROOT="${DATA_ROOT:-$PROJECT_DIR/.ncloud_data/pc_multi_group_demo}"
 PID_DIR="$DATA_ROOT/pids"
 CFG="$PROJECT_DIR/coordinator/coordinator_multi_group_demo.conf"
 LB_CFG="$PROJECT_DIR/frontend_lb.conf"
 
-export PENNCLOUD_OPEN_ADMIN="${PENNCLOUD_OPEN_ADMIN:-1}"
-export PENNCLOUD_MAIL_DOMAIN="${PENNCLOUD_MAIL_DOMAIN:-penncloud.local}"
+export NCLOUD_OPEN_ADMIN="${NCLOUD_OPEN_ADMIN:-1}"
+export NCLOUD_MAIL_DOMAIN="${NCLOUD_MAIL_DOMAIN:-ncloud.local}"
 
 mkdir -p "$DATA_ROOT/node1" "$DATA_ROOT/node2" "$DATA_ROOT/node3" "$DATA_ROOT/node4" "$PID_DIR"
 
 usage() {
   cat <<'EOF'
 Usage:
-  ./penncloud_control.sh backend  start|stop|restart node1|node2|node3|node4
-  ./penncloud_control.sh frontend start|stop|restart fe1|fe2|fe3
-  ./penncloud_control.sh coordinator start|stop|restart
-  ./penncloud_control.sh lb start|stop|restart
-  ./penncloud_control.sh smtp start|stop|restart
+  ./ncloud_control.sh backend  start|stop|restart node1|node2|node3|node4
+  ./ncloud_control.sh frontend start|stop|restart fe1|fe2|fe3
+  ./ncloud_control.sh coordinator start|stop|restart
+  ./ncloud_control.sh lb start|stop|restart
+  ./ncloud_control.sh smtp start|stop|restart
 
 Examples:
-  ./penncloud_control.sh backend restart node2
-  ./penncloud_control.sh frontend restart fe1
-  ./penncloud_control.sh coordinator restart
+  ./ncloud_control.sh backend restart node2
+  ./ncloud_control.sh frontend restart fe1
+  ./ncloud_control.sh coordinator restart
 EOF
 }
 

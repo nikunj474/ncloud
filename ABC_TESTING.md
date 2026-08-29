@@ -1,6 +1,6 @@
 # ABC Kill Scenario Testing
 
-This package adds 3-node cluster helpers for the PennCloud tablet replication path.
+This package adds 3-node cluster helpers for the NCloud tablet replication path.
 
 ## What is included
 - `start_abc_cluster.sh`

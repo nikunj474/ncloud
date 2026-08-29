@@ -13,7 +13,7 @@ USER_NAME="${USER_NAME:-testuser}"
 PASSWORD="${PASSWORD:-testpass}"
 
 export DATA_ROOT
-export PENNCLOUD_OPEN_ADMIN="${PENNCLOUD_OPEN_ADMIN:-1}"
+export NCLOUD_OPEN_ADMIN="${NCLOUD_OPEN_ADMIN:-1}"
 
 mkdir -p "$DATA_ROOT"
 
@@ -141,14 +141,14 @@ restart_node2() {
   sleep 1
 }
 
-echo "=== PennCloud multi-group fault/recovery smoke ==="
+echo "=== NCloud multi-group fault/recovery smoke ==="
 KEEP_404_STUB=0 ./stop_multi_group_cluster.sh >/dev/null 2>&1 || true
 rm -rf "$DATA_ROOT"
 mkdir -p "$DATA_ROOT"
 : > "$COOKIE_JAR"
 
-if ! ./start_multi_group_cluster.sh >/tmp/penncloud_fault_start.log 2>&1; then
-  cat /tmp/penncloud_fault_start.log >&2 || true
+if ! ./start_multi_group_cluster.sh >/tmp/ncloud_fault_start.log 2>&1; then
+  cat /tmp/ncloud_fault_start.log >&2 || true
   fail "multi-group cluster failed to start"
 fi
 wait_tcp "frontend" 8090

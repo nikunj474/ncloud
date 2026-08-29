@@ -1,8 +1,8 @@
 #pragma once
-#ifndef PENNCLOUD_PASSWORD_H
-#define PENNCLOUD_PASSWORD_H
+#ifndef NCLOUD_PASSWORD_H
+#define NCLOUD_PASSWORD_H
 // =============================================================================
-// password.h  --  Salted password hashing for PennCloud
+// password.h  --  Salted password hashing for NCloud
 // =============================================================================
 //
 // Stored credential format (single KV value in column "pwd"):
@@ -31,7 +31,7 @@
 #include <string>
 #include <vector>
 
-namespace pcpw {
+namespace ncpw {
 
 // ---------------------------------------------------------------------------
 // SHA-256 (FIPS 180-4)
@@ -429,6 +429,6 @@ inline bool password_selftest() {
     return true;
 }
 
-}  // namespace pcpw
+}  // namespace ncpw
 
-#endif  // PENNCLOUD_PASSWORD_H
+#endif  // NCLOUD_PASSWORD_H

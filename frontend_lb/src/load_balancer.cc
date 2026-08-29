@@ -262,7 +262,7 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    std::cout << "=== PennCloud Frontend Load Balancer ===\n"
+    std::cout << "=== NCloud Frontend Load Balancer ===\n"
               << "  port:   " << cfg.port << "\n"
               << "  config: " << cfg.config_file << "\n\n";
 

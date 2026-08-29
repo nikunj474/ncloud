@@ -15,7 +15,7 @@ fi
 
 COORD_PORT="${COORD_PORT:-7010}"
 SMTP_PORT="${SMTP_PORT:-2525}"
-export PENNCLOUD_MAIL_DOMAIN="${PENNCLOUD_MAIL_DOMAIN:-penncloud.local}"
+export NCLOUD_MAIL_DOMAIN="${NCLOUD_MAIL_DOMAIN:-ncloud.local}"
 DATA_ROOT="${DATA_ROOT:-/tmp/pc_multi_tablet_demo}"
 CFG="$PROJECT_DIR/coordinator/coordinator_multi_tablet_demo.conf"
 PID_DIR="$DATA_ROOT/pids"

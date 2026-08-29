@@ -1,4 +1,4 @@
-// main.cc  --  PennCloud KV server entry point
+// main.cc  --  NCloud KV server entry point
 
 
 #include "server.h"
@@ -110,7 +110,7 @@ static KVServer::Config parse_args(int argc, char* argv[]) {
 int main(int argc, char* argv[]) {
     KVServer::Config cfg = parse_args(argc, argv);
 
-    std::cout << "=== PennCloud KV Server ===\n"
+    std::cout << "=== NCloud KV Server ===\n"
               << "  port:          " << cfg.port << "\n"
               << "  threads:       " << cfg.threads << "\n"
               << "  data_dir:      " << cfg.data_dir << "\n"

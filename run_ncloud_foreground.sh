@@ -17,7 +17,7 @@ cleanup() {
   trap '' INT TERM HUP  # ignore further signals during cleanup; EXIT stays for subshells
   trap - EXIT
   echo
-  echo "[foreground] stopping complete PennCloud system..."
+  echo "[foreground] stopping complete NCloud system..."
   KEEP_404_STUB="$KEEP_404_STUB_AFTER_CTRL_C" \
     STUB_PORT="$LB_PORT" \
     STUB_PORTS="$STUB_PORTS_AFTER_CTRL_C" \
@@ -32,12 +32,12 @@ cleanup() {
 
 trap cleanup INT TERM HUP EXIT
 
-echo "[foreground] starting complete PennCloud system..."
+echo "[foreground] starting complete NCloud system..."
 "$ROOT_DIR/start_multi_tablet_cluster.sh"
 
 cat <<'EOF'
 
-[foreground] PennCloud is running.
+[foreground] NCloud is running.
 [foreground] Main URL:  http://127.0.0.1:8088
 [foreground] Admin:     http://127.0.0.1:8088/admin
 [foreground]

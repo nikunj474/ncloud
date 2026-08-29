@@ -100,25 +100,25 @@ std::string lower_mail(std::string s) {
     return s;
 }
 
-std::string penncloud_mail_domain() {
-    const char* env = std::getenv("PENNCLOUD_MAIL_DOMAIN");
-    std::string domain = env && *env ? env : "penncloud.local";
+std::string ncloud_mail_domain() {
+    const char* env = std::getenv("NCLOUD_MAIL_DOMAIN");
+    std::string domain = env && *env ? env : "ncloud.local";
     domain = lower_mail(domain);
     if (domain.empty() || domain.find('@') != std::string::npos ||
         domain.find('/') != std::string::npos ||
         domain.find('\r') != std::string::npos ||
         domain.find('\n') != std::string::npos) {
-        return "penncloud.local";
+        return "ncloud.local";
     }
     return domain;
 }
 
-bool is_local_penncloud_domain(const std::string& domain_raw) {
+bool is_local_ncloud_domain(const std::string& domain_raw) {
     std::string domain = lower_mail(domain_raw);
-    return domain == "penncloud" ||
-           domain == "penncloud.com" ||
-           domain == "penncloud.local" ||
-           domain == penncloud_mail_domain();
+    return domain == "ncloud" ||
+           domain == "ncloud.com" ||
+           domain == "ncloud.local" ||
+           domain == ncloud_mail_domain();
 }
 
 std::string mail_content_disposition_attachment(const std::string& name) {
@@ -439,7 +439,7 @@ std::string local_recipient_from_to(const std::string& to, bool& is_external) {
     if (to.find('@') == std::string::npos) return to;
     auto at = to.find('@');
     std::string domain = to.substr(at + 1);
-    if (is_local_penncloud_domain(domain)) return to.substr(0, at);
+    if (is_local_ncloud_domain(domain)) return to.substr(0, at);
     is_external = true;
     return "";
 }
@@ -579,7 +579,7 @@ HttpResponse FEServer::handle_send_email(const HttpRequest& req, const std::stri
         return HttpResponse::json("{\"ok\":false,\"error\":\"Missing to or subject\"}");
     }
 
-    const std::string from_addr = user + "@" + penncloud_mail_domain();
+    const std::string from_addr = user + "@" + ncloud_mail_domain();
     const std::string time_str = now_str_mail();
     bool is_external = false;
     std::string recipient = local_recipient_from_to(to, is_external);

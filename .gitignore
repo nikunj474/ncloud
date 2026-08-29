@@ -9,7 +9,7 @@ coordinator/coordinator
 
 # Runtime data
 data/
-.penncloud_data/
+.ncloud_data/
 *.wal
 *.ckpt
 *.ckpt.tmp

@@ -1,10 +1,10 @@
-name: penncloud
+name: ncloud
 
 services:
 
   # ── coordinator ──────────────────────────────────────────────────────────────
   coordinator:
-    image: penncloud
+    image: ncloud
     build: .
     command: ["./coordinator", "--port", "7110", "--config", "/conf/coordinator.conf"]
     volumes:
@@ -16,12 +16,12 @@ services:
       retries: 20
       start_period: 5s
     networks:
-      - penncloud
+      - ncloud
     restart: unless-stopped
 
   # ── kv backend nodes ──────────────────────────────────────────────────────────
   node1:
-    image: penncloud
+    image: ncloud
     command:
       - ./kvserver
       - --port
@@ -50,11 +50,11 @@ services:
       coordinator:
         condition: service_healthy
     networks:
-      - penncloud
+      - ncloud
     restart: unless-stopped
 
   node2:
-    image: penncloud
+    image: ncloud
     command:
       - ./kvserver
       - --port
@@ -83,11 +83,11 @@ services:
       coordinator:
         condition: service_healthy
     networks:
-      - penncloud
+      - ncloud
     restart: unless-stopped
 
   node3:
-    image: penncloud
+    image: ncloud
     command:
       - ./kvserver
       - --port
@@ -116,11 +116,11 @@ services:
       coordinator:
         condition: service_healthy
     networks:
-      - penncloud
+      - ncloud
     restart: unless-stopped
 
   node4:
-    image: penncloud
+    image: ncloud
     command:
       - ./kvserver
       - --port
@@ -149,12 +149,12 @@ services:
       coordinator:
         condition: service_healthy
     networks:
-      - penncloud
+      - ncloud
     restart: unless-stopped
 
   # ── frontend servers ──────────────────────────────────────────────────────────
   fe1:
-    image: penncloud
+    image: ncloud
     command:
       - ./feserver
       - --port
@@ -170,8 +170,8 @@ services:
       - --coord-port
       - "7110"
     environment:
-      PENNCLOUD_OPEN_ADMIN: "1"
-      PENNCLOUD_MAIL_DOMAIN: "${PENNCLOUD_MAIL_DOMAIN:-penncloud.local}"
+      NCLOUD_OPEN_ADMIN: "1"
+      NCLOUD_MAIL_DOMAIN: "${NCLOUD_MAIL_DOMAIN:-ncloud.local}"
     healthcheck:
       test: ["CMD", "nc", "-z", "127.0.0.1", "8090"]
       interval: 3s
@@ -190,11 +190,11 @@ services:
       node4:
         condition: service_healthy
     networks:
-      - penncloud
+      - ncloud
     restart: unless-stopped
 
   fe2:
-    image: penncloud
+    image: ncloud
     command:
       - ./feserver
       - --port
@@ -210,8 +210,8 @@ services:
       - --coord-port
       - "7110"
     environment:
-      PENNCLOUD_OPEN_ADMIN: "1"
-      PENNCLOUD_MAIL_DOMAIN: "${PENNCLOUD_MAIL_DOMAIN:-penncloud.local}"
+      NCLOUD_OPEN_ADMIN: "1"
+      NCLOUD_MAIL_DOMAIN: "${NCLOUD_MAIL_DOMAIN:-ncloud.local}"
     healthcheck:
       test: ["CMD", "nc", "-z", "127.0.0.1", "8091"]
       interval: 3s
@@ -230,11 +230,11 @@ services:
       node4:
         condition: service_healthy
     networks:
-      - penncloud
+      - ncloud
     restart: unless-stopped
 
   fe3:
-    image: penncloud
+    image: ncloud
     command:
       - ./feserver
       - --port
@@ -250,8 +250,8 @@ services:
       - --coord-port
       - "7110"
     environment:
-      PENNCLOUD_OPEN_ADMIN: "1"
-      PENNCLOUD_MAIL_DOMAIN: "${PENNCLOUD_MAIL_DOMAIN:-penncloud.local}"
+      NCLOUD_OPEN_ADMIN: "1"
+      NCLOUD_MAIL_DOMAIN: "${NCLOUD_MAIL_DOMAIN:-ncloud.local}"
     healthcheck:
       test: ["CMD", "nc", "-z", "127.0.0.1", "8092"]
       interval: 3s
@@ -270,12 +270,12 @@ services:
       node4:
         condition: service_healthy
     networks:
-      - penncloud
+      - ncloud
     restart: unless-stopped
 
   # ── load balancer ─────────────────────────────────────────────────────────────
   lb:
-    image: penncloud
+    image: ncloud
     command: ["./frontend_lb", "--port", "8088", "--config", "/conf/frontend_lb.conf"]
     volumes:
       - ./docker:/conf:ro
@@ -289,12 +289,12 @@ services:
       fe3:
         condition: service_healthy
     networks:
-      - penncloud
+      - ncloud
     restart: unless-stopped
 
   # ── smtp server ───────────────────────────────────────────────────────────────
   smtp:
-    image: penncloud
+    image: ncloud
     command:
       - ./smtp_server
       - --port
@@ -318,7 +318,7 @@ services:
       node1:
         condition: service_healthy
     networks:
-      - penncloud
+      - ncloud
     restart: unless-stopped
 
 volumes:
@@ -328,5 +328,5 @@ volumes:
   kvdata4:
 
 networks:
-  penncloud:
+  ncloud:
     driver: bridge

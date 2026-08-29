@@ -242,7 +242,7 @@ inline bool send_http_response(int fd, const HttpResponse& resp,
          + " " + resp.status_text + "\r\n";
 
     // Standard headers
-    out += "Server: PennCloud/1.0\r\n";
+    out += "Server: NCloud/1.0\r\n";
     auto conn_it = resp.headers.find("Connection");
     out += "Connection: " + (conn_it == resp.headers.end() ? std::string("close") : conn_it->second) + "\r\n";
 

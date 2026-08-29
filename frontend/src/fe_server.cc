@@ -393,10 +393,10 @@ static AdminClusterSpec multi_group_cluster_spec_admin(const std::string& root) 
         "--tablet", "tabletC:m:s",
         "--tablet", "tabletD:s:"
     };
-    c.backends["node1"] = {"node1", 7500, 7600, first_existing_path_admin({root + "/.penncloud_data/pc_multi_group_demo/node1","/tmp/pc_multi_group_demo/node1","/tmp/pc_multi_group/node1","/tmp/pc_multi_group_cluster/node1","/tmp/pc_mg_cluster/node1"}), root + "/mg_node1.log", node1_tablets};
-    c.backends["node2"] = {"node2", 7501, 7601, first_existing_path_admin({root + "/.penncloud_data/pc_multi_group_demo/node2","/tmp/pc_multi_group_demo/node2","/tmp/pc_multi_group/node2","/tmp/pc_multi_group_cluster/node2","/tmp/pc_mg_cluster/node2"}), root + "/mg_node2.log", node2_tablets};
-    c.backends["node3"] = {"node3", 7502, 7602, first_existing_path_admin({root + "/.penncloud_data/pc_multi_group_demo/node3","/tmp/pc_multi_group_demo/node3","/tmp/pc_multi_group/node3","/tmp/pc_multi_group_cluster/node3","/tmp/pc_mg_cluster/node3"}), root + "/mg_node3.log", node3_tablets};
-    c.backends["node4"] = {"node4", 7503, 7603, first_existing_path_admin({root + "/.penncloud_data/pc_multi_group_demo/node4","/tmp/pc_multi_group_demo/node4","/tmp/pc_multi_group/node4","/tmp/pc_multi_group_cluster/node4","/tmp/pc_mg_cluster/node4"}), root + "/mg_node4.log", node4_tablets};
+    c.backends["node1"] = {"node1", 7500, 7600, first_existing_path_admin({root + "/.ncloud_data/pc_multi_group_demo/node1","/tmp/pc_multi_group_demo/node1","/tmp/pc_multi_group/node1","/tmp/pc_multi_group_cluster/node1","/tmp/pc_mg_cluster/node1"}), root + "/mg_node1.log", node1_tablets};
+    c.backends["node2"] = {"node2", 7501, 7601, first_existing_path_admin({root + "/.ncloud_data/pc_multi_group_demo/node2","/tmp/pc_multi_group_demo/node2","/tmp/pc_multi_group/node2","/tmp/pc_multi_group_cluster/node2","/tmp/pc_mg_cluster/node2"}), root + "/mg_node2.log", node2_tablets};
+    c.backends["node3"] = {"node3", 7502, 7602, first_existing_path_admin({root + "/.ncloud_data/pc_multi_group_demo/node3","/tmp/pc_multi_group_demo/node3","/tmp/pc_multi_group/node3","/tmp/pc_multi_group_cluster/node3","/tmp/pc_mg_cluster/node3"}), root + "/mg_node3.log", node3_tablets};
+    c.backends["node4"] = {"node4", 7503, 7603, first_existing_path_admin({root + "/.ncloud_data/pc_multi_group_demo/node4","/tmp/pc_multi_group_demo/node4","/tmp/pc_multi_group/node4","/tmp/pc_multi_group_cluster/node4","/tmp/pc_mg_cluster/node4"}), root + "/mg_node4.log", node4_tablets};
     return c;
 }
 
@@ -1066,9 +1066,9 @@ std::string FEServer::get_user(const HttpRequest& req) {
 }
 
 bool FEServer::admin_control_allowed(const HttpRequest& req) const {
-    // PENNCLOUD_OPEN_ADMIN=1 removes all access restrictions — use in Docker
+    // NCLOUD_OPEN_ADMIN=1 removes all access restrictions — use in Docker
     // where the browser request arrives from the bridge IP, not loopback.
-    const char* open_env = std::getenv("PENNCLOUD_OPEN_ADMIN");
+    const char* open_env = std::getenv("NCLOUD_OPEN_ADMIN");
     if (open_env && open_env[0] == '1') return true;
 
     if (is_loopback_peer_admin(req.remote_addr)) return true;
@@ -1311,7 +1311,7 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>PennCloud</title>
+  <title>NCloud</title>
   <style>
     /* ---- Reset + base ---- */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -1648,7 +1648,7 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
         <text x="24" y="42" text-anchor="middle" font-size="22" font-weight="800" font-family="Georgia,serif" fill="#fff">P</text>
       </svg>
       <div class="brand-text">
-        <span class="brand-name">PennCloud</span>
+        <span class="brand-name">NCloud</span>
         <span class="brand-subtitle">Mail, files, and chat</span>
       </div>
     </div>
@@ -1679,7 +1679,7 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
         <text x="24" y="42" text-anchor="middle" font-size="22" font-weight="800" font-family="Georgia,serif" fill="#011F5B">P</text>
       </svg>
       <div class="brand-text">
-        <span class="brand-name">PennCloud</span>
+        <span class="brand-name">NCloud</span>
         <span class="brand-subtitle">University workspace</span>
       </div>
     </div>
@@ -1728,7 +1728,7 @@ HttpResponse FEServer::handle_spa_shell(const HttpRequest&) {
 
 <script>
 // =============================================================================
-// PennCloud SPA Router (F4 innovation)
+// NCloud SPA Router (F4 innovation)
 // Zero full-page reloads. All navigation is fetch() + DOM swap.
 // =============================================================================
 
@@ -1761,8 +1761,8 @@ let frontendHealthFailures = 0;
 let frontendRedirecting = false;
 let lastFrontendNodes = [];
 const frontendDownParam = 'pc_down';
-const lastUserKey = 'penncloud:last_user';
-const _sidKey = '_penncloud_sid';
+const lastUserKey = 'ncloud:last_user';
+const _sidKey = '_ncloud_sid';
 
 function apiFetch(url, opts) {
   opts = opts ? Object.assign({}, opts) : {};
@@ -2951,7 +2951,7 @@ async function switchDirectMessage(peer) {
 }
 
 function startDirectMessage() {
-  const peer = (prompt('Chat with which PennCloud user?') || '').trim().replace(/@penncloud$/i, '');
+  const peer = (prompt('Chat with which NCloud user?') || '').trim().replace(/@ncloud$/i, '');
   if (!peer) return;
   if (peer === currentUser) {
     showToast('Choose another user.');
@@ -3867,7 +3867,7 @@ async function renderSettings() {
         <h3 style="margin-bottom:16px;font-size:15px">Address book</h3>
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
           <input id="contact-name" type="text" placeholder="Name" style="flex:1;min-width:120px">
-          <input id="contact-email" type="text" placeholder="Email or penncloud username" style="flex:1;min-width:160px">
+          <input id="contact-email" type="text" placeholder="Email or ncloud username" style="flex:1;min-width:160px">
           <button class="btn btn-primary" style="width:auto;padding:9px 18px" onclick="addContact()">Add</button>
         </div>
         <div id="contacts-list-box">
@@ -4055,14 +4055,14 @@ HttpResponse FEServer::handle_login(const HttpRequest& req) {
     }
     bool needs_rehash = false;
     if (st != KVReadStatus::Found ||
-        !pcpw::verify_password(password, stored_pwd, &needs_rehash))
+        !ncpw::verify_password(password, stored_pwd, &needs_rehash))
         return HttpResponse::json(R"({"ok":false,"error":"Invalid username or password"})");
 
     // Transparently upgrade credentials still stored in the pre-hashing format
     // (or hashed with a now-lower cost factor).  A failure here is not fatal --
     // the user is already authenticated and the next login will retry.
     if (needs_rehash) {
-        const std::string upgraded = pcpw::hash_password(password);
+        const std::string upgraded = ncpw::hash_password(password);
         if (!upgraded.empty()) (void)kv_->put(username, "pwd", upgraded);
     }
 
@@ -4126,7 +4126,7 @@ HttpResponse FEServer::handle_signup(const HttpRequest& req) {
     // Persist password -- must succeed before returning ok:true.  Only the
     // salted PBKDF2 digest is ever written; the plaintext never reaches the
     // KV layer, its write-ahead log, or a checkpoint on disk.
-    const std::string pwd_hash = pcpw::hash_password(password);
+    const std::string pwd_hash = ncpw::hash_password(password);
     if (pwd_hash.empty()) {
         return HttpResponse::json(
             R"({"ok":false,"error":"Could not securely store password, please try again"})");
@@ -4169,10 +4169,10 @@ HttpResponse FEServer::handle_change_password(const HttpRequest& req) {
     if (st == KVReadStatus::NotFound) {
         return HttpResponse::error(401, "Unauthorized");
     }
-    if (!pcpw::verify_password(old_pw, stored))
+    if (!ncpw::verify_password(old_pw, stored))
         return HttpResponse::json(R"({"ok":false,"error":"Wrong current password"})");
 
-    const std::string new_hash = pcpw::hash_password(new_pw);
+    const std::string new_hash = ncpw::hash_password(new_pw);
     if (new_hash.empty()) {
         return HttpResponse::json(
             R"({"ok":false,"error":"Could not securely store password, please try again"})");
@@ -4439,7 +4439,7 @@ HttpResponse FEServer::handle_admin_page(const HttpRequest&) {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>PennCloud Admin</title>
+  <title>NCloud Admin</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; }
     :root {
@@ -4699,7 +4699,7 @@ HttpResponse FEServer::handle_admin_page(const HttpRequest&) {
         <text x="24" y="42" text-anchor="middle" font-size="22" font-weight="800" font-family="Georgia,serif" fill="#011F5B">P</text>
       </svg>
       <div>
-        <div class="eyebrow">PennCloud Control Plane</div>
+        <div class="eyebrow">NCloud Control Plane</div>
         <h1>Admin Console</h1>
         <div class="meta">Auto-refresh every 2 seconds with live frontend, backend, and tablet status.</div>
       </div>

@@ -1,8 +1,8 @@
 #pragma once
-#ifndef PENNCLOUD_KV_SERVER_H
-#define PENNCLOUD_KV_SERVER_H
+#ifndef NCLOUD_KV_SERVER_H
+#define NCLOUD_KV_SERVER_H
 // =============================================================================
-// server.h  --  PennCloud KV TCP server
+// server.h  --  NCloud KV TCP server
 // =============================================================================
 
 #include <atomic>
@@ -103,4 +103,4 @@ private:
     void handle_repl_connection(int fd);
 };
 
-#endif  // PENNCLOUD_KV_SERVER_H
+#endif  // NCLOUD_KV_SERVER_H

@@ -1,5 +1,5 @@
 #!/bin/bash
-# PennCloud smoke test entrypoint.
+# NCloud smoke test entrypoint.
 # The course container does not include Python, so keep this as a curl-only test.
 set -e
 

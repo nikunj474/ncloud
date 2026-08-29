@@ -109,7 +109,7 @@ inline bool command_available(const std::string& name) {
 }
 
 inline bool make_temp_file(std::string& path_out) {
-    char tmpl[] = "/tmp/penncloud_mail_XXXXXX";
+    char tmpl[] = "/tmp/ncloud_mail_XXXXXX";
     int fd = ::mkstemp(tmpl);
     if (fd < 0) return false;
     ::fchmod(fd, S_IRUSR | S_IWUSR);
@@ -230,8 +230,8 @@ inline std::string relay_display_name_for(const std::string& original_sender) {
     auto at = original_sender.find('@');
     std::string local = at == std::string::npos ? original_sender : original_sender.substr(0, at);
     local = trim(local);
-    if (local.empty()) return "PennCloud";
-    return "PennCloud " + local;
+    if (local.empty()) return "NCloud";
+    return "NCloud " + local;
 }
 
 inline std::string domain_part_or(const std::string& addr, const std::string& fallback) {
@@ -247,7 +247,7 @@ inline std::string message_id_for(const std::string& from_addr) {
     static std::mt19937 rng(static_cast<unsigned>(ns));
     std::uniform_int_distribution<unsigned> dist(0, 0xFFFFFF);
     std::ostringstream oss;
-    oss << "<penncloud." << ns << "."
+    oss << "<ncloud." << ns << "."
         << std::hex << std::setw(6) << std::setfill('0') << dist(rng)
         << "@" << domain_part_or(from_addr, "localhost") << ">";
     return oss.str();
@@ -259,7 +259,7 @@ inline std::string mime_boundary_for() {
     static std::mt19937 rng(static_cast<unsigned>(ns ^ 0x5A17u));
     std::uniform_int_distribution<unsigned> dist(0, 0xFFFFFF);
     std::ostringstream oss;
-    oss << "----=_PennCloud_" << ns << "_"
+    oss << "----=_NCloud_" << ns << "_"
         << std::hex << std::setw(6) << std::setfill('0') << dist(rng);
     return oss.str();
 }
@@ -334,13 +334,13 @@ inline std::string build_message(const std::string& from_addr,
         oss << "Reply-To: <" << reply_to_addr << ">\r\n";
     }
     if (!original_sender.empty() && original_sender != from_addr) {
-        oss << "X-PennCloud-From: <" << original_sender << ">\r\n";
+        oss << "X-NCloud-From: <" << original_sender << ">\r\n";
     }
     oss << "To: <" << to_addr << ">\r\n";
     oss << "Subject: " << sanitize_header_text(subject) << "\r\n";
     oss << "Date: " << rfc2822_date_now() << "\r\n";
     oss << "Message-ID: " << message_id_for(from_addr) << "\r\n";
-    oss << "X-Mailer: PennCloud\r\n";
+    oss << "X-Mailer: NCloud\r\n";
     oss << "MIME-Version: 1.0\r\n";
 
     if (attachments.empty()) {
@@ -800,8 +800,8 @@ inline bool try_send_once(const std::string& mx_host,
         return finish(false);
     }
 
-    if (!send_cmd_expect(fd, "EHLO penncloud", 2, &reply)) {
-        if (!send_cmd_expect(fd, "HELO penncloud", 2, &reply)) {
+    if (!send_cmd_expect(fd, "EHLO ncloud", 2, &reply)) {
+        if (!send_cmd_expect(fd, "HELO ncloud", 2, &reply)) {
             err_out = reply;
             return finish(false);
         }

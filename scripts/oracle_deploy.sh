@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Deploy PennCloud to an Oracle Cloud (or any Ubuntu) VM.
+# Deploy NCloud to an Oracle Cloud (or any Ubuntu) VM.
 #
 # What this script does:
 #   - SSHes into the target VM via ~/.ssh/oracle_arm (or SSH_KEY).
 #   - Installs Docker and nginx via apt if missing.
 #   - Sets up a 4 GB swap file when one does not exist.
 #   - Uploads the current repository, builds it inside the Docker image.
-#   - Starts PennCloud in multi-tablet mode (3 KV nodes + coordinator + 3 FE).
+#   - Starts NCloud in multi-tablet mode (3 KV nodes + coordinator + 3 FE).
 #   - Configures nginx for the public domain (HTTP + HTTPS).
 #   - Obtains/renews a Let's Encrypt certificate and forces HTTPS.
 #   - Sets up a systemd timer for automatic certificate renewal.
 #
 # Recommended usage:
 #   INCLUDE_SMTP_ENV=1 \
-#   DOMAIN_NAME=penncloud.example.com \
+#   DOMAIN_NAME=ncloud.example.com \
 #   CERTBOT_EMAIL=you@example.com \
 #   PERSIST_DATA=1 \
 #   bash scripts/oracle_deploy.sh
@@ -24,14 +24,14 @@ set -euo pipefail
 #   SSH_HOST          hostname/IP of the VM, default 146.235.197.133
 #   SSH_USER          SSH user, default ubuntu
 #   SSH_KEY           SSH private key, default ~/.ssh/oracle_arm
-#   DOMAIN_NAME       public DNS name, default penncloud.example.com
+#   DOMAIN_NAME       public DNS name, default ncloud.example.com
 #   CERTBOT_EMAIL     email for Let's Encrypt
 #   INCLUDE_SMTP_ENV  set to 1 to upload local .smtp.env
-#   PERSIST_DATA      set to 1 to keep KV data under /opt/penncloud-data
+#   PERSIST_DATA      set to 1 to keep KV data under /opt/ncloud-data
 #   ADMIN_TOKEN       admin panel token; random hex if omitted
 #   FORCE_HTTPS       set to 0 to serve HTTP alongside HTTPS (default 1)
 #
-# PennCloud uses these ports (all are on localhost/127.0.0.1 except nginx):
+# NCloud uses these ports (all are on localhost/127.0.0.1 except nginx):
 #   80/443  nginx (public)
 #   8090-8092  Frontend servers (loopback only, proxied by nginx)
 #   2525    SMTP demo
@@ -39,7 +39,7 @@ set -euo pipefail
 #
 # The other.example.com services are expected to use a separate nginx
 # server_name block or a different port range; we write our config only to
-# /etc/nginx/conf.d/penncloud.conf and do not touch other vhosts.
+# /etc/nginx/conf.d/ncloud.conf and do not touch other vhosts.
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 STATE_DIR="$ROOT_DIR/.oracle-deploy"
@@ -48,7 +48,7 @@ mkdir -p "$STATE_DIR"
 SSH_HOST="${SSH_HOST:-146.235.197.133}"
 SSH_USER="${SSH_USER:-ubuntu}"
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/oracle_arm}"
-DOMAIN_NAME="${DOMAIN_NAME:-penncloud.example.com}"
+DOMAIN_NAME="${DOMAIN_NAME:-ncloud.example.com}"
 CERTBOT_EMAIL="${CERTBOT_EMAIL:-you@example.com}"
 INCLUDE_SMTP_ENV="${INCLUDE_SMTP_ENV:-0}"
 PERSIST_DATA="${PERSIST_DATA:-1}"
@@ -67,7 +67,7 @@ need openssl
 echo "[deploy] target: $REMOTE  domain: $DOMAIN_NAME"
 
 # ── 1. Package source ────────────────────────────────────────────────────────
-TMP_TAR="$STATE_DIR/penncloud-src.tar.gz"
+TMP_TAR="$STATE_DIR/ncloud-src.tar.gz"
 echo "[deploy] packaging source..."
 tar \
   --exclude='.git' \
@@ -88,11 +88,11 @@ tar \
   -czf "$TMP_TAR" -C "$ROOT_DIR" .
 
 echo "[deploy] uploading source..."
-scp $SSH_OPTS "$TMP_TAR" "$REMOTE:/tmp/penncloud-src.tar.gz"
+scp $SSH_OPTS "$TMP_TAR" "$REMOTE:/tmp/ncloud-src.tar.gz"
 
 if [ "${INCLUDE_SMTP_ENV:-0}" = "1" ] && [ -f "$ROOT_DIR/.smtp.env" ]; then
   echo "[deploy] uploading .smtp.env..."
-  scp $SSH_OPTS "$ROOT_DIR/.smtp.env" "$REMOTE:/tmp/penncloud.smtp.env"
+  scp $SSH_OPTS "$ROOT_DIR/.smtp.env" "$REMOTE:/tmp/ncloud.smtp.env"
 fi
 
 # ── 2. Remote provisioning ───────────────────────────────────────────────────
@@ -143,44 +143,44 @@ fi
 
 # ── unpack source ────────────────────────────────────────────────────────────
 echo "[remote] unpacking source..."
-sudo rm -rf /opt/penncloud
-sudo mkdir -p /opt/penncloud
+sudo rm -rf /opt/ncloud
+sudo mkdir -p /opt/ncloud
 if [ "${PERSIST_DATA:-0}" = "1" ]; then
-  sudo mkdir -p /opt/penncloud-data/kv
+  sudo mkdir -p /opt/ncloud-data/kv
 fi
-sudo tar -xzf /tmp/penncloud-src.tar.gz -C /opt/penncloud
-if [ "${INCLUDE_SMTP_ENV:-0}" = "1" ] && [ -f /tmp/penncloud.smtp.env ]; then
-  sudo cp /tmp/penncloud.smtp.env /opt/penncloud/.smtp.env
-  sudo chmod 644 /opt/penncloud/.smtp.env
+sudo tar -xzf /tmp/ncloud-src.tar.gz -C /opt/ncloud
+if [ "${INCLUDE_SMTP_ENV:-0}" = "1" ] && [ -f /tmp/ncloud.smtp.env ]; then
+  sudo cp /tmp/ncloud.smtp.env /opt/ncloud/.smtp.env
+  sudo chmod 644 /opt/ncloud/.smtp.env
 fi
 # Use UID 1000 explicitly: the Docker cis5050 user is UID 1000,
 # while the Oracle ubuntu user may be UID 1001.
-sudo chown -R 1000:1000 /opt/penncloud
+sudo chown -R 1000:1000 /opt/ncloud
 if [ "${PERSIST_DATA:-0}" = "1" ]; then
-  sudo chown -R 1000:1000 /opt/penncloud-data
+  sudo chown -R 1000:1000 /opt/ncloud-data
 fi
 
 # ── Docker container ─────────────────────────────────────────────────────────
 echo "[remote] starting Docker container..."
-sudo docker rm -f penncloud-oracle 2>/dev/null || true
-sudo docker run -d --name penncloud-oracle \
+sudo docker rm -f ncloud-oracle 2>/dev/null || true
+sudo docker run -d --name ncloud-oracle \
   -e ADMIN_TOKEN="$ADMIN_TOKEN" \
-  -e PENNCLOUD_PUBLIC_HOST="$DOMAIN_NAME" \
+  -e NCLOUD_PUBLIC_HOST="$DOMAIN_NAME" \
   --restart unless-stopped \
   -p 127.0.0.1:8090:8090 \
   -p 127.0.0.1:8091:8091 \
   -p 127.0.0.1:8092:8092 \
   -p 0.0.0.0:2525:2525 \
-  -v /opt/penncloud:/home/cis5050/workspace/sp26-cis5050-T05 \
-  -v /opt/penncloud-data:/opt/penncloud-data \
+  -v /opt/ncloud:/home/cis5050/workspace/sp26-cis5050-T05 \
+  -v /opt/ncloud-data:/opt/ncloud-data \
   -w /home/cis5050/workspace/sp26-cis5050-T05 \
   cis5050/docker-env:gRPC sleep infinity
 
 if [ "${PERSIST_DATA:-0}" = "1" ]; then
-  sudo docker exec penncloud-oracle bash -lc \
-    'MODE=multi-tablet DATA_ROOT=/opt/penncloud-data/kv PRESERVE_DATA=1 bash start_browser_demo.sh'
+  sudo docker exec ncloud-oracle bash -lc \
+    'MODE=multi-tablet DATA_ROOT=/opt/ncloud-data/kv PRESERVE_DATA=1 bash start_browser_demo.sh'
 else
-  sudo docker exec penncloud-oracle bash -lc \
+  sudo docker exec ncloud-oracle bash -lc \
     'MODE=multi-tablet bash start_browser_demo.sh'
 fi
 
@@ -188,8 +188,8 @@ fi
 echo "[remote] writing nginx HTTP config for ACME..."
 sudo mkdir -p /etc/nginx/conf.d /var/www/certbot
 
-sudo tee /etc/nginx/conf.d/penncloud.conf >/dev/null <<NGINX_HTTP
-upstream penncloud_frontends {
+sudo tee /etc/nginx/conf.d/ncloud.conf >/dev/null <<NGINX_HTTP
+upstream ncloud_frontends {
     server 127.0.0.1:8090 max_fails=1 fail_timeout=3s;
     server 127.0.0.1:8091 max_fails=1 fail_timeout=3s;
     server 127.0.0.1:8092 max_fails=1 fail_timeout=3s;
@@ -206,7 +206,7 @@ server {
     }
 
     location / {
-        proxy_pass http://penncloud_frontends;
+        proxy_pass http://ncloud_frontends;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
@@ -243,7 +243,7 @@ sudo certbot certonly \
 echo "[remote] writing nginx HTTPS config..."
 HTTP_LOCATION='return 301 https://$host$request_uri;'
 if [ "${FORCE_HTTPS:-1}" != "1" ]; then
-  HTTP_LOCATION='proxy_pass http://penncloud_frontends;
+  HTTP_LOCATION='proxy_pass http://ncloud_frontends;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -260,8 +260,8 @@ if [ "${FORCE_HTTPS:-1}" != "1" ]; then
         proxy_redirect ~^http://([^/:]+):809[0-2](/.*)$ $scheme://$host$2;'
 fi
 
-sudo tee /etc/nginx/conf.d/penncloud.conf >/dev/null <<NGINX_HTTPS
-upstream penncloud_frontends {
+sudo tee /etc/nginx/conf.d/ncloud.conf >/dev/null <<NGINX_HTTPS
+upstream ncloud_frontends {
     server 127.0.0.1:8090 max_fails=1 fail_timeout=3s;
     server 127.0.0.1:8091 max_fails=1 fail_timeout=3s;
     server 127.0.0.1:8092 max_fails=1 fail_timeout=3s;
@@ -295,7 +295,7 @@ server {
     add_header Strict-Transport-Security "max-age=63072000" always;
 
     location / {
-        proxy_pass http://penncloud_frontends;
+        proxy_pass http://ncloud_frontends;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
@@ -319,18 +319,18 @@ sudo systemctl reload nginx
 
 # ── certbot auto-renewal (systemd timer) ─────────────────────────────────────
 echo "[remote] setting up certbot auto-renewal..."
-sudo tee /etc/systemd/system/penncloud-certbot-renew.service >/dev/null <<SVCUNIT
+sudo tee /etc/systemd/system/ncloud-certbot-renew.service >/dev/null <<SVCUNIT
 [Unit]
-Description=Renew PennCloud Let's Encrypt certificates
+Description=Renew NCloud Let's Encrypt certificates
 
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/certbot renew --quiet --deploy-hook "systemctl reload nginx"
 SVCUNIT
 
-sudo tee /etc/systemd/system/penncloud-certbot-renew.timer >/dev/null <<TIMERUNIT
+sudo tee /etc/systemd/system/ncloud-certbot-renew.timer >/dev/null <<TIMERUNIT
 [Unit]
-Description=Twice-daily PennCloud Let's Encrypt renewal check
+Description=Twice-daily NCloud Let's Encrypt renewal check
 
 [Timer]
 OnCalendar=*-*-* 03,15:17:00
@@ -341,7 +341,7 @@ WantedBy=timers.target
 TIMERUNIT
 
 sudo systemctl daemon-reload
-sudo systemctl enable --now penncloud-certbot-renew.timer >/dev/null
+sudo systemctl enable --now ncloud-certbot-renew.timer >/dev/null
 
 echo "[remote] done."
 REMOTE_SCRIPT
@@ -368,7 +368,7 @@ EOF_STATE
 
 echo
 echo "================================================================"
-echo "  PennCloud deployed on Oracle VM"
+echo "  NCloud deployed on Oracle VM"
 echo "================================================================"
 echo "  Main app:    https://$DOMAIN_NAME/"
 echo "  HTTP->HTTPS: http://$DOMAIN_NAME/  (redirects)"

@@ -1,5 +1,5 @@
 #!/bin/bash
-# PennCloud smoke test (curl version, no Python dependency)
+# NCloud smoke test (curl version, no Python dependency)
 # Adapted for the flattened WIP_3 layout and current routes.
 # Usage: bash smoke_test_curl.sh
 set -e
@@ -12,7 +12,7 @@ COOKIES=/tmp/pc_cookies_$$
 PASS=0
 FAIL=0
 
-echo "=== PennCloud Smoke Test (curl) ==="
+echo "=== NCloud Smoke Test (curl) ==="
 mkdir -p $DATA_DIR
 
 ./kvstore/kvserver --port $KV_PORT --data $DATA_DIR --tablet test &
@@ -49,7 +49,7 @@ json_val() {
 
 # 1. SPA shell
 RESP=$(curl -s $BASE/)
-check "GET /  ->  SPA shell" '[[ "$RESP" == *"PennCloud"* ]]'
+check "GET /  ->  SPA shell" '[[ "$RESP" == *"NCloud"* ]]'
 
 # 2. Signup
 RESP=$(curl -s -c $COOKIES -X POST $BASE/api/signup -d 'username=testuser&password=testpass')
@@ -119,7 +119,7 @@ check "GET /api/drive?path=/  ->  shows docs folder" '[[ "$OK" == "true" && "$HA
 
 # 11. Upload a file into /docs
 TMPFILE=/tmp/pc_upload_$$.txt
-echo -n 'PennCloud Demo III file' > $TMPFILE
+echo -n 'NCloud Demo III file' > $TMPFILE
 RESP=$(curl -s -b $COOKIES -X POST $BASE/api/upload \
     -F "path=/docs" \
     -F "file=@${TMPFILE};filename=demo.txt;type=text/plain")
@@ -137,7 +137,7 @@ check "GET /api/drive?path=/docs  ->  1 file listed" '[[ "$OK" == "true" && "$HA
 
 # 13. Download file
 RESP=$(curl -s -b $COOKIES "$BASE/api/download/$FILE_UID")
-check "GET /api/download/:uid  ->  bytes correct" '[[ "$RESP" == "PennCloud Demo III file" ]]'
+check "GET /api/download/:uid  ->  bytes correct" '[[ "$RESP" == "NCloud Demo III file" ]]'
 
 # 14. Rename file
 RESP=$(curl -s -b $COOKIES -X POST $BASE/api/rename \

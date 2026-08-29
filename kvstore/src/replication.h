@@ -1,6 +1,6 @@
 #pragma once
-#ifndef PENNCLOUD_KV_REPLICATION_H
-#define PENNCLOUD_KV_REPLICATION_H
+#ifndef NCLOUD_KV_REPLICATION_H
+#define NCLOUD_KV_REPLICATION_H
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -489,7 +489,7 @@ inline bool ReplicationManager::forward_to_replica(ReplicaInfo& r, const std::st
 }
 
 inline std::string ReplicationManager::advertised_primary_host() const {
-    const char* env_host = std::getenv("PENNCLOUD_REPL_HOST");
+    const char* env_host = std::getenv("NCLOUD_REPL_HOST");
     if (env_host && *env_host) return env_host;
     // The course/demo deployment runs every replica on localhost.  Keep this
     // explicit so a gap repair never guesses a public hostname incorrectly.
@@ -639,4 +639,4 @@ inline bool ReplicationManager::become_secondary_and_sync(const std::string& hos
     return true;
 }
 
-#endif  // PENNCLOUD_KV_REPLICATION_H
+#endif  // NCLOUD_KV_REPLICATION_H

@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Deploy PennCloud to one AWS Academy EC2 instance.
+# Deploy NCloud to one AWS Academy EC2 instance.
 #
 # What this script does:
-#   - Creates or reuses one EC2 instance named penncloud-demo.
+#   - Creates or reuses one EC2 instance named ncloud-demo.
 #   - Creates or reuses an EC2 key pair and security group.
 #   - Optionally allocates/reuses an Elastic IP.
-#   - Uploads the current repository to /opt/penncloud on EC2.
-#   - Runs the PennCloud Docker demo in multi-tablet mode.
+#   - Uploads the current repository to /opt/ncloud on EC2.
+#   - Runs the NCloud Docker demo in multi-tablet mode.
 #   - Starts nginx on the EC2 host as the public gateway for ports 80/443.
 #   - Optionally configures Let's Encrypt HTTPS for a public DNS name.
-#   - Optionally preserves KV data under /opt/penncloud-data/kv.
+#   - Optionally preserves KV data under /opt/ncloud-data/kv.
 #   - Configures nginx with a high upload ceiling so Drive quota, not nginx,
 #     decides whether a large upload is allowed.
 #
@@ -21,13 +21,13 @@ set -euo pipefail
 #   2. Make sure the AWS CLI works:
 #        aws sts get-caller-identity
 #   3. If using HTTPS, point your DNS name to the Elastic IP before running.
-#      Example: penncloud.example.com -> 203.0.113.10
+#      Example: ncloud.example.com -> 203.0.113.10
 #   4. If using external email relay, create a local .smtp.env first and run
 #      with INCLUDE_SMTP_ENV=1. The file is uploaded to EC2 but not committed.
 #
 # Recommended full deployment:
 #   INCLUDE_SMTP_ENV=1 AWS_REGION=us-west-2 \
-#   DNS_NAME=penncloud.example.com DOMAIN_NAME=penncloud.example.com \
+#   DNS_NAME=ncloud.example.com DOMAIN_NAME=ncloud.example.com \
 #   CERTBOT_EMAIL=your-email@example.com ENABLE_HTTPS=1 \
 #   USE_ELASTIC_IP=1 PERSIST_DATA=1 \
 #   bash scripts/aws_deploy_ec2.sh
@@ -38,7 +38,7 @@ set -euo pipefail
 # Reuse the previous admin token when redeploying:
 #   set -a; . .aws-deploy/last-deploy.env; set +a
 #   INCLUDE_SMTP_ENV=1 AWS_REGION=us-west-2 \
-#   DNS_NAME=penncloud.example.com DOMAIN_NAME=penncloud.example.com \
+#   DNS_NAME=ncloud.example.com DOMAIN_NAME=ncloud.example.com \
 #   CERTBOT_EMAIL=your-email@example.com ENABLE_HTTPS=1 \
 #   USE_ELASTIC_IP=1 PERSIST_DATA=1 ADMIN_TOKEN="$ADMIN_TOKEN" \
 #   bash scripts/aws_deploy_ec2.sh
@@ -56,15 +56,15 @@ set -euo pipefail
 #   AWS_ACCOUNT_ID      expected account id, default 214658736393
 #   AWS_REGION          region, default from AWS CLI or us-east-1
 #   INSTANCE_TYPE       default t3.medium
-#   KEY_NAME            default penncloud-academy-key
-#   SG_NAME             default penncloud-demo-sg
+#   KEY_NAME            default ncloud-academy-key
+#   SG_NAME             default ncloud-demo-sg
 #   SSH_CIDR            default your current public IP /32
 #   APP_CIDR            default 0.0.0.0/0 for HTTP/HTTPS/demo ports
 #   INCLUDE_SMTP_ENV    set to 1 to upload local .smtp.env to EC2
 #   ADMIN_TOKEN         admin token for /admin; random hex if omitted
-#   DNS_NAME            optional DNS name / nginx server_name, e.g. penncloud.example.com
+#   DNS_NAME            optional DNS name / nginx server_name, e.g. ncloud.example.com
 #   USE_ELASTIC_IP      set to 1 to allocate/reuse and associate an Elastic IP
-#   PERSIST_DATA        set to 1 to keep KV data under /opt/penncloud-data
+#   PERSIST_DATA        set to 1 to keep KV data under /opt/ncloud-data
 #   ENABLE_HTTPS        set to 1 to request/configure Let's Encrypt HTTPS
 #   DOMAIN_NAME         public DNS name for HTTPS; defaults to DNS_NAME
 #   CERTBOT_EMAIL       email for Let's Encrypt registration when ENABLE_HTTPS=1
@@ -89,9 +89,9 @@ EXPECTED_ACCOUNT="${AWS_ACCOUNT_ID:-214658736393}"
 REGION="${AWS_REGION:-$(aws configure get region 2>/dev/null || true)}"
 REGION="${REGION:-us-east-1}"
 INSTANCE_TYPE="${INSTANCE_TYPE:-t3.medium}"
-KEY_NAME="${KEY_NAME:-penncloud-academy-key}"
+KEY_NAME="${KEY_NAME:-ncloud-academy-key}"
 KEY_PATH="$STATE_DIR/${KEY_NAME}.pem"
-SG_NAME="${SG_NAME:-penncloud-demo-sg}"
+SG_NAME="${SG_NAME:-ncloud-demo-sg}"
 APP_CIDR="${APP_CIDR:-0.0.0.0/0}"
 INCLUDE_SMTP_ENV="${INCLUDE_SMTP_ENV:-0}"
 USE_ELASTIC_IP="${USE_ELASTIC_IP:-0}"
@@ -129,7 +129,7 @@ if [ "$ACCOUNT_ID" != "$EXPECTED_ACCOUNT" ]; then
 fi
 if [ "$ENABLE_HTTPS" = "1" ]; then
   if [ -z "$DOMAIN_NAME" ]; then
-    echo "[deploy] ENABLE_HTTPS=1 requires DOMAIN_NAME or DNS_NAME, e.g. penncloud.example.com" >&2
+    echo "[deploy] ENABLE_HTTPS=1 requires DOMAIN_NAME or DNS_NAME, e.g. ncloud.example.com" >&2
     exit 1
   fi
   if [ -z "$CERTBOT_EMAIL" ]; then
@@ -191,7 +191,7 @@ if [ -z "$SG_ID" ] || [ "$SG_ID" = "None" ]; then
   SG_ID="$(aws ec2 create-security-group \
     --region "$REGION" \
     --group-name "$SG_NAME" \
-    --description "PennCloud browser demo" \
+    --description "NCloud browser demo" \
     --vpc-id "$VPC_ID" \
     --query GroupId \
     --output text)"
@@ -207,13 +207,13 @@ authorize_ingress() {
 }
 
 authorize_ingress tcp 22 "$SSH_CIDR" "SSH"
-authorize_ingress tcp 80 "$APP_CIDR" "PennCloud HTTP"
-authorize_ingress tcp 443 "$APP_CIDR" "PennCloud HTTPS"
-authorize_ingress tcp 8090 "$APP_CIDR" "PennCloud fe1"
-authorize_ingress tcp 8091 "$APP_CIDR" "PennCloud fe2"
-authorize_ingress tcp 8092 "$APP_CIDR" "PennCloud fe3"
-authorize_ingress tcp 2525 "$APP_CIDR" "PennCloud SMTP demo"
-authorize_ingress tcp 8088 "$APP_CIDR" "PennCloud frontend lb"
+authorize_ingress tcp 80 "$APP_CIDR" "NCloud HTTP"
+authorize_ingress tcp 443 "$APP_CIDR" "NCloud HTTPS"
+authorize_ingress tcp 8090 "$APP_CIDR" "NCloud fe1"
+authorize_ingress tcp 8091 "$APP_CIDR" "NCloud fe2"
+authorize_ingress tcp 8092 "$APP_CIDR" "NCloud fe3"
+authorize_ingress tcp 2525 "$APP_CIDR" "NCloud SMTP demo"
+authorize_ingress tcp 8088 "$APP_CIDR" "NCloud frontend lb"
 echo "[deploy] security group $SG_ID ready"
 
 AMI_ID="$(aws ssm get-parameters \
@@ -224,7 +224,7 @@ AMI_ID="$(aws ssm get-parameters \
 
 EXISTING_ID="$(aws ec2 describe-instances \
   --region "$REGION" \
-  --filters Name=tag:Name,Values=penncloud-demo Name=instance-state-name,Values=pending,running,stopping,stopped \
+  --filters Name=tag:Name,Values=ncloud-demo Name=instance-state-name,Values=pending,running,stopping,stopped \
   --query 'Reservations[].Instances[].InstanceId' \
   --output text)"
 if [ -n "$EXISTING_ID" ]; then
@@ -245,7 +245,7 @@ else
     --key-name "$KEY_NAME" \
     --security-group-ids "$SG_ID" \
     --subnet-id "$SUBNET_ID" \
-    --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=penncloud-demo}]' \
+    --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=ncloud-demo}]' \
     --block-device-mappings '[{"DeviceName":"/dev/xvda","Ebs":{"VolumeSize":20,"VolumeType":"gp3","DeleteOnTermination":true}}]' \
     --query 'Instances[0].InstanceId' \
     --output text)"
@@ -260,14 +260,14 @@ if [ "$USE_ELASTIC_IP" = "1" ]; then
   echo "[deploy] ensuring Elastic IP..."
   ELASTIC_IP_ALLOCATION_ID="$(aws ec2 describe-addresses \
     --region "$REGION" \
-    --filters Name=tag:Name,Values=penncloud-demo-eip \
+    --filters Name=tag:Name,Values=ncloud-demo-eip \
     --query 'Addresses[0].AllocationId' \
     --output text 2>/dev/null || true)"
   if [ -z "$ELASTIC_IP_ALLOCATION_ID" ] || [ "$ELASTIC_IP_ALLOCATION_ID" = "None" ]; then
     ELASTIC_IP_ALLOCATION_ID="$(aws ec2 allocate-address \
       --region "$REGION" \
       --domain vpc \
-      --tag-specifications 'ResourceType=elastic-ip,Tags=[{Key=Name,Value=penncloud-demo-eip}]' \
+      --tag-specifications 'ResourceType=elastic-ip,Tags=[{Key=Name,Value=ncloud-demo-eip}]' \
       --query AllocationId \
       --output text)"
   fi
@@ -295,7 +295,7 @@ PUBLIC_IP_EC2="$(aws ec2 describe-instances \
   --instance-ids "$INSTANCE_ID" \
   --query 'Reservations[0].Instances[0].PublicIpAddress' \
   --output text)"
-PENNCLOUD_PUBLIC_HOST="${DOMAIN_NAME:-${DNS_NAME:-$PUBLIC_IP_EC2}}"
+NCLOUD_PUBLIC_HOST="${DOMAIN_NAME:-${DNS_NAME:-$PUBLIC_IP_EC2}}"
 echo "[deploy] instance public DNS: $PUBLIC_DNS"
 
 echo "[deploy] waiting for SSH..."
@@ -306,7 +306,7 @@ for _ in $(seq 1 60); do
   sleep 5
 done
 
-TMP_TAR="$STATE_DIR/penncloud-src.tar.gz"
+TMP_TAR="$STATE_DIR/ncloud-src.tar.gz"
 echo "[deploy] packaging source..."
 tar \
   --exclude='.git' \
@@ -326,14 +326,14 @@ tar \
   -czf "$TMP_TAR" -C "$ROOT_DIR" .
 
 echo "[deploy] uploading source..."
-scp -o StrictHostKeyChecking=no -i "$KEY_PATH" "$TMP_TAR" "ec2-user@$PUBLIC_DNS:/tmp/penncloud-src.tar.gz"
+scp -o StrictHostKeyChecking=no -i "$KEY_PATH" "$TMP_TAR" "ec2-user@$PUBLIC_DNS:/tmp/ncloud-src.tar.gz"
 if [ "$INCLUDE_SMTP_ENV" = "1" ] && [ -f "$ROOT_DIR/.smtp.env" ]; then
   echo "[deploy] uploading .smtp.env because INCLUDE_SMTP_ENV=1"
-  scp -o StrictHostKeyChecking=no -i "$KEY_PATH" "$ROOT_DIR/.smtp.env" "ec2-user@$PUBLIC_DNS:/tmp/penncloud.smtp.env"
+  scp -o StrictHostKeyChecking=no -i "$KEY_PATH" "$ROOT_DIR/.smtp.env" "ec2-user@$PUBLIC_DNS:/tmp/ncloud.smtp.env"
 fi
 
-echo "[deploy] installing Docker, nginx, and starting PennCloud..."
-ssh -o StrictHostKeyChecking=no -i "$KEY_PATH" "ec2-user@$PUBLIC_DNS" "INCLUDE_SMTP_ENV='$INCLUDE_SMTP_ENV' ADMIN_TOKEN='$ADMIN_TOKEN' PERSIST_DATA='$PERSIST_DATA' PUBLIC_IP_EC2='$PUBLIC_IP_EC2' PENNCLOUD_PUBLIC_HOST='$PENNCLOUD_PUBLIC_HOST' DNS_NAME='${DNS_NAME:-}' ENABLE_HTTPS='$ENABLE_HTTPS' DOMAIN_NAME='$DOMAIN_NAME' CERTBOT_EMAIL='$CERTBOT_EMAIL' FORCE_HTTPS='$FORCE_HTTPS' bash -s" <<'REMOTE'
+echo "[deploy] installing Docker, nginx, and starting NCloud..."
+ssh -o StrictHostKeyChecking=no -i "$KEY_PATH" "ec2-user@$PUBLIC_DNS" "INCLUDE_SMTP_ENV='$INCLUDE_SMTP_ENV' ADMIN_TOKEN='$ADMIN_TOKEN' PERSIST_DATA='$PERSIST_DATA' PUBLIC_IP_EC2='$PUBLIC_IP_EC2' NCLOUD_PUBLIC_HOST='$NCLOUD_PUBLIC_HOST' DNS_NAME='${DNS_NAME:-}' ENABLE_HTTPS='$ENABLE_HTTPS' DOMAIN_NAME='$DOMAIN_NAME' CERTBOT_EMAIL='$CERTBOT_EMAIL' FORCE_HTTPS='$FORCE_HTTPS' bash -s" <<'REMOTE'
 set -euo pipefail
 sudo dnf install -y docker nginx
 sudo systemctl enable --now docker
@@ -350,33 +350,33 @@ sudo swapon /swapfile 2>/dev/null || true
 if ! grep -q '^/swapfile ' /etc/fstab; then
   echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab >/dev/null
 fi
-sudo rm -rf /opt/penncloud
-sudo mkdir -p /opt/penncloud
+sudo rm -rf /opt/ncloud
+sudo mkdir -p /opt/ncloud
 if [ "${PERSIST_DATA:-0}" = "1" ]; then
-  sudo mkdir -p /opt/penncloud-data/kv
+  sudo mkdir -p /opt/ncloud-data/kv
 fi
-sudo tar -xzf /tmp/penncloud-src.tar.gz -C /opt/penncloud
-if [ "${INCLUDE_SMTP_ENV:-0}" = "1" ] && [ -f /tmp/penncloud.smtp.env ]; then
-  sudo cp /tmp/penncloud.smtp.env /opt/penncloud/.smtp.env
-  sudo chmod 600 /opt/penncloud/.smtp.env
+sudo tar -xzf /tmp/ncloud-src.tar.gz -C /opt/ncloud
+if [ "${INCLUDE_SMTP_ENV:-0}" = "1" ] && [ -f /tmp/ncloud.smtp.env ]; then
+  sudo cp /tmp/ncloud.smtp.env /opt/ncloud/.smtp.env
+  sudo chmod 600 /opt/ncloud/.smtp.env
 fi
-sudo chown -R ec2-user:ec2-user /opt/penncloud
+sudo chown -R ec2-user:ec2-user /opt/ncloud
 if [ "${PERSIST_DATA:-0}" = "1" ]; then
-  sudo chown -R ec2-user:ec2-user /opt/penncloud-data
+  sudo chown -R ec2-user:ec2-user /opt/ncloud-data
 fi
-sudo docker rm -f penncloud-demo >/dev/null 2>&1 || true
-sudo docker run -d --name penncloud-demo \
+sudo docker rm -f ncloud-demo >/dev/null 2>&1 || true
+sudo docker run -d --name ncloud-demo \
   -e ADMIN_TOKEN="$ADMIN_TOKEN" \
-  -e PENNCLOUD_PUBLIC_HOST="$PENNCLOUD_PUBLIC_HOST" \
+  -e NCLOUD_PUBLIC_HOST="$NCLOUD_PUBLIC_HOST" \
   -p 8090:8090 -p 8091:8091 -p 8092:8092 -p 2525:2525 -p 8088:8088 \
-  -v /opt/penncloud:/home/cis5050/workspace/sp26-cis5050-T05 \
-  -v /opt/penncloud-data:/opt/penncloud-data \
+  -v /opt/ncloud:/home/cis5050/workspace/sp26-cis5050-T05 \
+  -v /opt/ncloud-data:/opt/ncloud-data \
   -w /home/cis5050/workspace/sp26-cis5050-T05 \
   cis5050/docker-env:gRPC sleep infinity
 if [ "${PERSIST_DATA:-0}" = "1" ]; then
-  sudo docker exec penncloud-demo bash -lc 'MODE=multi-tablet DATA_ROOT=/opt/penncloud-data/kv PRESERVE_DATA=1 bash start_browser_demo.sh'
+  sudo docker exec ncloud-demo bash -lc 'MODE=multi-tablet DATA_ROOT=/opt/ncloud-data/kv PRESERVE_DATA=1 bash start_browser_demo.sh'
 else
-  sudo docker exec penncloud-demo bash -lc 'MODE=multi-tablet bash start_browser_demo.sh'
+  sudo docker exec ncloud-demo bash -lc 'MODE=multi-tablet bash start_browser_demo.sh'
 fi
 SERVER_NAME="${DNS_NAME:-_}"
 if [ -n "${DOMAIN_NAME:-}" ]; then
@@ -402,8 +402,8 @@ install_certbot() {
 write_nginx_http_only() {
 sudo mkdir -p /etc/nginx/conf.d
 sudo mkdir -p /var/www/certbot
-sudo tee /etc/nginx/conf.d/penncloud.conf >/dev/null <<NGINX
-upstream penncloud_frontends {
+sudo tee /etc/nginx/conf.d/ncloud.conf >/dev/null <<NGINX
+upstream ncloud_frontends {
     server 127.0.0.1:8090 max_fails=1 fail_timeout=3s;
     server 127.0.0.1:8091 max_fails=1 fail_timeout=3s;
     server 127.0.0.1:8092 max_fails=1 fail_timeout=3s;
@@ -420,7 +420,7 @@ server {
     }
 
     location / {
-        proxy_pass http://penncloud_frontends;
+        proxy_pass http://ncloud_frontends;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
@@ -445,12 +445,12 @@ NGINX
 write_nginx_https() {
 sudo mkdir -p /etc/nginx/conf.d
 sudo mkdir -p /var/www/certbot
-local http_fallback='proxy_pass http://penncloud_frontends;'
+local http_fallback='proxy_pass http://ncloud_frontends;'
 if [ "${FORCE_HTTPS:-0}" = "1" ]; then
   http_fallback='return 301 https://$host$request_uri;'
 fi
-sudo tee /etc/nginx/conf.d/penncloud.conf >/dev/null <<NGINX
-upstream penncloud_frontends {
+sudo tee /etc/nginx/conf.d/ncloud.conf >/dev/null <<NGINX
+upstream ncloud_frontends {
     server 127.0.0.1:8090 max_fails=1 fail_timeout=3s;
     server 127.0.0.1:8091 max_fails=1 fail_timeout=3s;
     server 127.0.0.1:8092 max_fails=1 fail_timeout=3s;
@@ -498,7 +498,7 @@ server {
     ssl_prefer_server_ciphers off;
 
     location / {
-        proxy_pass http://penncloud_frontends;
+        proxy_pass http://ncloud_frontends;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
@@ -534,17 +534,17 @@ if [ "${ENABLE_HTTPS:-0}" = "1" ]; then
   write_nginx_https
   sudo nginx -t
   sudo systemctl restart nginx
-  sudo tee /etc/systemd/system/penncloud-certbot-renew.service >/dev/null <<SYSTEMD_SERVICE
+  sudo tee /etc/systemd/system/ncloud-certbot-renew.service >/dev/null <<SYSTEMD_SERVICE
 [Unit]
-Description=Renew PennCloud Let's Encrypt certificates
+Description=Renew NCloud Let's Encrypt certificates
 
 [Service]
 Type=oneshot
 ExecStart=${CERTBOT_BIN} renew --quiet --deploy-hook "systemctl reload nginx"
 SYSTEMD_SERVICE
-  sudo tee /etc/systemd/system/penncloud-certbot-renew.timer >/dev/null <<SYSTEMD_TIMER
+  sudo tee /etc/systemd/system/ncloud-certbot-renew.timer >/dev/null <<SYSTEMD_TIMER
 [Unit]
-Description=Twice-daily PennCloud Let's Encrypt renewal check
+Description=Twice-daily NCloud Let's Encrypt renewal check
 
 [Timer]
 OnCalendar=*-*-* 03,15:17:00
@@ -554,7 +554,7 @@ Persistent=true
 WantedBy=timers.target
 SYSTEMD_TIMER
   sudo systemctl daemon-reload
-  sudo systemctl enable --now penncloud-certbot-renew.timer >/dev/null
+  sudo systemctl enable --now ncloud-certbot-renew.timer >/dev/null
 fi
 REMOTE
 
@@ -589,11 +589,11 @@ USE_ELASTIC_IP=$USE_ELASTIC_IP
 PERSIST_DATA=$PERSIST_DATA
 ENABLE_HTTPS=$ENABLE_HTTPS
 DOMAIN_NAME=$DOMAIN_NAME
-PENNCLOUD_PUBLIC_HOST=$PENNCLOUD_PUBLIC_HOST
+NCLOUD_PUBLIC_HOST=$NCLOUD_PUBLIC_HOST
 EOF_STATE
 
 echo
-echo "PennCloud is deployed."
+echo "NCloud is deployed."
 echo "Main app:  http://$PUBLIC_IP_EC2/"
 if [ -n "${DNS_NAME:-}" ]; then
   echo "DNS app:   http://$DNS_NAME/"
@@ -616,7 +616,7 @@ if [ -n "$ELASTIC_IP_ALLOCATION_ID" ]; then
   echo "Elastic IP allocation: $ELASTIC_IP_ALLOCATION_ID"
 fi
 if [ "$PERSIST_DATA" = "1" ]; then
-  echo "Persistent data: /opt/penncloud-data/kv"
+  echo "Persistent data: /opt/ncloud-data/kv"
 fi
 echo
 echo "State saved to $STATE_DIR/last-deploy.env"

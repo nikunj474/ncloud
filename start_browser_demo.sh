@@ -1,5 +1,5 @@
 #!/bin/bash
-# Boots a full PennCloud stack for browser-based admin/drive testing.
+# Boots a full NCloud stack for browser-based admin/drive testing.
 #
 # Modes (set MODE env var):
 #   MODE=abc           1 tablet, 3 KV nodes, all primary on node1.

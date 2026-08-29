@@ -1,8 +1,4 @@
-<p align="center">
-  <img src="logo.png" alt="PennCloud" width="140">
-</p>
-
-<h1 align="center">PennCloud</h1>
+<h1 align="center">NCloud</h1>
 
 <p align="center">
   <strong>A fault-tolerant cloud platform — webmail, file storage, and chat — built from the socket layer up in C++17.</strong>
@@ -17,7 +13,7 @@
 
 ---
 
-PennCloud is a Google-Workspace-style suite — Mail, Drive, and Chat — running on a
+NCloud is a Google-Workspace-style suite — Mail, Drive, and Chat — running on a
 **replicated, sharded key-value store written from scratch**. There is no web framework,
 no ORM, and no database. The HTTP parser, the storage engine, the replication protocol,
 the failure detector, the leader election, the SMTP server, and the load balancer are all
@@ -60,8 +56,7 @@ until you have a working consumer product.
 That constraint forces you to confront the problems real distributed systems have — write
 durability across crashes, how a replica catches up after missing writes, what happens to
 an in-flight request when the node serving it dies, how a stateless tier discovers where
-data lives, and how to keep a partitioned keyspace balanced. Every one of those has an
-answer in this codebase rather than a dependency.
+data lives, and how to keep a partitioned keyspace balanced.
 
 ---
 
@@ -205,7 +200,7 @@ re-added as a secondary automatically, with no failback churn.
 A real session from the running cluster, killing the primary of `tabletA` mid-use:
 
 ```
-$ ./penncloud_control.sh backend stop node1
+$ ./ncloud_control.sh backend stop node1
 
   tabletA   primary=node2   alive=[node2, node3]      ← promoted, LSN 57
   tabletB   primary=node2   alive=[node2, node3, node4]
@@ -218,7 +213,7 @@ $ ./penncloud_control.sh backend stop node1
   POST /api/upload   → 5 MB file, SHA-256 verified byte-identical on download
   GET  /api/quota    → {"ok":true,"used_bytes":5200000}
 
-$ ./penncloud_control.sh backend start node1
+$ ./ncloud_control.sh backend start node1
 
   node1 alive=True lsn=110   node2 lsn=110   node3 lsn=110   ← resynced and caught up
   tabletA primary=node2 alive=[node2, node1, node3]          ← rejoined as secondary
@@ -235,7 +230,7 @@ store.
 ### Docker
 
 ```bash
-docker build -t penncloud .
+docker build -t ncloud .
 docker compose up
 ```
 
@@ -255,11 +250,11 @@ Needs `g++` ≥ 9 (C++17), `make`, libcurl headers, and `netcat`.
 
 ```bash
 make                                        # builds all five binaries
-./penncloud_control.sh coordinator start
-./penncloud_control.sh backend start node1  # …node2, node3, node4
-./penncloud_control.sh frontend start fe1   # …fe2, fe3
-./penncloud_control.sh lb start
-./penncloud_control.sh smtp start
+./ncloud_control.sh coordinator start
+./ncloud_control.sh backend start node1  # …node2, node3, node4
+./ncloud_control.sh frontend start fe1   # …fe2, fe3
+./ncloud_control.sh lb start
+./ncloud_control.sh smtp start
 ```
 
 Swap `start` for `stop` or `restart` on any component — restarting a backend mid-session
@@ -310,9 +305,9 @@ ship in [coordinator/](coordinator/). The load balancer takes an equally small
 
 | Environment variable | Purpose |
 |:--|:--|
-| `PENNCLOUD_MAIL_DOMAIN` | Domain for local mail addresses (default `penncloud.local`) |
+| `NCLOUD_MAIL_DOMAIN` | Domain for local mail addresses (default `ncloud.local`) |
 | `ADMIN_TOKEN` | Shared secret guarding the admin API |
-| `PENNCLOUD_OPEN_ADMIN` | Disables admin auth entirely — local demos only, never in production |
+| `NCLOUD_OPEN_ADMIN` | Disables admin auth entirely — local demos only, never in production |
 | `SMTP_MODE`, `SMTP_RELAY_*` | Outbound relay vs. direct MX delivery |
 
 ---
@@ -391,7 +386,7 @@ accounts predating the change are transparently re-hashed on their next successf
 
 **Current limitations.** The storage and coordinator ports carry no authentication and
 assume a trusted network — anything internet-facing belongs behind the nginx gateway the
-deploy scripts configure, never exposed directly. `PENNCLOUD_OPEN_ADMIN=1` disables admin
+deploy scripts configure, never exposed directly. `NCLOUD_OPEN_ADMIN=1` disables admin
 authentication outright and is for local demos only. Replicated multi-tablet hosting is
 limited to one tablet per process; lifting it needs the replication protocol to identify
 tablets explicitly in sync and recovery messages.

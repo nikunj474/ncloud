@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""PennCloud System Design PDF Generator"""
+"""NCloud System Design PDF Generator"""
 
 from fpdf import FPDF
 from fpdf.enums import XPos, YPos
 import os
 
-OUTPUT = os.path.join(os.path.dirname(__file__), "PennCloud_System_Design.pdf")
+OUTPUT = os.path.join(os.path.dirname(__file__), "NCloud_System_Design.pdf")
 
 class PDF(FPDF):
     def __init__(self):
@@ -80,7 +80,7 @@ class PDF(FPDF):
     def header(self):
         self.set_font('Helvetica', 'I', 8)
         self.set_text_color(120, 120, 120)
-        self.cell(0, 8, 'PennCloud Distributed System - System Design Document', align='C')
+        self.cell(0, 8, 'NCloud Distributed System - System Design Document', align='C')
         self.ln(0)
         self.set_text_color(0, 0, 0)
 
@@ -105,7 +105,7 @@ def build(pdf: PDF):
     pdf.set_font('Helvetica', 'B', 28)
     pdf.set_text_color(20, 60, 130)
     pdf.ln(30)
-    pdf.multi_cell(0, 14, 'PennCloud', align='C', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
+    pdf.multi_cell(0, 14, 'NCloud', align='C', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
     pdf.set_font('Helvetica', 'B', 18)
     pdf.set_text_color(50, 50, 50)
     pdf.multi_cell(0, 10, 'Distributed Cloud Platform', align='C', new_x=XPos.LMARGIN, new_y=YPos.NEXT)
@@ -142,7 +142,7 @@ def build(pdf: PDF):
     # ══════════════════════════════════════════════════════════════════════════
     pdf.section(1, "System Overview")
     pdf.body(
-        "PennCloud is a distributed cloud platform built entirely in C++17 with no external "
+        "NCloud is a distributed cloud platform built entirely in C++17 with no external "
         "frameworks. It delivers four user-facing services - Email, File Drive, Live Chat, and an "
         "Admin Console - on top of a custom replicated key-value store. Every component was written "
         "from scratch: HTTP server, SMTP server, KV tablet storage, primary-backup replication, "
@@ -180,7 +180,7 @@ def build(pdf: PDF):
     # ══════════════════════════════════════════════════════════════════════════
     pdf.section(2, "Three-Tier Architecture")
     pdf.body(
-        "PennCloud uses a strict three-tier architecture. No tier bypasses any other tier - "
+        "NCloud uses a strict three-tier architecture. No tier bypasses any other tier - "
         "browsers talk only to frontends, frontends talk only to KV nodes (via coordinator for "
         "routing), and KV nodes replicate among themselves."
     )
@@ -249,7 +249,7 @@ def build(pdf: PDF):
     pdf.h2("2.5  SMTP Server")
     pdf.body(
         "A dedicated SMTP server listens on port 2525 (mapped to 25 externally). It accepts "
-        "inbound mail for @penncloud.com and @penncloud domains, validates the recipient exists "
+        "inbound mail for @ncloud.com and @ncloud domains, validates the recipient exists "
         "in the KV store, and writes the message directly into the KV mailbox. Outbound mail "
         "for external domains is forwarded via MX lookup or a configured relay."
     )
@@ -385,7 +385,7 @@ def build(pdf: PDF):
 
     pdf.h2("4.1  Primary-Backup Model")
     pdf.body(
-        "PennCloud uses synchronous primary-backup replication (also called primary-secondary "
+        "NCloud uses synchronous primary-backup replication (also called primary-secondary "
         "or primary-replica). There is exactly one primary per tablet at any time. All writes go "
         "to the primary; backups apply writes in the same order via forwarded WAL entries."
     )
@@ -850,7 +850,7 @@ def build(pdf: PDF):
         "  External MTA  ->  SMTP Server (2525)\n"
         "    EHLO, MAIL FROM:, RCPT TO:, DATA, .\n"
         "  SMTP Server:\n"
-        "    1. Validate recipient domain (@penncloud.com or @penncloud)\n"
+        "    1. Validate recipient domain (@ncloud.com or @ncloud)\n"
         "    2. Look up recipient in KV (check password row exists)\n"
         "    3. Write message body to KV: PUT <user>:mail body:<uid> <body>\n"
         "    4. Write message meta to KV: PUT <user>:mail msg:<uid> <meta>\n"
@@ -860,13 +860,13 @@ def build(pdf: PDF):
 
     pdf.h2("9.3  Outbound Mail Flow")
     pdf.body(
-        "Outbound mail from a PennCloud user:"
+        "Outbound mail from a NCloud user:"
     )
     pdf.code(
         "  Browser  ->  Frontend (POST /api/mail/send)\n"
         "  Frontend:\n"
         "    1. Parse To:, Subject:, Body from HTTP form\n"
-        "    2. If recipient is @penncloud.com: call deliver_local() directly\n"
+        "    2. If recipient is @ncloud.com: call deliver_local() directly\n"
         "    3. If external: open TCP to relay (port 25) or direct MX lookup\n"
         "       EHLO, MAIL FROM:, RCPT TO:, DATA, body, .\n"
         "    4. Write to sender's folder:sent index"
@@ -929,7 +929,7 @@ def build(pdf: PDF):
     )
     pdf.h3("Mitigation")
     pdf.body("A production system would maintain a running usage counter updated atomically "
-             "on every upload/delete. PennCloud recalculates on every upload, which is "
+             "on every upload/delete. NCloud recalculates on every upload, which is "
              "acceptable for small datasets (< 100 files) but would be slow at scale.")
 
     pdf.h2("10.4  WAL Sequential Write")
@@ -1112,7 +1112,7 @@ def build(pdf: PDF):
         ("CPUT for atomic updates", "Prevents lost-update race conditions on shared KV values."),
         ("JSON control-char escaping", "JSON strings sanitise 0x00-0x1F to prevent JSON injection."),
         ("Admin loopback check", "Admin control endpoints reject requests not originating from 127.0.0.1."),
-        ("SMTP domain validation", "SMTP server only accepts mail for @penncloud.com / @penncloud."),
+        ("SMTP domain validation", "SMTP server only accepts mail for @ncloud.com / @ncloud."),
     ]:
         pdf.kv(item, desc)
 
@@ -1132,7 +1132,7 @@ def build(pdf: PDF):
     # ══════════════════════════════════════════════════════════════════════════
     pdf.section(15, "Summary")
     pdf.body(
-        "PennCloud is a functionally complete distributed cloud platform built entirely in "
+        "NCloud is a functionally complete distributed cloud platform built entirely in "
         "C++17 from scratch. It demonstrates the full stack of distributed systems concepts:"
     )
     pdf.bullet("Replicated storage with WAL, checkpointing, and delta/snapshot resync.")

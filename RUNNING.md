@@ -1,4 +1,4 @@
-# Running PennCloud from Scratch
+# Running NCloud from Scratch
 
 Two ways to run the system: **Local** (build and run directly on your machine) or **Docker** (containerised, no build toolchain needed).
 
@@ -12,7 +12,7 @@ Two ways to run the system: **Local** (build and run directly on your machine) o
 | g++ | ≥ 9 | C++17 support required |
 | make | any | |
 | libcurl | dev headers | `apt install libcurl4-openssl-dev` / `brew install curl` |
-| netcat | any | for the health-check in `penncloud_control.sh` |
+| netcat | any | for the health-check in `ncloud_control.sh` |
 
 ### Docker
 | Tool | Version |
@@ -27,7 +27,7 @@ Two ways to run the system: **Local** (build and run directly on your machine) o
 ### 1. Build everything
 
 ```bash
-cd penncloud_t05
+cd ncloud_t05
 make
 ```
 
@@ -45,28 +45,28 @@ This builds five binaries:
 
 ### 2. Start the full cluster (recommended)
 
-The `penncloud_control.sh` script manages every process. Run each command in a separate terminal, **in this order**:
+The `ncloud_control.sh` script manages every process. Run each command in a separate terminal, **in this order**:
 
 ```bash
 # Step 1 — coordinator (port 7110)
-./penncloud_control.sh coordinator start
+./ncloud_control.sh coordinator start
 
 # Step 2 — four KV backend nodes (ports 7500-7503, repl 7600-7603)
-./penncloud_control.sh backend start node1
-./penncloud_control.sh backend start node2
-./penncloud_control.sh backend start node3
-./penncloud_control.sh backend start node4
+./ncloud_control.sh backend start node1
+./ncloud_control.sh backend start node2
+./ncloud_control.sh backend start node3
+./ncloud_control.sh backend start node4
 
 # Step 3 — three frontend servers (ports 8090-8092)
-./penncloud_control.sh frontend start fe1
-./penncloud_control.sh frontend start fe2
-./penncloud_control.sh frontend start fe3
+./ncloud_control.sh frontend start fe1
+./ncloud_control.sh frontend start fe2
+./ncloud_control.sh frontend start fe3
 
 # Step 4 — load balancer (port 8088)
-./penncloud_control.sh lb start
+./ncloud_control.sh lb start
 
 # Step 5 — SMTP server (port 2525)
-./penncloud_control.sh smtp start
+./ncloud_control.sh smtp start
 ```
 
 Open your browser at **http://127.0.0.1:8088**
@@ -77,16 +77,16 @@ Admin console: **http://127.0.0.1:8088/admin**
 ### 3. Stop the cluster
 
 ```bash
-./penncloud_control.sh coordinator stop
-./penncloud_control.sh backend stop node1
-./penncloud_control.sh backend stop node2
-./penncloud_control.sh backend stop node3
-./penncloud_control.sh backend stop node4
-./penncloud_control.sh frontend stop fe1
-./penncloud_control.sh frontend stop fe2
-./penncloud_control.sh frontend stop fe3
-./penncloud_control.sh lb stop
-./penncloud_control.sh smtp stop
+./ncloud_control.sh coordinator stop
+./ncloud_control.sh backend stop node1
+./ncloud_control.sh backend stop node2
+./ncloud_control.sh backend stop node3
+./ncloud_control.sh backend stop node4
+./ncloud_control.sh frontend stop fe1
+./ncloud_control.sh frontend stop fe2
+./ncloud_control.sh frontend stop fe3
+./ncloud_control.sh lb stop
+./ncloud_control.sh smtp stop
 ```
 
 ---
@@ -95,8 +95,8 @@ Admin console: **http://127.0.0.1:8088/admin**
 
 ```bash
 # Kill node2 and bring it back — coordinator will detect the failure and promote a secondary
-./penncloud_control.sh backend stop node2
-./penncloud_control.sh backend start node2
+./ncloud_control.sh backend stop node2
+./ncloud_control.sh backend start node2
 ```
 
 The same pattern works for any frontend or the coordinator itself.
@@ -135,8 +135,8 @@ Open browser at **http://127.0.0.1:8080** (no load balancer, no replication).
 ### 1. Build the image
 
 ```bash
-cd penncloud_t05
-docker build -t penncloud .
+cd ncloud_t05
+docker build -t ncloud .
 ```
 
 The Dockerfile uses a two-stage build: Ubuntu 22.04 builder compiles all binaries, then a lean runtime image is produced.
@@ -209,7 +209,7 @@ SMTP_RELAY_FROM=you@gmail.com
 ```
 
 The SMTP container picks up `.smtp.env` automatically on next `docker compose up`.
-Without it, inbound mail between local PennCloud users still works; only external relay is disabled.
+Without it, inbound mail between local NCloud users still works; only external relay is disabled.
 
 ---
 
@@ -222,7 +222,7 @@ Only two ports are exposed to the host:
 | Load balancer (main entry point) | 8088 | 8088 |
 | SMTP inbound | 2525 | 2525 |
 
-All other services (KV nodes, frontends, coordinator) communicate on the internal `penncloud` Docker network and are not reachable from the host directly.
+All other services (KV nodes, frontends, coordinator) communicate on the internal `ncloud` Docker network and are not reachable from the host directly.
 
 ---
 
@@ -260,5 +260,5 @@ Each node writes its own log: `mg_node1.log` … `mg_node4.log`. Check the last 
 
 **Reset all data (local)**
 ```bash
-rm -rf .penncloud_data/
+rm -rf .ncloud_data/
 ```
