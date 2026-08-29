@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: build (${{ matrix.cxx }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cxx: g++
+            pkg: g++
+          - cxx: clang++
+            pkg: clang
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain and libcurl
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ${{ matrix.pkg }} libcurl4-openssl-dev
+
+      - name: Build all five services
+        run: make -j"$(nproc)" CXX=${{ matrix.cxx }}
+
+      - name: Verify the binaries were produced
+        run: |
+          set -e
+          for bin in coordinator/coordinator kvstore/kvserver frontend/feserver \
+                     frontend_lb/frontend_lb smtp_server/smtp_server; do
+            test -x "$bin" || { echo "missing binary: $bin"; exit 1; }
+            echo "ok: $bin ($(stat -c%s "$bin") bytes)"
+          done
+
+      - name: Rebuild from clean to prove the Makefiles are not stale
+        run: |
+          make clean
+          make -j"$(nproc)" CXX=${{ matrix.cxx }}
+
+  compose:
+    name: docker compose config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate the compose file
+        run: docker compose config --quiet

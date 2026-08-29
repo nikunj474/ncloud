@@ -6,9 +6,10 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/C%2B%2B-17-00599C?style=flat-square&logo=cplusplus" alt="C++17">
-  <img src="https://img.shields.io/badge/build-passing-brightgreen?style=flat-square" alt="Build">
+  <a href="https://github.com/nikunj474/ncloud/actions/workflows/ci.yml"><img src="https://github.com/nikunj474/ncloud/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <img src="https://img.shields.io/badge/dependencies-libcurl%20only-lightgrey?style=flat-square" alt="Dependencies">
   <img src="https://img.shields.io/badge/docker-compose%20ready-2496ED?style=flat-square&logo=docker" alt="Docker">
+  <img src="https://img.shields.io/badge/license-MIT-yellow?style=flat-square" alt="MIT">
 </p>
 
 ---
@@ -415,3 +416,20 @@ docker/          container network configuration
 | [RUNNING.md](RUNNING.md) | Build, run, ports, troubleshooting |
 | [ABC_TESTING.md](ABC_TESTING.md) | Three-node kill-scenario harness |
 | [REPLICATION_TESTING.md](REPLICATION_TESTING.md) | Replication test setup |
+
+---
+
+## Credits
+
+Built by a team of five for CIS 5050 (Software Systems) at the University of Pennsylvania:
+[David Liu](https://github.com/davidliu02k), [Rohit Sharma](https://github.com/rohit57),
+[Kaiyuan Bai](https://github.com/kytttt), Nikunj Agrawal, and Yifan Zhang.
+
+I owned the storage layer: the key-value server and its tablet engine, replication wiring
+across multi-tablet groups, primary-backup sequencing, and coordinator failover. The
+password hashing rework (PBKDF2-HMAC-SHA256) and this documentation are also mine.
+`git shortlog -sne` gives the full breakdown.
+
+## Licence
+
+MIT. See [LICENSE](LICENSE).
