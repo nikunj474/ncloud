@@ -421,14 +421,13 @@ docker/          container network configuration
 
 ## Credits
 
-Built by a team of five for CIS 5050 (Software Systems) at the University of Pennsylvania:
-[David Liu](https://github.com/davidliu02k), [Rohit Sharma](https://github.com/rohit57),
-[Kaiyuan Bai](https://github.com/kytttt), Nikunj Agrawal, and Yifan Zhang.
+Built as a team project for CIS 5050 (Software Systems) at the University of Pennsylvania,
+Spring 2026. Commit authors: David Liu, Rohit Sharma, [@kytttt](https://github.com/kytttt),
+and Nikunj Agrawal. `git shortlog -sne` gives the full breakdown.
 
 I owned the storage layer: the key-value server and its tablet engine, replication wiring
 across multi-tablet groups, primary-backup sequencing, and coordinator failover. The
 password hashing rework (PBKDF2-HMAC-SHA256) and this documentation are also mine.
-`git shortlog -sne` gives the full breakdown.
 
 ## Licence
 
